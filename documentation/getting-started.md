@@ -70,11 +70,15 @@ stores `.env` in the OS config directory (`%APPDATA%\Cartethyia` on Windows,
 on Linux). Override it with `CARTETHYIA_CONFIG_DIR`. Generated config and SQLite
 data stay outside the npm package. Setup does not install PostgreSQL.
 
-`carte` starts the gateway in the tray and returns the terminal. `cartethyia
-start` stays in the foreground. The tray shows versions, **Open Console**,
-**Reset password**, **Backup & Restore**, and **Exit**, and can install an
-update. Exit drains the gateway through its authenticated loopback endpoint
-before stopping. This does not install a login/startup service.
+`carte` starts the gateway and opens an arrow-key menu: **Open Console**,
+**Settings**, **Hide to background**, **Check for updates**, and **Exit**. It
+needs no desktop environment, so it works over SSH and on a headless box.
+`carte --tray` starts a system-tray icon instead — versions, **Open Console**,
+**Reset password**, **Backup & Restore**, and **Exit** — and needs a graphical
+session; the launcher then releases the terminal once the gateway is ready.
+`cartethyia start` stays in the foreground. Exit drains the gateway through its
+authenticated loopback endpoint before stopping. This does not install a
+login/startup service.
 
 `cartethyia setup --non-interactive` never prompts and reads the persisted
 config. Full mode must already have `CARTETHYIA_DB_MODE=full` and a reachable

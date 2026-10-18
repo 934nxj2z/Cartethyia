@@ -21,17 +21,34 @@ const startupSignalPath = trayMode
   ? path.join(os.tmpdir(), `cartethyia-tray-${process.pid}-${randomUUID()}.json`)
   : null;
 let spawnError;
-const child = spawn("bun", ["run", cliPath, ...process.argv.slice(2)], {
-  cwd: packageRoot,
-  detached: trayMode,
-  stdio: trayMode ? "ignore" : "inherit",
-  windowsHide: trayMode,
-  env: {
-    ...process.env,
-    CARTETHYIA_CONFIG_DIR: configDir,
-    ...(trayMode ? { CARTETHYIA_TRAY_STARTUP_SIGNAL: startupSignalPath } : {}),
-  },
-});
+// On Windows, `cmd /c start "" /b` gives bun its own console group so the
+// launching terminal can close without signalling the gateway. Elsewhere
+// `detached: true` is enough. Either way the child is unref'd below so the
+// launcher can exit without taking the gateway down with it.
+const useWindowsDetach = process.platform === "win32" && trayMode;
+const child = useWindowsDetach
+  ? spawn("cmd", ["/c", "start", "", "/b", "bun", "run", cliPath, ...process.argv.slice(2)], {
+      cwd: packageRoot,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CARTETHYIA_CONFIG_DIR: configDir,
+        CARTETHYIA_TRAY_STARTUP_SIGNAL: startupSignalPath,
+      },
+    })
+  : spawn("bun", ["run", cliPath, ...process.argv.slice(2)], {
+      cwd: packageRoot,
+      detached: trayMode,
+      stdio: trayMode ? "ignore" : "inherit",
+      windowsHide: trayMode,
+      env: {
+        ...process.env,
+        CARTETHYIA_CONFIG_DIR: configDir,
+        ...(trayMode ? { CARTETHYIA_TRAY_STARTUP_SIGNAL: startupSignalPath } : {}),
+      },
+    });
 
 child.once("error", (error) => {
   spawnError = error;
@@ -61,6 +78,10 @@ if (trayMode) {
       return;
     }
     console.log(`Cartethyia is ready at ${url}`);
+    // The gateway child is already detached and unref'd; this Node process is
+    // the only thing still holding the launching terminal open. Exit once the
+    // URL has been shown so the shell prompt comes back.
+    setTimeout(() => process.exit(0), 1_500);
   };
   const poll = () => {
     if (settled) return;

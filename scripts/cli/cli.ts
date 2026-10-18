@@ -6,6 +6,7 @@ import { join } from "node:path";
 import SysTray from "systray2";
 import { isNewerRelease } from "../../src/console/updates/version-compare";
 import { PACKAGE_ROOT, resolvePackagePath, resolveUserConfigDir } from "../../src/config/package-paths";
+import { resolvePort } from "../../src/config/runtime";
 import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
 
 process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
@@ -13,13 +14,18 @@ process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
 const HELP = `Cartethyia ${MINIMUM_BUN_VERSION}+ (Bun is required)
 
 Usage:
-  carte
+  carte                  start, then show an arrow-key menu (no GUI needed)
+  carte --tray           start with a system-tray icon instead
   cartethyia setup [--non-interactive]
   cartethyia start
+  cartethyia menu
   cartethyia tray
   cartethyia update
 
-The short carte command starts Cartethyia in the system tray.
+carte starts the gateway and opens a menu driven by the arrow keys and Enter:
+open the console, open settings, hide to the background, check for updates, or
+exit. It needs no desktop environment, so it works over SSH and headless.
+carte --tray uses a system-tray icon instead, which needs a graphical session.
 Setup explains Lite (embedded SQLite) and Full (external PostgreSQL), then saves
 configuration under the current user's Cartethyia config directory.
 `;
@@ -123,6 +129,60 @@ function openUrl(url: string): Promise<void> {
     stderr: "ignore",
   });
   return child.exited.then(() => undefined);
+}
+
+/**
+ * A single-select menu driven by the arrow keys and Enter, built on stdin raw
+ * mode so no menu dependency is added. It only reads keys and returns an
+ * index; the caller keeps owning the gateway process.
+ *
+ * Returns -1 when stdin is not a TTY (piped, CI, or a non-interactive run) so
+ * callers can fall back without blocking on input that will never arrive.
+ */
+function chooseFromMenu(title: string, options: readonly string[]): Promise<number> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return Promise.resolve(-1);
+  const { promise, resolve } = Promise.withResolvers<number>();
+  let index = 0;
+
+  const render = (): void => {
+    process.stdout.write(`\u001b[2J\u001b[H${title}\n\n`);
+    options.forEach((option, position) => {
+      const marker = position === index ? "\u2192" : " ";
+      process.stdout.write(`  ${marker} ${option}\n`);
+    });
+    process.stdout.write("\n\u2191\u2193 move \u00b7 Enter choose \u00b7 Esc/q exit\n");
+  };
+  const cleanup = (choice: number): void => {
+    stdin.setRawMode(false);
+    stdin.off("keypress", onKey);
+    stdin.pause();
+    process.stdout.write("\u001b[2J\u001b[H");
+    resolve(choice);
+  };
+  const onKey = (_chunk: unknown, key: { name?: string }): void => {
+    if (key.name === "up") {
+      index = (index - 1 + options.length) % options.length;
+      render();
+      return;
+    }
+    if (key.name === "down") {
+      index = (index + 1) % options.length;
+      render();
+      return;
+    }
+    if (key.name === "return") {
+      cleanup(index);
+      return;
+    }
+    if (key.name === "escape" || key.name === "q") cleanup(-1);
+  };
+
+  stdin.setRawMode(true);
+  stdin.resume();
+  render();
+  stdin.on("keypress", onKey);
+  return promise;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -289,8 +349,73 @@ async function stopTray(tray: SysTray, ready: boolean, exited: boolean): Promise
   if (!tray.killed) tray.process.kill();
 }
 
+/**
+ * The default `carte` experience: start the gateway, then offer an arrow-key
+ * menu. This needs no desktop environment, so it works over SSH, on a headless
+ * box, and on Windows where the tray icon lands in the hidden-icons overflow
+ * and is never seen. `carte --tray` opts into the icon instead.
+ */
+async function startMenu(): Promise<void> {
+  const port = resolvePort();
+  const drainToken = randomBytes(32).toString("hex");
+  const dashboardUrl = `http://127.0.0.1:${port}/console`;
+  const settingsUrl = `${dashboardUrl}/settings`;
+  const currentVersion = await readInstalledVersion();
+
+  const gateway = await startGateway(port, drainToken);
+  let stopping = false;
+  const shutDown = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    await stopGateway(gateway, port, drainToken);
+  };
+  process.once("SIGINT", () => void shutDown());
+  process.once("SIGTERM", () => void shutDown());
+
+  const latest = await readLatestPublishedVersion();
+  const updateLabel =
+    latest !== null && isNewerRelease(currentVersion, latest)
+      ? `Update to ${latest}`
+      : "Check for updates";
+
+  const options = [
+    `Open Console \u00b7 ${dashboardUrl}`,
+    "Settings \u00b7 backup & restore, reset password",
+    "Hide to background and keep running",
+    updateLabel,
+    "Exit",
+  ] as const;
+
+  console.log(`Cartethyia ${currentVersion} is running at ${dashboardUrl}`);
+  for (;;) {
+    const choice = await chooseFromMenu(
+      `Cartethyia ${currentVersion} \u2014 running at ${dashboardUrl}`,
+      options,
+    );
+    if (choice === -1 || choice === 4) break;
+    if (choice === 0) {
+      await openUrl(dashboardUrl);
+      continue;
+    }
+    if (choice === 1) {
+      await openUrl(settingsUrl);
+      continue;
+    }
+    if (choice === 2) {
+      // The gateway is already a detached child, so returning here leaves it
+      // running while this process lets go of the terminal.
+      console.log(`Cartethyia keeps running at ${dashboardUrl}. Stop it with: cartethyia stop`);
+      return;
+    }
+    if (choice === 3) {
+      const code = await npmUpdate();
+      console.log(code === 0 ? "Update finished." : "Update failed.");
+    }
+  }
+  await shutDown();
+}
+
 async function startTray(): Promise<void> {
-  const { resolvePort } = await import("../../src/config/runtime");
   const port = resolvePort();
   const drainToken = randomBytes(32).toString("hex");
   const currentVersion = await readInstalledVersion();
@@ -535,7 +660,7 @@ async function startTray(): Promise<void> {
 async function main(): Promise<void> {
   assertBunVersion();
   const [command] = process.argv.slice(2);
-  if (command === "setup" || command === "start" || command === "tray") {
+  if (command === "setup" || command === "start" || command === "tray" || command === "menu") {
     await loadUserConfig();
   }
 
@@ -547,6 +672,9 @@ async function main(): Promise<void> {
     }
     case "start":
       await import("../../src/main");
+      return;
+    case "menu":
+      await startMenu();
       return;
     case "tray":
       await startTray();

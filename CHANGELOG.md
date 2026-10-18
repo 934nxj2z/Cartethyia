@@ -8,6 +8,25 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.2] — 2026-10-18
+
+### Added
+
+- `carte` now opens an arrow-key menu instead of going straight to a
+  system-tray icon: Open Console, Settings, Hide to background, Check for
+  updates, and Exit. It is built on stdin raw mode, so it adds no menu
+  dependency and works over SSH, on a headless box, and on Windows where the
+  tray icon lands in the hidden-icons overflow and is never seen.
+  `carte --tray` still starts the icon for anyone who prefers it.
+
+### Fixed
+
+- `carte --tray` releases the launching terminal. The Node launcher used to
+  stay alive after the gateway was ready, which kept the shell open; it now
+  exits once the console URL has been shown. On Windows the child is spawned
+  through `cmd /c start "" /b` so it gets its own console group and closing
+  the terminal no longer signals the gateway.
+
 ## [2.3.1] — 2026-10-18
 
 ### Fixed
