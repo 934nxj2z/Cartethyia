@@ -196,7 +196,9 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   const peerAddresses = new WeakMap<Request, string>();
   const serveDashboard = async ({ request }: { request: Request }): Promise<Response> => {
     const pathname = fastPathname(request.url);
-    const result = await staticHandler(pathname);
+    // The client's `accept-encoding` is what decides whether a precompressed
+    // `.gz` sibling can be served instead of the plain asset.
+    const result = await staticHandler(pathname, request.headers.get("accept-encoding"));
     return new Response(result.body ? (result.body as unknown as BodyInit) : null, {
       status: result.status,
       headers: result.headers,
