@@ -394,11 +394,23 @@ dbDescribe("streaming dispatch contract", () => {
       const reader = response.body?.getReader();
       expect(reader).toBeDefined();
       await reader?.read();
+      // A second read has to be *outstanding* for the producer to advance past
+      // `yield START` and reach `markPendingRead()`: the stream is demand-driven
+      // (see "a slow client bounds provider production to stream demand" below),
+      // so the generator parks after each chunk until the next pull. Waiting on
+      // `pendingRead` before issuing that pull deadlocks — the wait is for the
+      // pull's own effect.
+      //
+      // It is deliberately never awaited here and never cancelled: this test
+      // asserts that an *inbound* abort releases the flight on its own, with no
+      // `reader.cancel()` anywhere. Awaiting it would either hang (the provider
+      // is gated) or cancel, and either way the property under test disappears.
+      const stalledRead = reader?.read();
       await pendingRead;
       controller.abort();
       expect(await settle()).toBe(0);
       releaseProvider();
-      await reader?.read();
+      await stalledRead;
       reader?.releaseLock();
     });
 
@@ -504,9 +516,14 @@ dbDescribe("streaming dispatch contract", () => {
       const reader = response.body?.getReader();
       expect(reader).toBeDefined();
       await reader?.read();
+      // Same demand-driven requirement as the stalled-stream test above: the
+      // producer cannot reach `markPendingRead()` until a second pull is
+      // outstanding. That pull is then reused as the one that receives the
+      // typed abort frame, which is what the assertions below read.
+      const stalledRead = reader?.read();
       await pendingRead;
       controller.abort(new GatewayError("deadline_exceeded", 504, "upstream timed out", {}, "upstream"));
-      const result = await reader?.read();
+      const result = await stalledRead;
       const frame = new TextDecoder().decode(result?.value);
       expect(frame).toContain("deadline_exceeded");
       expect(frame).toContain("upstream timed out");
