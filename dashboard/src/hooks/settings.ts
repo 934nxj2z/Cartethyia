@@ -6,7 +6,7 @@ import type {
 } from "../data/contracts";
 import { queryKeys } from "../data/query-keys";
 import { querySignal } from "../data/assert";
-import { DASHBOARD_QUERY_OPTIONS } from "../data/query-policy";
+import { CACHE, DASHBOARD_QUERY_OPTIONS } from "../data/query-policy";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 
@@ -19,6 +19,8 @@ export function useRuntimeSettings() {
         signal: querySignal(context),
       }),
     ...DASHBOARD_QUERY_OPTIONS,
+    // Changes only through the mutation below, which invalidates this key.
+    staleTime: CACHE.effectivelyImmutable,
   });
 }
 

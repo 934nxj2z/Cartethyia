@@ -31,8 +31,10 @@ export interface ModelMetadataPayload {
  * Loads the tenant provider catalog and observes background metadata refreshes.
  *
  * Lazy by design: the cached list renders instantly on revisit and revalidates
- * in the background (60 s freshness + 60 s poll). Mutations invalidate this
- * key, so a longer stale window can never strand a create/update/delete.
+ * in the background (the default 60 s freshness + 60 s poll). Mutations
+ * invalidate this key, so a longer stale window can never strand a
+ * create/update/delete. `staleTime` is left at the shared default — the
+ * explicit override here used to be *above* it, and is now the same value.
  */
 export function useProviders() {
   return useQuery({
@@ -40,7 +42,6 @@ export function useProviders() {
     queryFn: (context) =>
       consoleRequest<unknown>("/providers", { signal: querySignal(context) }).then(assertProviders),
     ...DASHBOARD_QUERY_OPTIONS,
-    staleTime: 60_000,
     gcTime: 600_000,
     refetchInterval: POLL.catalog,
   });
