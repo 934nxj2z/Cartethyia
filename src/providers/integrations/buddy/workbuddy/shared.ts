@@ -7,6 +7,8 @@ import type { CanonicalRequest } from "../../../../protocol/canonical-model";
 import type { ProviderDispatchContext, ProviderDispatchTarget, ProviderId } from "../../../provider-contracts";
 import { resolveInboundSessionId } from "../../../operations/session-resolution";
 import { buddyConversationHeaders } from "../buddy-conversation-headers";
+import { buddyCliHeaders, buddyCliTraceHeaders } from "../buddy-cli-headers";
+import { buddyUserId, resolveBuddyIdentity } from "../buddy-identity";
 import {
   buildWorkBuddyUserAgent,
   getWorkBuddyClientVersion,
@@ -54,13 +56,43 @@ function deriveAccountStableId(accountId: string, purpose: string): string {
  * `X-CodeBuddy-Request` risk gate and the account-scoped device headers.
  * The background client-version monitor keeps this value fresh; dispatch only
  * reads the cached value and never waits on a version endpoint.
+ *
+ * `cliIdentity` selects the reference CLI contract instead. The two are not
+ * variations of one set: the CLI drops every browser header and the device
+ * token, and adds the agent envelope. Left unset, nothing changes.
  */
 export async function workbuddyHeaders(
   context?: ProviderDispatchContext,
   request?: CanonicalRequest,
   domain = WORKBUDDY_DOMAIN,
   clientVersion = getWorkBuddyClientVersion(),
+  cliIdentity?: boolean,
 ): Promise<Record<string, string>> {
+  const conversation = buddyConversationHeaders({
+    ...(resolveInboundSessionId(context, request) === undefined
+      ? {}
+      : { conversationId: resolveInboundSessionId(context, request) }),
+  });
+  const accountId = context?.credential.account_id;
+  if (resolveBuddyIdentity(context, cliIdentity) === "cli") {
+    // The reference CLI: issued by the OpenAI Node SDK, so no browser header
+    // and no device token, and the machine/session device pair does not
+    // exist — only `X-User-Id`, which is `anonymous` without a uid.
+    return {
+      accept: "application/json",
+      "user-agent": `CLI/${getWorkBuddyCliVersion()} CodeBuddy/${getWorkBuddyCliVersion()}`,
+      "x-domain": domain,
+      "x-agent-purpose": "conversation",
+      "x-ide-name": "CLI",
+      "x-ide-type": "CLI",
+      "x-ide-version": getWorkBuddyCliVersion(),
+      "x-product": "SaaS",
+      "x-no-enterprise-id": "1",
+      ...conversation,
+      ...buddyCliTraceHeaders(conversation),
+      ...buddyCliHeaders({ userId: buddyUserId(context) }),
+    };
+  }
   const headers: Record<string, string> = {
     accept: "application/json, text/event-stream",
     "user-agent": buildWorkBuddyUserAgent(clientVersion, getWorkBuddyCliVersion()),
@@ -74,25 +106,21 @@ export async function workbuddyHeaders(
     "x-ide-name": "WorkBuddy",
     "x-ide-type": "WorkBuddy",
     "x-ide-version": clientVersion,
-    "x-product": "WorkBuddy",
+    // Both references send the literal `SaaS` here. `WorkBuddy` was a value
+    // this repo invented; the desktop product name belongs in `x-ide-name`,
+    // and the CN test below compares the two realms against each other rather
+    // than to a hard-coded string.
+    "x-product": "SaaS",
     // Personal international accounts carry no enterprise id: declare it
     // explicitly so upstream risk control does not treat the omission as
     // suspicious.
     "x-no-enterprise-id": "1",
   };
   // The conversation/tracing family the upstream's channel check looks for. A
-  // live request answered `400 · 11128 "conversation id missing"` while carrying
+  // live request answered `400 · 11-128 "conversation id missing"` while carrying
   // only `x-session-id`; the aggregation key below is the one the reference
   // marks mandatory.
-  Object.assign(
-    headers,
-    buddyConversationHeaders({
-      ...(resolveInboundSessionId(context, request) === undefined
-        ? {}
-        : { conversationId: resolveInboundSessionId(context, request) }),
-    }),
-  );
-  const accountId = context?.credential.account_id;
+  Object.assign(headers, conversation);
   if (accountId) {
     headers["x-user-id"] = accountId;
     headers["x-machine-id"] = deriveAccountStableId(accountId, "machine");
@@ -158,13 +186,14 @@ export function workbuddyAdapterConfig(args: {
     candidate: ProviderDispatchTarget,
   ) => void;
   fetchImpl?: typeof fetch;
+  cliIdentity?: boolean;
 }): OpenAICompatibleAdapterConfig {
   return withBearerAuthentication({
     provider_id: args.providerId,
     base_url: args.baseUrl,
     endpoint_paths_by_wire_family: { chat: WORKBUDDY_CHAT_PATH },
     buildExtraHeaders: (context, request) =>
-      workbuddyHeaders(context, request, args.domain ?? WORKBUDDY_DOMAIN),
+      workbuddyHeaders(context, request, args.domain ?? WORKBUDDY_DOMAIN, undefined, args.cliIdentity),
     prePayload: args.prePayload,
     ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
   });

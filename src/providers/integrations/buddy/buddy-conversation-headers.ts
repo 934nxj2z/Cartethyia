@@ -81,6 +81,10 @@ export function buddyConversationHeaders(
     "x-request-id": messageId,
     "x-root-request-id": conversationRequestId,
     "x-trace-id": traceId,
+    // W3C trace context alongside the B3 set below: the upstream reads both,
+    // and every reference request carries `traceparent`, so sending only the
+    // B3 half leaves a header the channel check expects absent.
+    traceparent: `00-${b3TraceId}-${messageId.slice(0, 16)}-01`,
     "x-b3-traceid": b3TraceId,
     "x-b3-spanid": messageId.slice(0, 16),
     "x-b3-sampled": "1",
