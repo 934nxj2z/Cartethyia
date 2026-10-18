@@ -629,7 +629,7 @@ export function DashboardShell({
                     }
                   >
                     <Rocket size={9} className="shrink-0" aria-hidden="true" />
-                    update
+                    {latestTag === undefined ? "update" : `Update v${latestTag}`}
                   </a>
                 ) : null}
               </div>

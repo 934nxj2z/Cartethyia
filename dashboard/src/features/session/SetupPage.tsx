@@ -262,46 +262,38 @@ export default function Setup(): ReactNode {
         <div className="auth-header">
           <div className="auth-logo" aria-hidden="true" />
           <h1 className="auth-title">Cartethyia Console Setup</h1>
-          <p className="auth-desc">
-            {mode === "create"
-              ? "Configure the administrator account for Cartethyia AI Gateway"
-              : "Restore a backup's configuration. A backup carries no accounts, so set the administrator for this install."}
-          </p>
+          {mode === "create" ? (
+            <p className="auth-desc">Configure the administrator account for Cartethyia AI Gateway</p>
+          ) : null}
         </div>
 
-        <div className="flex gap-4 mb-7">
+        <div className="grid grid-cols-2 gap-2 mb-7">
           <Button type="button" variant={mode === "create" ? "primary" : "secondary"} onClick={() => setMode("create")}>
             New account
           </Button>
           <Button type="button" variant={mode === "restore" ? "primary" : "secondary"} onClick={() => setMode("restore")}>
-            Restore backup
+            Restore
           </Button>
         </div>
 
         {mode === "restore" ? (
           <div className="flex flex-col gap-7">
-            <div className="flex items-center gap-2 min-h-10">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => restoreInputRef.current?.click()}
-                disabled={pending || open === null}
-              >
-                Choose file…
-              </Button>
-              <Button
-                type="button"
-                variant="primary"
-                size="sm"
-                disabled={pending || open === null || restoreFile === null}
-                onClick={() => {
-                  if (!restoreFile) return;
-                  void restore(restoreFile);
-                }}
-              >
-                {pending ? "Restoring…" : "Restore backup"}
-              </Button>
+            <div className="flex flex-col gap-2">
+              <span className="text-text-secondary text-caption">Backup file</span>
+              <div className="flex items-center gap-3 rounded-lg border border-border-subtle px-3 py-2.5">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => restoreInputRef.current?.click()}
+                  disabled={pending || open === null}
+                >
+                  Choose file…
+                </Button>
+                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">
+                  {restoreFile?.name ?? "No file chosen"}
+                </span>
+              </div>
             </div>
             <input
               ref={restoreInputRef}
@@ -321,9 +313,8 @@ export default function Setup(): ReactNode {
 
             <div className="flex flex-col gap-3">
               <p className="m-0 text-text-secondary text-caption">
-                A backup holds no sign-in accounts, so restoring one never
-                restores an administrator. Set the account for this install —
-                the file's own passwords are not reused.
+                Backups carry settings only — no logins. Create the administrator
+                for this install.
               </p>
               <Input
                 label="Administrator Username"
@@ -357,6 +348,23 @@ export default function Setup(): ReactNode {
             </div>
 
             {error ? <SetupError message={error} /> : null}
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button type="button" variant="secondary" onClick={() => setMode("create")} disabled={pending}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                disabled={pending || open === null || restoreFile === null}
+                onClick={() => {
+                  if (!restoreFile) return;
+                  void restore(restoreFile);
+                }}
+              >
+                {pending ? "Restoring…" : "Restore this backup"}
+              </Button>
+            </div>
           </div>
         ) : (
         <form onSubmit={submit} className="flex flex-col gap-7">

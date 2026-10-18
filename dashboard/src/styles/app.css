@@ -223,22 +223,30 @@
 
 /* Update badge: a flat pill, no glow. It sits beside the version so an operator
  * sees "an update exists" without the badge reading as an alert. */
+/* The update badge is the one thing in the sidebar that should pull the eye:
+   it is the only row that asks the operator to act. It uses the danger token
+   rather than the accent so it stands out in both themes — the accent is the
+   chrome colour, and a badge in the chrome colour reads as another label. */
 .brand-update-badge {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 0 5px;
+  gap: 3px;
+  padding: 1px 6px;
   border-radius: 6px;
   font-size: 9.5px;
   font-weight: 700;
-  color: var(--accent);
-  background: var(--accent-soft);
+  letter-spacing: 0.02em;
+  color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 14%, transparent);
   text-decoration: none;
-  transition: background var(--dur-micro) var(--ease-spring);
+  transition:
+    background var(--dur-micro) var(--ease-spring),
+    color var(--dur-micro) var(--ease-spring);
 }
 
 .brand-update-badge:hover {
-  background: var(--active-pill);
+  color: var(--accent-foreground);
+  background: var(--status-danger);
 }
 
 /* Navigation Groups */
