@@ -11,8 +11,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chooseFromMenu } from "../../scripts/cli/menu";
-import { ensureDrainToken, readPersistedDrainToken } from "../../scripts/cli/runtime-state";
+import { chooseFromMenu } from "../../scripts/cli/ui/prompt";
+import { ensureDrainToken, readPersistedDrainToken } from "../../scripts/cli/gateway/drain-token";
 
 let configDir: string;
 let originalConfigDir: string | undefined;

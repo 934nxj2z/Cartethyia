@@ -51,8 +51,8 @@
  * `CARTETHYIA_TEST_DATABASE_URL`.
  *
  * ```bash
- * CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/dev/visual-baseline.ts capture
- * CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/dev/visual-baseline.ts compare
+ * CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/qa/visual-baseline.ts capture
+ * CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/qa/visual-baseline.ts compare
  * ```
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

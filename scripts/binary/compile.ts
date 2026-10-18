@@ -22,7 +22,7 @@
  *    first use. The migrations folder is not part of this decision —
  *    `resolveMigrationsFolder()` resolves `<cwd>/migrations` unconditionally.
  *
- * Usage: `bun run scripts/build/binary.ts [--outfile dist/cartethyia]`
+ * Usage: `bun run scripts/binary/compile.ts [--outfile dist/cartethyia]`
  */
 const DEFAULT_OUTFILE = "dist/cartethyia";
 

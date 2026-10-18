@@ -1,15 +1,9 @@
 import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
-import {
-  ENV_PATH,
-  getLocalPlatform,
-  getOsHints,
-  hasPlaceholderSecrets,
-  parseServiceUrl,
-  probeTcpService,
-  readEnvFile,
-} from "../shared/env";
-import type { ProbeResult } from "../shared/env";
-import { resolveDataDir, resolveDbMode, type DbMode } from "../../src/persistence/db-mode";
+import { ENV_PATH, hasPlaceholderSecrets, readEnvFile } from "../support/env";
+import { getLocalPlatform, getOsHints } from "../support/platform";
+import { parseServiceUrl, probeTcpService } from "../support/services";
+import type { ProbeResult } from "../support/services";
+import { resolveDataDir, resolveDbMode, type DbMode } from "../../../src/persistence/db-mode";
 
 interface DoctorConfig {
   envPath: string;
@@ -51,8 +45,8 @@ async function resetLockout(args: readonly string[]): Promise<void> {
   }
   process.env.DATABASE_URL = databaseUrl;
 
-  const { getDb, closeDb } = await import("../../src/persistence/boot");
-  const { consoleLockouts } = await import("../../src/persistence/schema");
+  const { getDb, closeDb } = await import("../../../src/persistence/boot");
+  const { consoleLockouts } = await import("../../../src/persistence/schema");
   const { eq, or } = await import("drizzle-orm");
 
   const db = getDb();
@@ -102,7 +96,8 @@ async function probeReadiness(port: number, timeoutMs: number): Promise<ProbeRes
   }
 }
 
-async function doctor(): Promise<void> {
+/** Runs the health check and the lockout reset; the CLI and `bun run doctor` both call this. */
+export async function doctor(): Promise<void> {
   const config = loadConfig();
 
   const resetIndex = process.argv.indexOf("--reset-lockout");
@@ -252,7 +247,11 @@ async function doctor(): Promise<void> {
   console.log("✅ All systems operational!");
 }
 
-doctor().catch((err) => {
-  console.error("❌ Health check failed:", err);
-  process.exit(1);
-});
+// `bun run doctor` still works: the module is a script when run directly and a
+// command when imported by the CLI.
+if (import.meta.main) {
+  doctor().catch((err) => {
+    console.error("❌ Health check failed:", err);
+    process.exit(1);
+  });
+}

@@ -5,4 +5,4 @@
 // be seen. `carte --tray` still opts into the system-tray icon.
 if (process.argv.length <= 2) process.argv.push("menu");
 else if (process.argv[2] === "--tray") process.argv[2] = "tray";
-require("./cli-launcher.cjs");
+require("./cartethyia.cjs");

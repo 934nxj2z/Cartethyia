@@ -4,23 +4,19 @@ import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createServer } from "node:net";
+import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../support/bun";
 import {
-  MINIMUM_BUN_VERSION,
-  bunVersionAtLeast,
-  detectLocalPostgres,
-  generateCartethyiaEncryptionKey,
-  getLocalPlatform,
-  getOsHints,
-  hasPlaceholderSecrets,
-  mandatoryEnvBody,
-  parseServiceUrl,
-  probeTcpService,
-  readEnvFile,
   ENV_PATH,
   PROJECT_ROOT,
-} from "../shared/env";
-import type { ProbeResult } from "../shared/env";
-import { resolveDataDir, resolveDbMode } from "../../src/persistence/db-mode";
+  generateCartethyiaEncryptionKey,
+  hasPlaceholderSecrets,
+  mandatoryEnvBody,
+  readEnvFile,
+} from "../support/env";
+import { getLocalPlatform, getOsHints } from "../support/platform";
+import { detectLocalPostgres, parseServiceUrl, probeTcpService } from "../support/services";
+import type { ProbeResult } from "../support/services";
+import { resolveDataDir, resolveDbMode } from "../../../src/persistence/db-mode";
 
 async function ask(question: string, defaultValue = ""): Promise<string> {
   const rl = createInterface({ input, output });

@@ -8,6 +8,69 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.6] — 2026-10-18
+
+### Changed
+
+- **`scripts/` is grouped by what ships.** `scripts/cli/` is now the only
+  directory in the npm package's `files` array, so the boundary between "runs on
+  the operator's machine" and "runs in the repository" is visible in the tree
+  instead of in a hand-maintained list. The list had already drifted: it shipped
+  `scripts/operations/restart.ts`, which imports `scripts/build/binary.ts` — a
+  directory that was not shipped, so the file was broken in every published
+  tarball. `tray-assets/` moved into `scripts/cli/tray/assets/` for the same
+  reason: only the CLI ever read it.
+
+- **`scripts/cli/cli.ts` is nine files.** It had grown to 743 lines and twelve
+  functions covering dispatch, the gateway lifecycle, the menu, the tray, and
+  the admin calls, with `startMenu` alone at 203 lines. Dispatch is `main.ts`;
+  one file per subcommand under `command/`; the gateway lifecycle under
+  `gateway/`; the enquirer prompts, wordmark, and background spawn under `ui/`;
+  and the helpers under `support/`.
+
+- **`scripts/shared/env.ts` is four files.** It held the dotenv reader, the TCP
+  probe, the Bun version check, the PostgreSQL detector, and the per-OS hints in
+  one 269-line module, so `doctor` pulled in the dotenv parser to ask a question
+  about a socket. Now `support/env.ts`, `support/services.ts`, `support/bun.ts`,
+  and `support/platform.ts`.
+
+- **Directory names say what they hold.** `build/` and the two operations that
+  run the compiled artifact are `binary/`; the browser automation under `dev/`
+  is `qa/`, leaving `dev/` for the dev server; `test/` is `ci/`, which stops it
+  from reading as the repository's own `test/` directory. `build/binary.ts` is
+  `binary/compile.ts`, which is what it does.
+
+### Added
+
+- **`cartethyia doctor`.** `doctor.ts` shipped in the package but no `case` in
+  the dispatcher reached it, so the command answered "Unknown command". It is
+  wired now, and `bun run doctor` still works.
+
+### Fixed
+
+- **`carte --tray` reports success instead of timing out.** The tray is spawned
+  detached with no stdio, so it reports readiness through a one-shot signal
+  file the launcher polls. Nothing wrote that file: the 2.4.3 tray refactor
+  dropped the call while keeping the waiter, so every `carte --tray` waited out
+  its 60 s deadline and then reported that the tray had failed — while the tray
+  was running.
+
+- **The tray is spawned with no console window.** The launcher still used
+  `cmd /c start "" /b`, and `cmd` is a console application: it allocated the
+  console the whole change was meant to avoid, and it also exited immediately
+  with code 0, which the launcher read as "the tray died". It now goes through
+  `wscript.exe` and the same hidden-window VBS that "Hide to tray" uses.
+
+- **`carte` exits in 640 ms instead of 30.7 s.** The graceful-drain wait in
+  `gateway/stop.ts` arms a 30 s timeout and never clears it, so the event loop
+  stayed alive for the full 30 s after the gateway was already gone.
+
+- **The launcher resolves the package root and Bun correctly from `bin/`.**
+  Moving the launchers one level deeper left `packageRoot` pointing at
+  `scripts/`, and the launcher runs under Node, so `process.execPath` is
+  `node.exe` rather than the Bun the child needs. Bun is now resolved from
+  `PATH` (or `CARTETHYIA_BUN`).
+
 ## [2.4.5] — 2026-10-18
 
 ### Fixed

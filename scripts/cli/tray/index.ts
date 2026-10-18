@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import SysTray from "systray2";
-import { resolvePackagePath } from "../../src/config/package-paths";
+import { resolvePackagePath } from "../../../src/config/package-paths";
 
 /**
  * One tray row. `action` rows report their id on click; separators are drawn
@@ -66,7 +66,7 @@ class WindowsTray implements Tray {
         "-OutputFormat",
         "Text",
         "-File",
-        resolvePackagePath("scripts", "cli", "tray.ps1"),
+        resolvePackagePath("scripts", "cli", "tray", "windows.ps1"),
         "-IconPath",
         options.iconPath,
         "-Tooltip",
@@ -112,7 +112,7 @@ class WindowsTray implements Tray {
     let index = 0;
     for (const item of options.items) {
       if (item.kind === "separator") {
-        this.#send({ action: "add-item", index, title: "-", enabled: false });
+        this.#send({ action: "add-separator", index });
         index += 1;
         continue;
       }

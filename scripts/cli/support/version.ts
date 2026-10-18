@@ -1,4 +1,4 @@
-import { resolvePackagePath } from "../../src/config/package-paths";
+import { resolvePackagePath } from "../../../src/config/package-paths";
 
 /** Reads the version from the installed package manifest. */
 export async function readInstalledVersion(): Promise<string> {

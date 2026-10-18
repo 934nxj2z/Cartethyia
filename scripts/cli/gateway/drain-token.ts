@@ -4,11 +4,11 @@ import { join } from "node:path";
 /**
  * The install's drain token, persisted in the config directory.
  *
- * Why it persists instead of being generated per run: `cartethyia stop` runs in
- * a different process, possibly minutes later, and the token is the only way it
- * can authenticate to a gateway it did not start. A token regenerated on each
- * start could never match the gateway that is actually running, which is why
- * `stop` reported "no gateway found" or a 401 on a live gateway.
+ * Why it persists instead of being generated per run: the tray that "Hide to
+ * tray" starts runs in a different process and drains the gateway through the
+ * loopback endpoint, so the token has to match across processes. A token
+ * regenerated on each start could never authenticate against a gateway another
+ * process had started.
  *
  * It is kept out of `.env` on purpose: it authorises a shutdown, so it belongs
  * in a machine-written file the operator never hand-edits and never commits.

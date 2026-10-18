@@ -53,6 +53,14 @@ function Add-MenuItem($index, $title, $enabled) {
   $script:items += $item
 }
 
+# A real ToolStripSeparator draws the divider. Sending a "-" title instead
+# renders a literal dash row, which is what the menu showed before.
+function Add-MenuSeparator($index) {
+  $item = New-Object System.Windows.Forms.ToolStripSeparator
+  $script:menu.Items.Add($item) | Out-Null
+  $script:items += $item
+}
+
 function Update-MenuItem($index, $title, $enabled) {
   if ($index -lt $script:items.Count) {
     $script:items[$index].Text = $title
@@ -78,6 +86,7 @@ $script:timer.Add_Tick({
       $cmd = $line | ConvertFrom-Json
       switch ($cmd.action) {
         "add-item"    { Add-MenuItem $cmd.index $cmd.title $cmd.enabled }
+        "add-separator" { Add-MenuSeparator $cmd.index }
         "update-item" { Update-MenuItem $cmd.index $cmd.title $cmd.enabled }
         "set-tooltip" { Set-Tooltip $cmd.text }
         "ready"       { Write-Event @{ type = "ready" } }

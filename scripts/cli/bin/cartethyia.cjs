@@ -7,8 +7,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const packageRoot = path.resolve(__dirname, "..", "..");
-const cliPath = path.join(packageRoot, "scripts", "cli", "cli.ts");
+const packageRoot = path.resolve(__dirname, "..", "..", "..");
+const cliPath = path.join(packageRoot, "scripts", "cli", "main.ts");
 const configDir = process.env.CARTETHYIA_CONFIG_DIR || (
   process.platform === "win32"
     ? path.join(process.env.APPDATA || os.homedir(), "Cartethyia")
@@ -17,28 +17,55 @@ const configDir = process.env.CARTETHYIA_CONFIG_DIR || (
       : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "Cartethyia")
 );
 const trayMode = process.argv[2] === "tray";
+// The launcher itself runs under Node, so `process.execPath` is node.exe — not
+// the Bun the child needs. Resolve bun from PATH instead; WScript.Shell does
+// not inherit this process's environment, so the child needs an absolute path.
+function resolveBunPath() {
+  if (process.env.CARTETHYIA_BUN) return process.env.CARTETHYIA_BUN;
+  const name = process.platform === "win32" ? "bun.exe" : "bun";
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {}
+  }
+  return name;
+}
+
 const startupSignalPath = trayMode
   ? path.join(os.tmpdir(), `cartethyia-tray-${process.pid}-${randomUUID()}.json`)
   : null;
 let spawnError;
-// On Windows, `cmd /c start "" /b` gives bun its own console group so the
-// launching terminal can close without signalling the gateway. Elsewhere
-// `detached: true` is enough. Either way the child is unref'd below so the
-// launcher can exit without taking the gateway down with it.
+// On Windows the tray must start with no console at all, and neither
+// `detached: true` nor `windowsHide: true` achieves that: a console-subsystem
+// child of a window-less parent still allocates a console, and inside Windows
+// Terminal the tab is already on screen before a flag can take effect
+// (measured). `wscript.exe` is GUI-subsystem, so it never allocates one, and a
+// child launched from it with window style 0 inherits that. Elsewhere
+// `detached: true` is enough.
 const useWindowsDetach = process.platform === "win32" && trayMode;
+const hiddenLauncher = path.join(packageRoot, "scripts", "cli", "tray", "hidden-window.vbs");
 const child = useWindowsDetach
-  ? spawn("cmd", ["/c", "start", "", "/b", "bun", "run", cliPath, ...process.argv.slice(2)], {
-      cwd: packageRoot,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      env: {
-        ...process.env,
-        CARTETHYIA_CONFIG_DIR: configDir,
-        CARTETHYIA_TRAY_STARTUP_SIGNAL: startupSignalPath,
+  ? spawn(
+      "wscript.exe",
+      // Absolute path, not "bun": the VBS runs through WScript.Shell, which
+      // does not inherit this process's PATH additions and resolves a bare
+      // name against the system PATH only.
+      ["//nologo", hiddenLauncher, resolveBunPath(), "run", cliPath, ...process.argv.slice(2)],
+      {
+        cwd: packageRoot,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: {
+          ...process.env,
+          CARTETHYIA_CONFIG_DIR: configDir,
+          CARTETHYIA_TRAY_STARTUP_SIGNAL: startupSignalPath,
+        },
       },
-    })
-  : spawn("bun", ["run", cliPath, ...process.argv.slice(2)], {
+    )
+  : spawn(resolveBunPath(), ["run", cliPath, ...process.argv.slice(2)], {
       cwd: packageRoot,
       detached: trayMode,
       stdio: trayMode ? "ignore" : "inherit",
@@ -82,7 +109,7 @@ if (trayMode) {
           : `the process exited without a message (code ${child.exitCode ?? "unknown"})`;
       console.error(`Cartethyia failed to start: ${detail}`);
       console.error(
-        "If another Cartethyia is already running on this port, stop it with `cartethyia stop` first.",
+        "If another Cartethyia is already running on this port, stop the terminal that started it first.",
       );
       process.exitCode = 1;
       if (child.exitCode === null) child.kill();
@@ -119,9 +146,15 @@ if (trayMode) {
     }
     setTimeout(poll, 150);
   };
-  child.once("exit", (code, signal) => {
-    if (!settled) setTimeout(() => finish(new Error(`the tray process exited before readiness (code ${code ?? signal ?? "unknown"})`)), 250);
-  });
+  // On Windows the spawned process is `wscript.exe`, which hands off to the
+  // tray and exits immediately — a successful handoff, not a failed start. Only
+  // a direct spawn's exit says anything about the tray, so the deadline covers
+  // the handoff case and this guard covers the direct one.
+  if (!useWindowsDetach) {
+    child.once("exit", (code, signal) => {
+      if (!settled) setTimeout(() => finish(new Error(`the tray process exited before readiness (code ${code ?? signal ?? "unknown"})`)), 250);
+    });
+  }
   poll();
 } else {
   child.once("exit", (code, signal) => {

@@ -15,7 +15,7 @@
  *   PORT                    gateway port (default 12800)
  *   DRAIN_WAIT_MS           how long to wait for the drain to finish (default 30000)
  */
-import { compiledBinaryPath } from "../build/binary";
+import { compiledBinaryPath } from "./compile";
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];

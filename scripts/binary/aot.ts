@@ -6,7 +6,7 @@
  * build time. The precompiled result is loaded at runtime, eliminating
  * repeated compilation on startup.
  *
- * Usage: bun run scripts/build/aot.ts
+ * Usage: bun run scripts/binary/aot.ts
  * Output: dist/ with compiled artifact ready for Bun.build --compile
  */
 
@@ -83,7 +83,7 @@ export async function buildAOT(
   // Substituted through `define` rather than by assigning `process.env`, because
   // this module is imported by tests that run in the same process as everything
   // else — mutating the environment here would flip `NODE_ENV` for every later
-  // suite in that process. `scripts/build/binary.ts` passes the same define.
+  // suite in that process. `scripts/binary/compile.ts` passes the same define.
   try {
     const result = await buildFn({
       entrypoints: ["src/main.ts"],

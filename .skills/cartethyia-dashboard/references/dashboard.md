@@ -18,7 +18,7 @@ The current inventory:
 Order of work, so a step never lands blind:
 
 1. `dashboard/test/style-guard.test.ts` + `dashboard/style-guard.json` hold the ratchet.
-2. `scripts/dev/visual-baseline.ts` covers the landing page and a selected set
+2. `scripts/qa/visual-baseline.ts` covers the landing page and a selected set
    of public and authenticated console routes (not every dashboard route): it builds the
    dashboard, boots the real gateway (serving the built dist and `/console/api`
    on one origin), signs in through the real form (`admin`; password from
@@ -50,7 +50,7 @@ Order of work, so a step never lands blind:
    in the same commit.
 
 Verification per step: `bun run dashboard:typecheck`, `bun run dashboard:test`,
-and `CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/dev/visual-baseline.ts
+and `CARTETHYIA_DEV_ADMIN_PASSWORD=… bun scripts/qa/visual-baseline.ts
 compare` (which must stay green while a step only re-expresses styling, and is
 re-captured in the scale-normalization step that intentionally changes pixels).
 
@@ -96,11 +96,11 @@ Three things worth knowing before it looks broken:
   `--idle-timeout`. Each `--session` is an isolated browser with its own
   cookies, so a named session would leave the agent's own unfangled commands
   signed out; the CLI's default idle timeout is one hour, which is what an
-  interactive session wants. (`scripts/dev/visual-baseline.ts` does the opposite
+  interactive session wants. (`scripts/qa/visual-baseline.ts` does the opposite
   on purpose — it owns its browser start to finish.)
 - **A fresh dev database lands on `/console/setup`, not `/console/login`**, and
   the wizard is the only real way an account comes to exist. `signInToConsole`
-  in `scripts/dev/console-auth.ts` resolves all three terminal states
+  in `scripts/qa/console-auth.ts` resolves all three terminal states
   (`setup` / `login` / already-`shell`), which is why re-running the command is
   safe and a no-op.
 - **5173 serves `dashboard/src` with HMR; 12800 serves the built bundle** from
@@ -108,7 +108,7 @@ Three things worth knowing before it looks broken:
   command defaults to 5173 and takes an origin argument for the other.
 
 Sign-in, credential resolution, and the `agent-browser` CLI plumbing live in
-`scripts/dev/console-auth.ts`, shared with `visual-baseline.ts` so there is one
+`scripts/qa/console-auth.ts`, shared with `visual-baseline.ts` so there is one
 implementation. No production code is touched and no auth gate is weakened: it
 is the same form an operator fills, reached with a credential from the
 environment.
