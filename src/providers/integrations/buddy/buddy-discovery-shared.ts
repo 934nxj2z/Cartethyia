@@ -37,6 +37,18 @@ export const BUDDY_CN_MODELS_PATH = "/console/enterprises/personal/models" as co
  */
 export const BUDDY_INTL_MODELS_PATH = "/v2/enterprises/personal/models" as const;
 
+/**
+ * Remote config path, answered on every realm's chat host.
+ *
+ * Both reference gateways treat this as the primary model catalog and the
+ * personal-models paths above as the narrower fallback: `/v3/config` carries
+ * the same `{ code, msg, data: { models, agents } }` envelope plus the
+ * per-product rosters the personal path does not always publish. It is tried
+ * first, and a failure falls through to the path the caller already passes, so
+ * a host that does not answer it behaves exactly as it does today.
+ */
+export const BUDDY_CONFIG_PATH = "/v3/config" as const;
+
 /** Envelope code the console directory answers on success. */
 const BUDDY_OK_CODE = 0;
 
@@ -92,13 +104,33 @@ export async function fetchBuddyDirectoryModels(args: {
   readonly fetcher?: typeof fetch | undefined;
 }): Promise<readonly ModelDefinition[] | null> {
   const fetcher = args.fetcher ?? globalThis.fetch;
+  const primary = await fetchBuddyDirectoryOnce(args, fetcher, BUDDY_CONFIG_PATH);
+  if (primary !== null) return primary;
+  // Both references rank `/v3/config` above the personal-models path, but this
+  // repo has only ever called the latter, so the fallback keeps today's
+  // behaviour intact for a host that answers one and not the other.
+  return await fetchBuddyDirectoryOnce(args, fetcher, args.modelsPath);
+}
+
+/** Reads one directory path; `null` on any transport, status, or shape miss. */
+async function fetchBuddyDirectoryOnce(
+  args: {
+    readonly siteUrl: string;
+    readonly providerId: string;
+    readonly credential: string;
+    readonly endpoint: string | undefined;
+    readonly signal?: AbortSignal | undefined;
+  },
+  fetcher: typeof fetch,
+  path: string,
+): Promise<readonly ModelDefinition[] | null> {
   // The directory scores by account: an access token's `sub` is the uid. An
   // opaque API key carries no identity, and the endpoint still answers for it,
   // so the header is declared absent rather than guessed.
   const uid = buddyAccountUid(args.credential);
   let response: Response;
   try {
-    response = await fetcher(`${siteOrigin(args.siteUrl)}${args.modelsPath}`, {
+    response = await fetcher(`${siteOrigin(args.siteUrl)}${path}`, {
       method: "GET",
       headers: {
         accept: "application/json",

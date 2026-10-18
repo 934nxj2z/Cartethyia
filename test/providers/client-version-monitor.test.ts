@@ -47,7 +47,10 @@ describe("client version monitor snapshot", () => {
       expect(getCodeBuddyVersion()).toBe(international);
       expect(getCodeBuddyCnVersion()).toBe(cn);
       expect(buildCodeBuddyUserAgent("IDE")).toBe(`IDE/${international} CodeBuddy/${international}`);
-      expect(buildCodeBuddyUserAgent("CLI")).toBe(`CLI/${cn} CodeBuddy/${cn}`);
+      // Both identities carry the CLI *package* version. The CN pin is the CN
+      // desktop build, so a CLI claiming it is not a client either reference
+      // can produce — the CN version belongs in `X-IDE-Version`, not the UA.
+      expect(buildCodeBuddyUserAgent("CLI")).toBe(`CLI/${international} CodeBuddy/${international}`);
     } finally {
       _resetCodeBuddyVersionCache();
       _resetCodeBuddyCnVersionCache();

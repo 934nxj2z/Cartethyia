@@ -427,7 +427,9 @@ describe("Buddy upstream protocol alignment", () => {
     const result = await fetchWorkBuddyCnQuota("token", fetcher);
 
     expect(result.source).toBe("workbuddycn");
-    expect(capturedUrl).toBe("https://www.workbuddy.cn/v2/billing/meter/get-user-resource");
+    // The reference bills the CN realm on `www.codebuddy.cn`; `X-Domain` stays
+    // the domain recorded at login, so changing the host must not move it.
+    expect(capturedUrl).toBe("https://www.codebuddy.cn/v2/billing/meter/get-user-resource");
     expect(capturedHeaders?.get("x-domain")).toBe("www.workbuddy.cn");
     expect(capturedHeaders?.get("user-agent")).toContain("WorkBuddy/5.8.3.41334564");
   });

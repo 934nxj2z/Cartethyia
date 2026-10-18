@@ -5,7 +5,7 @@ import type { DiscoveryInput } from "../../../discovery/discovery-types";
 import type { ModelDefinition } from "../../../provider-model-definition";
 import { providerBaseUrl } from "../../../provider-metadata";
 import { getWorkBuddyCnClientVersion } from "../../../operations/client-versions";
-import { BUDDY_INTL_MODELS_PATH, fetchBuddyDirectoryModels } from "../buddy-discovery-shared";
+import { BUDDY_CN_MODELS_PATH, fetchBuddyDirectoryModels } from "../buddy-discovery-shared";
 import { CODEBUDDY_CN_MODELS } from "../codebuddy/cn-provider";
 import { workbuddyPrePayload, WORKBUDDY_SYSTEM_PROMPT } from "./provider";
 import { workbuddyAdapterConfig, workbuddyHeaders, WORKBUDDY_CHAT_PATH } from "./shared";
@@ -28,7 +28,10 @@ export async function discoverWorkBuddyCnModels(
     siteUrl: WORKBUDDY_CN_BASE_URL,
     providerId: WORKBUDDY_CN_PROVIDER_ID,
     credential: input.credential,
-    modelsPath: BUDDY_INTL_MODELS_PATH,
+    // The CN host answers the `/console/…` directory, exactly like the CodeBuddy
+    // CN host does; the international path was inherited from the intl provider
+    // and the CN edge answers it with a 500 rather than a 404.
+    modelsPath: BUDDY_CN_MODELS_PATH,
     endpoint: WORKBUDDY_CHAT_PATH,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.fetcher ? { fetcher: input.fetcher } : {}),

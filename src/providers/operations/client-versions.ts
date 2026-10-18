@@ -525,9 +525,19 @@ export const getKimiCliVersion = accessor("kimiCli").get;
 
 export const getCodeBuddyVersion = accessor("codebuddy").get;
 export const getCodeBuddyCnVersion = accessor("codebuddyCn").get;
+/**
+ * The CodeBuddy User-Agent.
+ *
+ * Both identities share the CLI *package* version, which is why `codebuddy`
+ * (the npm `@tencent-ai/codebuddy-code` pin, `2.168.2` — the value both
+ * references use for CLI) is the version for each. `codebuddyCn` is the CN
+ * *desktop* build (`4.12.2.…`), and using it here produced
+ * `CLI/4.12.2.41207131 CodeBuddy/4.12.2.41207131` — a CLI claiming a desktop
+ * version, which no official client emits.
+ */
 export function buildCodeBuddyUserAgent(
   identity: "IDE" | "CLI",
-  version = identity === "CLI" ? getCodeBuddyCnVersion() : getCodeBuddyVersion(),
+  version = getCodeBuddyVersion(),
 ): string {
   return `${identity}/${version} CodeBuddy/${version}`;
 }

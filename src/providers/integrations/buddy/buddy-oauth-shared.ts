@@ -280,7 +280,43 @@ export class BuddyOAuthClient extends OAuthDeviceFlow {
         reason: `${this.#variant.providerId} token response omitted accessToken`,
       };
     }
-    return { status: "complete", result: tokenResult(this.#variant, payload) };
+    // The profile nickname is a second, authorized request the reference makes
+    // once the token lands — the JWT carries the email but not always a
+    // display name. Best-effort by design: a login must not fail because the
+    // profile endpoint was unreachable, so every miss falls back to the label
+    // the token itself yields.
+    const nickname = await this.fetchAccountNickname(deviceAuthId, access);
+    if (nickname === undefined) return { status: "complete", result: tokenResult(this.#variant, payload) };
+    const result = tokenResult(this.#variant, payload);
+    return {
+      status: "complete",
+      result: { ...result, accountLabel: result.accountLabel ?? nickname },
+    };
+  }
+
+  /** Reads the account profile nickname, or `undefined` on any miss. */
+  private async fetchAccountNickname(
+    deviceAuthId: string,
+    accessToken: string,
+  ): Promise<string | undefined> {
+    try {
+      // Both references call `/v2/plugin/login/account` with the token after
+      // the poll succeeds; the poll URL is the same versioned plugin root, so
+      // the profile path is derived from it rather than declared per variant.
+      const url = `${this.#variant.devicePollUrl.replace("/plugin/auth/token", "/plugin/login/account")}?state=${encodeURIComponent(deviceAuthId)}`;
+      const response = await this.fetchFn(url, {
+        method: "GET",
+        headers: {
+          ...(await devicePollHeaders(this.#variant)),
+          authorization: `Bearer ${accessToken}`,
+        },
+      });
+      if (!response.ok) return undefined;
+      const profile = buddyResponseData((await response.json()) as unknown);
+      return nonEmptyTrimmedString(profile?.nickname);
+    } catch {
+      return undefined;
+    }
   }
 
   override async refresh(refreshToken: string, signal?: AbortSignal): Promise<OAuthTokenRefreshResult> {
