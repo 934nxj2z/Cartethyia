@@ -15,7 +15,15 @@ function useStoredFlag(key: string, event: string): { readonly enabled: boolean;
   }, []);
 
   const setEnabled = (next: boolean) => {
-    localStorage.setItem(key, next ? "1" : "0");
+    // Guarded like every other storage writer in the app: Safari private mode
+    // and a full quota both throw on `setItem`, and an uncaught throw here
+    // would propagate out of the toggle's click handler. The in-memory flag is
+    // set either way, so the toggle still works for this session.
+    try {
+      localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      // Nothing to recover: this session's own state is already correct.
+    }
     window.dispatchEvent(new Event(event));
   };
 

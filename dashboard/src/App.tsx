@@ -7,7 +7,7 @@ import { DashboardShell } from "./apps/console/shell";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { lazyWithRetry } from "./lib/lazy-retry";
 import { consoleRequest, fetchSessionUser, setSessionTransitionListener } from "./data/api";
-import { queryClient } from "./data/query-client";
+import { clearPersistedCache, queryClient } from "./data/query-client";
 import { queryKeys } from "./data/query-keys";
 import type { SessionUser } from "./data/contracts";
 
@@ -57,8 +57,11 @@ function SessionTransitionBridge(): ReactNode {
   useEffect(() => {
     setSessionTransitionListener((kind) => {
       // The session is unusable: drop every cached tenant view so the next
-      // sign-in never renders the previous session's data.
+      // sign-in never renders the previous session's data. `clear()` empties
+      // memory only; the persisted snapshot is dropped with it, or a reload
+      // would rehydrate the previous tenant's catalog from disk.
       queryClient.clear();
+      clearPersistedCache();
       if (kind === "banned") {
         navigate("/banned", { replace: true });
         return;

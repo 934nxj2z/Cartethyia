@@ -32,7 +32,7 @@ import { BackgroundLayer } from "../../features/customization/BackgroundLayer";
 import { applyCustomization, readCustomizationSettings } from "../../features/customization/settings";
 import { consoleRequest } from "../../data/api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { queryClient } from "../../data/query-client";
+import { clearPersistedCache, queryClient } from "../../data/query-client";
 import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
@@ -566,8 +566,10 @@ export function DashboardShell({
       await consoleRequest<void>("/auth/logout", { method: "POST" });
     } finally {
       // Drop every cached tenant view before leaving so the next login
-      // never renders the previous tenant's data.
+      // never renders the previous tenant's data — from memory and from the
+      // persisted snapshot, which `clear()` does not touch.
       queryClient.clear();
+      clearPersistedCache();
       navigate("/login", { replace: true });
     }
   };
