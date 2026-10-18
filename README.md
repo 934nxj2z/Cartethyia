@@ -44,9 +44,6 @@ forwarders: [Why Cartethyia](documentation/why-cartethyia.md).
 One install, one console: watch traffic land, watch accounts stay healthy,
 and change routing without restarting anything.
 
-These are real screens from a running gateway — not mockups. Each pair is one
-operator job, start to finish.
-
 <table>
 <tr>
 <td align="center"><img src="documentation/assets/screenshots/overview.png" width="100%" alt="Overview" /><br /><b>Overview</b><br /><sub>Health of the whole install at a glance</sub></td>
