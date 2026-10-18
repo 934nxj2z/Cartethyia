@@ -39,6 +39,16 @@ Full install guide, modes, Docker, VPS, systemd, and the one-shot script:
 Full list, with the custom-built capabilities and how they differ from plain
 forwarders: [Why Cartethyia](documentation/why-cartethyia.md).
 
+## <img src="https://api.iconify.design/lucide/image.svg?color=%238b949e" width="20" height="20" alt=""> Showcase
+
+The console that ships with the gateway — what an operator actually looks at.
+
+<img src="documentation/assets/screenshots/overview.png" width="49%" alt="Overview" /> <img src="documentation/assets/screenshots/usage.png" width="49%" alt="Usage" />
+
+<img src="documentation/assets/screenshots/provider.png" width="49%" alt="Provider detail" /> <img src="documentation/assets/screenshots/model-lab.png" width="49%" alt="Model Lab" />
+
+<img src="documentation/assets/screenshots/customization.png" width="49%" alt="Customization" /> <img src="documentation/assets/screenshots/settings.png" width="49%" alt="Settings" />
+
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 
 
