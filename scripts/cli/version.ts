@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
 import { resolvePackagePath } from "../../src/config/package-paths";
 
 /** Reads the version from the installed package manifest. */
@@ -36,31 +34,4 @@ export async function readLatestPublishedVersion(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Runs `npm install --global cartethyia@latest`. On Windows npm is a shell
- * script, so it has to go through cmd.exe rather than being spawned directly.
- */
-export function npmUpdate(): Promise<number> {
-  return new Promise((resolveExit) => {
-    const command = process.platform === "win32" ? "cmd.exe" : "npm";
-    const args =
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", "npm install --global cartethyia@latest"]
-        : ["install", "--global", "cartethyia@latest"];
-    let child;
-    try {
-      child = spawn(command, args, { cwd: tmpdir(), stdio: "inherit" });
-    } catch {
-      console.error("Could not start npm. Install Node.js with npm, then retry the update.");
-      resolveExit(1);
-      return;
-    }
-    child.once("error", () => {
-      console.error("Could not start npm. Install Node.js with npm, then retry the update.");
-      resolveExit(1);
-    });
-    child.once("exit", (code) => resolveExit(code ?? 1));
-  });
 }

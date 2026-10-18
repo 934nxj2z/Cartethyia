@@ -9,7 +9,7 @@ import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
 import { chooseFromMenu, confirmByTyping, confirmStep } from "./menu";
 import { ensureDrainToken, readPersistedDrainToken } from "./runtime-state";
 import { createTray } from "./tray";
-import { npmUpdate, readInstalledVersion, readLatestPublishedVersion } from "./version";
+import { readInstalledVersion, readLatestPublishedVersion } from "./version";
 import { renderWordmark } from "./wordmark";
 
 process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
@@ -356,23 +356,22 @@ async function startMenu(): Promise<void> {
       async () => openUrl(repositoryUrl),
       async () => {
         if (upToDate) return;
-        // npm cannot replace the package directory while a process is running
-        // from it: on Windows the rename fails with EBUSY and npm exits 14.
-        // The gateway has to be stopped before the install, not after.
-        console.log("Stopping the gateway so npm can replace its files…");
+        // npm cannot replace this package's directory while this process is
+        // running out of it: on Windows the rename fails with EBUSY and npm
+        // exits 14. Even with the gateway stopped, the CLI itself is executing
+        // from that directory, so an in-process install can never succeed.
+        // Print the command and exit, the way 9router does.
         await shutDown();
-        const code = await npmUpdate();
-        if (code !== 0) {
-          console.log(`Update failed (npm exited ${code}). Restarting the current version.`);
-          const restored = await startGateway(port, drainToken);
-          restored.unref();
-          return;
-        }
-        const restarted = await startGateway(port, drainToken);
-        restarted.unref();
-        const installed = await readInstalledVersion();
-        console.log(`Cartethyia updated and restarted on ${installed} at ${dashboardUrl}`);
-        latestVersion = await readLatestPublishedVersion();
+        console.log("");
+        console.log(`Update available: ${currentVersion} \u2192 ${latestVersion}`);
+        console.log("");
+        console.log("Run this now that Cartethyia has stopped:");
+        console.log("");
+        console.log(`   ${updateCommand()}`);
+        console.log("");
+        running = false;
+        process.exitCode = 0;
+        return;
       },
       async () => {
         // Start a detached `tray` process that owns the gateway from scratch,
@@ -436,6 +435,11 @@ async function startMenu(): Promise<void> {
  * connection and the schema is dialect-dependent, so reading the tables from
  * this process would need a second implementation of both.
  */
+/** The command an operator runs to update, printed instead of run in-process. */
+function updateCommand(): string {
+  return "npm install --global cartethyia@latest --prefer-online";
+}
+
 async function exportBackup(
   port: number,
   token: string,
@@ -631,26 +635,20 @@ async function startTray(): Promise<void> {
   const runUpdate = async (): Promise<void> => {
     if (busy) return;
     busy = true;
-    // npm cannot replace the package directory while a process is running from
-    // it: on Windows the rename fails with EBUSY and npm exits 14. Stop first.
-    tray.update("update", "Stopping to update\u2026", false);
-    const current = gateway;
-    gateway = null;
-    if (current) await stopGateway(current, port, drainToken);
-
-    tray.update("update", "Updating Cartethyia\u2026", false);
-    const code = await npmUpdate();
-    if (code !== 0) {
-      gateway = await startGateway(port, drainToken);
-      busy = false;
-      tray.update("update", `Update failed (npm ${code}) \u2014 retry`, true);
-      return;
-    }
-    gateway = await startGateway(port, drainToken);
-    busy = false;
-    const installed = await readInstalledVersion();
-    tray.update("update", `Cartethyia ${installed} \u00b7 up to date`, false);
-    console.log(`Cartethyia updated and restarted on ${installed} at ${dashboardUrl}`);
+    // npm cannot replace this package's directory while this process is
+    // running out of it: on Windows the rename fails with EBUSY and npm exits
+    // 14, and stopping only the gateway is not enough because the tray itself
+    // is executing from that directory. Stop everything and print the command.
+    const latest = await readLatestPublishedVersion();
+    await close();
+    console.log("");
+    console.log(`Update available: ${currentVersion} \u2192 ${latest ?? "latest"}`);
+    console.log("");
+    console.log("Run this now that Cartethyia has stopped:");
+    console.log("");
+    console.log(`   ${updateCommand()}`);
+    console.log("");
+    process.exit(0);
   };
 
   async function handleSelect(id: string): Promise<void> {
@@ -742,9 +740,16 @@ async function main(): Promise<void> {
       process.exitCode = await stopRunningGateway();
       return;
     case "update": {
-      const code = await npmUpdate();
-      if (code !== 0) process.exitCode = code;
-      else console.log("Cartethyia is up to date.");
+      // Running the install from here can never work: this process is itself
+      // executing out of the package directory npm would have to rename, and on
+      // Windows that rename fails with EBUSY. Stop any running gateway and print
+      // the command instead.
+      process.exitCode = await stopRunningGateway();
+      console.log("");
+      console.log("Now run:");
+      console.log("");
+      console.log(`   ${updateCommand()}`);
+      console.log("");
       return;
     }
     case "--help":

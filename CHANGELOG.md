@@ -8,6 +8,32 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.5] — 2026-10-18
+
+### Fixed
+
+- **Update prints the command instead of failing with EBUSY.** An in-process
+  `npm install --global` can never succeed: the process running the install is
+  itself executing out of the package directory npm has to rename, and on
+  Windows that rename fails with `EBUSY` and npm exits `14`. Stopping the
+  gateway was not enough, because the CLI and the tray still run from that
+  directory.
+
+  Update now stops everything and prints the command to run, which is what
+  9router does:
+
+  ```text
+  Update available: 2.4.4 → 2.4.5
+
+  Run this now that Cartethyia has stopped:
+
+     npm install --global cartethyia@latest --prefer-online
+  ```
+
+  `cartethyia update` behaves the same way. `npmUpdate()` is deleted: it could
+  only ever fail, and reporting its exit code as "update finished" is what made
+  a failed install look successful.
+
 ## [2.4.4] — 2026-10-18
 
 ### Fixed
