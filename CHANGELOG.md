@@ -487,7 +487,7 @@ Released 2026-10-12.
   retains its chat-carried image path. Model Lab exposes image/video generation
   controls, including size and count selection where supported, and keeps media
   placeholders visible while generation is in progress.
-- `scripts/media.ts` provides reusable CodeBuddy image/video commands, including
+- `scripts/operations/media.ts` provides reusable CodeBuddy image/video commands, including
   automatic video task polling by default and `--no-wait` for returning a task
   ID.
 - Buddy image generation has been verified; Buddy-family video generation has

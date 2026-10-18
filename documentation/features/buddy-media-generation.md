@@ -54,7 +54,7 @@ under "A desktop client that behaves differently".
 - Provider request construction and response parsing:
   [`src/providers/integrations/buddy/buddy-media.ts`](../../src/providers/integrations/buddy/buddy-media.ts)
 - Reusable media CLI:
-  [`scripts/media.ts`](../../scripts/media.ts)
+  [`scripts/operations/media.ts`](../../scripts/operations/media.ts)
 - Provider model paths and metadata:
   [`src/providers/integrations/buddy/buddy-catalog-shared.ts`](../../src/providers/integrations/buddy/buddy-catalog-shared.ts)
 - Adapter regression tests:

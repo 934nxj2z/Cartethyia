@@ -34,6 +34,7 @@ const PROJECT_ROOT = join(import.meta.dir, "..", "..");
 const DASHBOARD_ROOT = join(PROJECT_ROOT, "dashboard");
 const BACKEND_TESTS = join(PROJECT_ROOT, "test");
 const DASHBOARD_TESTS = join(DASHBOARD_ROOT, "test");
+const SCRIPTS_TESTS = join(PROJECT_ROOT, "test", "scripts");
 
 const rawArgs = process.argv.slice(2);
 
@@ -56,8 +57,8 @@ function loadEnvFile(path: string): Record<string, string> {
 
 const scopeIndex = rawArgs.indexOf("--scope");
 const scope = scopeIndex >= 0 ? rawArgs[scopeIndex + 1] : "all";
-if (scope !== "all" && scope !== "backend" && scope !== "dashboard") {
-  console.error(`[test] unknown --scope "${scope}"; expected backend, dashboard, or all`);
+if (scope !== "all" && scope !== "backend" && scope !== "dashboard" && scope !== "scripts") {
+  console.error(`[test] unknown --scope "${scope}"; expected backend, dashboard, scripts, or all`);
   process.exit(1);
 }
 
@@ -120,5 +121,8 @@ if (scope === "all" || scope === "backend") {
 }
 if (exitCode === 0 && (scope === "all" || scope === "dashboard")) {
   exitCode = await runTests(DASHBOARD_ROOT, "dashboard", [DASHBOARD_TESTS]);
+}
+if (exitCode === 0 && (scope === "all" || scope === "scripts")) {
+  exitCode = await runTests(PROJECT_ROOT, "scripts", [SCRIPTS_TESTS]);
 }
 process.exit(exitCode);

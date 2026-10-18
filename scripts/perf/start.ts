@@ -1,10 +1,12 @@
 /**
  * Starts one gateway instance configured for load measurement.
- *
  * `bun run dev:backend` reloads on change and shortens several budgets, which
  * would make every number in this investigation depend on whether a file was
  * touched mid-run. This starts the same entry point with a fixed environment
  * and no watcher, so a before/after pair differs only by the code under test.
+ *
+ * Nothing under `scripts/perf/` is in the npm package `files` array — these
+ * harnesses exist in the repository only.
  */
 const env: Record<string, string> = {
   ...process.env,

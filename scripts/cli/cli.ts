@@ -8,6 +8,13 @@ import { isNewerRelease } from "../../src/console/updates/version-compare";
 import { PACKAGE_ROOT, resolvePackagePath, resolveUserConfigDir } from "../../src/config/package-paths";
 import { resolvePort } from "../../src/config/runtime";
 import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
+import { chooseFromMenu } from "./menu";
+import {
+  clearPersistedDrainToken,
+  readPersistedDrainToken,
+  writePersistedDrainToken,
+} from "./runtime-state";
+import { npmUpdate, readInstalledVersion, readLatestPublishedVersion } from "./version";
 
 process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
 
@@ -45,53 +52,6 @@ async function loadUserConfig(): Promise<void> {
   const values = await readEnvFile(ENV_PATH);
   for (const [key, value] of Object.entries(values)) {
     if (!process.env[key]) process.env[key] = value;
-  }
-}
-
-/**
- * Runtime state for a gateway left running by "Hide to background".
- *
- * Kept out of `.env` on purpose: the drain token authorises a shutdown, so it
- * belongs in a machine-written file the operator never hand-edits and never
- * commits. It is written when the menu detaches and removed when the gateway
- * is drained, so a stale file never outlives the process it refers to.
- */
-const RUNTIME_STATE_FILE = "runtime.json";
-
-function writePersistedDrainToken(token: string): void {
-  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
-  if (!configDir) return;
-  try {
-    writeFileSync(join(configDir, RUNTIME_STATE_FILE), JSON.stringify({ drainToken: token }), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  } catch {
-    // A read-only config directory costs only the `stop` command, not startup.
-  }
-}
-
-function readPersistedDrainToken(): string | null {
-  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
-  if (!configDir) return null;
-  const statePath = join(configDir, RUNTIME_STATE_FILE);
-  if (!existsSync(statePath)) return null;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"));
-    if (isRecord(parsed) && typeof parsed["drainToken"] === "string") return parsed["drainToken"];
-  } catch {
-    // A corrupt or stale state file reads as "no background gateway".
-  }
-  return null;
-}
-
-function clearPersistedDrainToken(): void {
-  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
-  if (!configDir) return;
-  try {
-    unlinkSync(join(configDir, RUNTIME_STATE_FILE));
-  } catch {
-    // Best effort: the drain request already succeeded.
   }
 }
 
@@ -141,29 +101,6 @@ async function waitForTrayStartupSignal(
   throw new Error("Cartethyia did not finish tray and gateway startup within 45 seconds");
 }
 
-function npmUpdate(): Promise<number> {
-  return new Promise((resolveExit) => {
-    const command = process.platform === "win32"
-      ? "cmd.exe"
-      : "npm";
-    const args = process.platform === "win32"
-      ? ["/d", "/s", "/c", "npm install --global cartethyia@latest"]
-      : ["install", "--global", "cartethyia@latest"];
-    let child;
-    try {
-      child = spawn(command, args, { cwd: tmpdir(), stdio: "inherit" });
-    } catch {
-      console.error("Could not start npm. Install Node.js with npm, then retry the update.");
-      resolveExit(1);
-      return;
-    }
-    child.once("error", () => {
-      console.error("Could not start npm. Install Node.js with npm, then retry the update.");
-      resolveExit(1);
-    });
-    child.once("exit", (code) => resolveExit(code ?? 1));
-  });
-}
 
 function openUrl(url: string): Promise<void> {
   const command = process.platform === "win32"
@@ -179,84 +116,6 @@ function openUrl(url: string): Promise<void> {
   return child.exited.then(() => undefined);
 }
 
-/**
- * A single-select menu driven by the arrow keys and Enter, built on stdin raw
- * mode so no menu dependency is added. It only reads keys and returns an
- * index; the caller keeps owning the gateway process.
- *
- * Returns -1 when stdin is not a TTY (piped, CI, or a non-interactive run) so
- * callers can fall back without blocking on input that will never arrive.
- */
-function chooseFromMenu(title: string, options: readonly string[]): Promise<number> {
-  const stdin = process.stdin;
-  if (!stdin.isTTY) return Promise.resolve(-1);
-  const { promise, resolve } = Promise.withResolvers<number>();
-  let index = 0;
-
-  const render = (): void => {
-    process.stdout.write(`\u001b[2J\u001b[H${title}\n\n`);
-    options.forEach((option, position) => {
-      const marker = position === index ? "\u2192" : " ";
-      process.stdout.write(`  ${marker} ${option}\n`);
-    });
-    process.stdout.write("\n\u2191\u2193 move \u00b7 Enter choose \u00b7 Esc/q exit\n");
-  };
-  const cleanup = (choice: number): void => {
-    stdin.setRawMode(false);
-    stdin.off("keypress", onKey);
-    stdin.pause();
-    process.stdout.write("\u001b[2J\u001b[H");
-    resolve(choice);
-  };
-  const onKey = (_chunk: unknown, key: { name?: string }): void => {
-    if (key.name === "up") {
-      index = (index - 1 + options.length) % options.length;
-      render();
-      return;
-    }
-    if (key.name === "down") {
-      index = (index + 1) % options.length;
-      render();
-      return;
-    }
-    if (key.name === "return") {
-      cleanup(index);
-      return;
-    }
-    if (key.name === "escape" || key.name === "q") cleanup(-1);
-  };
-
-  stdin.setRawMode(true);
-  stdin.resume();
-  render();
-  stdin.on("keypress", onKey);
-  return promise;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
-
-async function readInstalledVersion(): Promise<string> {
-  const metadata: unknown = await Bun.file(resolvePackagePath("package.json")).json();
-  if (!isRecord(metadata) || typeof metadata["version"] !== "string") {
-    throw new Error("Cartethyia package version is unavailable");
-  }
-  return metadata["version"];
-}
-
-async function readLatestPublishedVersion(): Promise<string | null> {
-  try {
-    const response = await fetch("https://registry.npmjs.org/cartethyia/latest", {
-      signal: AbortSignal.timeout(4_000),
-    });
-    if (!response.ok) return null;
-    const metadata: unknown = await response.json();
-    return isRecord(metadata) && typeof metadata["version"] === "string" ? metadata["version"] : null;
-  } catch {
-    return null;
-  }
-}
 
 function launchUpdatedTray(signalPath: string): ChildProcess {
   const env = { ...process.env, CARTETHYIA_TRAY_STARTUP_SIGNAL: signalPath };
@@ -275,7 +134,11 @@ async function startGateway(port: number, drainToken: string): Promise<ReturnTyp
     {
       cwd: PACKAGE_ROOT,
       env: { ...process.env, CARTETHYIA_DRAIN_TOKEN: drainToken },
-      stdin: "inherit",
+      // "ignore", not "inherit": the gateway does not read stdin, and in menu
+      // mode the menu is the only stdin consumer. With "inherit" the gateway
+      // held the fd and swallowed every keypress after the first, so the menu
+      // rendered but never received Enter.
+      stdin: "ignore",
       stdout: "inherit",
       stderr: "inherit",
     },

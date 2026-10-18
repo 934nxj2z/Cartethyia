@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { dirname, extname, resolve } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { buildWorkBuddyUserAgent } from "../src/providers/operations/client-versions";
+import { buildWorkBuddyUserAgent } from "../../src/providers/operations/client-versions";
 
 type MediaCommand = "image" | "video" | "video-status";
 
@@ -55,9 +55,9 @@ function usage(): string {
     "Generate CodeBuddy media directly and save finished files locally.",
     "",
     "Usage:",
-    "  bun run scripts/media.ts image --prompt \"A black cat on a sofa\" [options]",
-    "  bun run scripts/media.ts video --prompt \"A cat jumping onto a sofa\" [--no-wait] [options]",
-    "  bun run scripts/media.ts video-status --task-id <id> [options]",
+    "  bun run scripts/operations/media.ts image --prompt \"A black cat on a sofa\" [options]",
+    "  bun run scripts/operations/media.ts video --prompt \"A cat jumping onto a sofa\" [--no-wait] [options]",
+    "  bun run scripts/operations/media.ts video-status --task-id <id> [options]",
     "",
     "Options:",
     "  --model <id>             Provider model (image: gemini-3.1-flash-image; video: seedance-2.5)",
