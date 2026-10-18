@@ -9,6 +9,18 @@
  * what the browser spends its time receiving, and shaving microseconds off a
  * handler cannot compete with removing 94% of the bytes.
  *
+ * ## Why the gate is a path allowlist inside the function
+ *
+ * The wrap is mounted on the console Elysia instance (`console-router.ts`),
+ * but Elysia's `use()` merges the child's `hoc` into the **root** app's ext
+ * (`node_modules/elysia/dist/base.js:886-887`). Measured: the wrap therefore
+ * runs for `/v1/*` too, so instance-level scoping cannot express "console
+ * only". A path test can, and it lives inside `gzipResponse` — the one place
+ * that runs on every request.
+ *
+ * Consequence: `/v1/models` was previously compressed as a side effect of
+ * that `hoc` propagation. It deliberately is not now.
+ *
  * ## Why this is scoped to the console, not the proxy
  *
  * `/v1/*` is deliberately excluded, for two independent reasons:
@@ -26,8 +38,25 @@
  * Below `MIN_COMPRESSIBLE_BYTES` the envelope, the header, and the CPU are all
  * pure loss: a 200-byte reply is not worth a gzip stream plus a browser
  * decompression step. The threshold sits where the saving stops being noise.
+ *
+ * ## Opting a route out
+ *
+ * A route that knows its body is already compressed — or is an encoded
+ * envelope that would gain nothing — sets {@link NO_COMPRESS_HEADER}. The
+ * honest-sounding alternative, declaring `content-encoding: gzip`, is a lie
+ * when the bytes on the wire are not gzip, and the client that believes it
+ * fails trying to inflate them.
  */
 import { gzipSync } from "node:zlib";
+
+/**
+ * Header a route sets to say "do not compress this", popped before the
+ * response leaves.
+ *
+ * Deleted rather than left on the response, so it stays an internal signal
+ * between two layers in this process and never reaches a client or a cache.
+ */
+export const NO_COMPRESS_HEADER = "x-cartethyia-no-compress";
 
 /**
  * Smallest body worth compressing.
@@ -36,6 +65,19 @@ import { gzipSync } from "node:zlib";
  * ack, an error envelope) and well below every list endpoint that benefits.
  */
 export const MIN_COMPRESSIBLE_BYTES = 1024;
+
+/**
+ * Largest body this module will compress, as a ceiling on the event-loop
+ * stall.
+ *
+ * `gzipSync` is synchronous, so its cost is paid out of the request's own
+ * turn and is not interruptible. `/console/api/backup/export` answers with a
+ * multi-MB JSON document; at that size level 6 costs tens of milliseconds,
+ * which is longer than an entire dashboard poll. Those bytes go to disk
+ * rather than being polled, so the compression ratio is the wrong thing to
+ * optimise — above this size the response is returned as-is.
+ */
+export const MAX_COMPRESSIBLE_BYTES = 1024 * 1024;
 
 /** Content types worth compressing, matched by prefix. */
 const COMPRESSIBLE_TYPES: readonly string[] = [
@@ -99,20 +141,42 @@ export function isCompressible(contentType: string | null, bodyLength: number): 
  * type: `text/event-stream` is not in {@link COMPRESSIBLE_TYPES}, so a stream
  * can never reach the buffering path.
  *
- * The size gate runs on the **actual** byte length, not a declared
+ * The size gate runs on the **actual** byte length, not only a declared
  * `content-length`: Elysia does not set that header for a serialized object
- * (measured), so gating on it rejected every route worth compressing. The
+ * (measured), so gating on it alone rejected every route worth compressing. A
+ * declared length is still used as a fast path — it can skip the read for a
+ * small reply — but silence from the header must never mean "too small". The
  * content-type gate is what keeps a stream from being read here, and it is
  * checked before the body is touched.
  */
 export async function gzipResponse(request: Request, response: Response): Promise<Response> {
+  // Scoped to the paths this module documents. Instance-level scoping is not
+  // available here: the wrap's `hoc` propagates to the root app, so every
+  // route in the process — `/v1/*` included — reaches this function.
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/console/api/") && pathname !== "/metrics") return response;
   if (request.method === "HEAD") return response;
   if (response.status === 204 || response.status === 304) return response;
   // Already encoded — by a route or by an upstream. Never encode twice.
   if (response.headers.has("content-encoding")) return response;
+  // A route that knows better: the body is an encoded envelope, or already
+  // compressed in a form this wire layer cannot describe. Deleted here so the
+  // signal stays internal and never reaches a client or a cache.
+  if (response.headers.has(NO_COMPRESS_HEADER)) {
+    response.headers.delete(NO_COMPRESS_HEADER);
+    return response;
+  }
   if (!acceptsGzip(request.headers.get("accept-encoding"))) return response;
   // Type first, before any read: this is what keeps an event stream out.
   if (!isCompressibleType(response.headers.get("content-type"))) return response;
+  // A bodiless reply has nothing to compress, and `arrayBuffer()` on a null
+  // body yields a 0-byte buffer that would rebuild into a non-null body.
+  if (response.body === null) return response;
+  // A declared length below the threshold skips the read entirely. It cannot
+  // be the only gate — Elysia sets no `content-length` for a serialized
+  // object (measured) — so the byte-length read below still has to exist.
+  const declared = response.headers.get("content-length");
+  if (declared !== null && Number(declared) < MIN_COMPRESSIBLE_BYTES) return response;
 
   const body = await response.arrayBuffer();
   // Below the threshold the envelope, the header, and the CPU are all pure
@@ -120,6 +184,9 @@ export async function gzipResponse(request: Request, response: Response): Promis
   // than compressed. A response that was read must always be rebuilt, or the
   // client would receive an empty body.
   if (body.byteLength < MIN_COMPRESSIBLE_BYTES) return rebuild(response, body);
+  // Above the ceiling the synchronous `gzipSync` stall costs more than the
+  // bytes it would save. Same rebuild obligation as the threshold path.
+  if (body.byteLength > MAX_COMPRESSIBLE_BYTES) return rebuild(response, body);
 
   const compressed = gzipSync(new Uint8Array(body), { level: GZIP_LEVEL });
   const headers = new Headers(response.headers);

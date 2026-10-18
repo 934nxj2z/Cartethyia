@@ -30,6 +30,8 @@ import {
   gzipResponse,
   isCompressible,
   isCompressibleType,
+  MAX_COMPRESSIBLE_BYTES,
+  NO_COMPRESS_HEADER,
   MIN_COMPRESSIBLE_BYTES,
 } from "../../src/console/response-compression";
 
@@ -42,15 +44,15 @@ import {
  */
 function compressedApp() {
   return new Elysia()
-    .get("/big", () => ({
+    .get("/console/api/big", () => ({
       rows: Array.from({ length: 500 }, (_, index) => ({
         id: index,
         model: "claude-sonnet-4-6",
         status: "completed",
       })),
     }))
-    .get("/small", () => ({ ok: true }))
-    .get("/stream", () => {
+    .get("/console/api/small", () => ({ ok: true }))
+    .get("/console/api/stream", () => {
       const body = "event: tick\ndata: {}\n\n".repeat(400);
       return new Response(body, { headers: { "content-type": "text/event-stream" } });
     })
@@ -155,7 +157,7 @@ describe("isCompressible", () => {
 describe("gzipResponse end to end", () => {
   test("a large JSON response is gzipped and decodes back to the same value", async () => {
     const app = compressedApp();
-    const response = await app.handle(gzipRequest("/big"));
+    const response = await app.handle(gzipRequest("/console/api/big"));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-encoding")).toBe("gzip");
 
@@ -167,8 +169,8 @@ describe("gzipResponse end to end", () => {
 
   test("the compressed body is dramatically smaller", async () => {
     const app = compressedApp();
-    const gzipped = await app.handle(gzipRequest("/big"));
-    const raw = await app.handle(new Request("http://x/big"));
+    const gzipped = await app.handle(gzipRequest("/console/api/big"));
+    const raw = await app.handle(new Request("http://x/console/api/big"));
 
     const gzippedBytes = (await gzipped.arrayBuffer()).byteLength;
     const rawBytes = (await raw.arrayBuffer()).byteLength;
@@ -180,20 +182,20 @@ describe("gzipResponse end to end", () => {
 
   test("the declared content-length matches the compressed body", async () => {
     const app = compressedApp();
-    const response = await app.handle(gzipRequest("/big"));
+    const response = await app.handle(gzipRequest("/console/api/big"));
     const bytes = (await response.arrayBuffer()).byteLength;
     expect(Number(response.headers.get("content-length"))).toBe(bytes);
   });
 
   test("vary is set so a cache cannot serve gzip to a client that did not ask", async () => {
     const app = compressedApp();
-    const response = await app.handle(gzipRequest("/big"));
+    const response = await app.handle(gzipRequest("/console/api/big"));
     expect(response.headers.get("vary")).toContain("accept-encoding");
   });
 
   test("a client that did not offer gzip gets the plain body", async () => {
     const app = compressedApp();
-    const response = await app.handle(new Request("http://x/big"));
+    const response = await app.handle(new Request("http://x/console/api/big"));
     expect(response.headers.get("content-encoding")).toBeNull();
     const bytes = (await response.arrayBuffer()).byteLength;
     expect(bytes).toBeGreaterThan(10_000);
@@ -202,7 +204,7 @@ describe("gzipResponse end to end", () => {
   test("a client that refused gzip with q=0 gets the plain body", async () => {
     const app = compressedApp();
     const response = await app.handle(
-      new Request("http://x/big", { headers: { "accept-encoding": "gzip;q=0" } }),
+      new Request("http://x/console/api/big", { headers: { "accept-encoding": "gzip;q=0" } }),
     );
     expect(response.headers.get("content-encoding")).toBeNull();
     expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(10_000);
@@ -212,7 +214,7 @@ describe("gzipResponse end to end", () => {
     // The below-threshold path reads the body to measure it, so it must rebuild
     // the response. Returning the original would hand back an empty body.
     const app = compressedApp();
-    const response = await app.handle(gzipRequest("/small"));
+    const response = await app.handle(gzipRequest("/console/api/small"));
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(await response.json()).toEqual({ ok: true });
   });
@@ -220,7 +222,7 @@ describe("gzipResponse end to end", () => {
   test("an event stream is passed through unmodified", async () => {
     // The property the whole content-type gate exists for.
     const app = compressedApp();
-    const response = await app.handle(gzipRequest("/stream"));
+    const response = await app.handle(gzipRequest("/console/api/stream"));
     expect(response.headers.get("content-encoding")).toBeNull();
     const text = await response.text();
     expect(text).toContain("event: tick");
@@ -229,7 +231,7 @@ describe("gzipResponse end to end", () => {
 
   test("a response that is already encoded is not encoded twice", async () => {
     const response = await gzipResponse(
-      gzipRequest("/x"),
+      gzipRequest("/console/api/x"),
       new Response("x".repeat(5000), {
         headers: { "content-type": "application/json", "content-encoding": "br" },
       }),
@@ -239,20 +241,20 @@ describe("gzipResponse end to end", () => {
 
   test("a HEAD request is not compressed", async () => {
     const response = await gzipResponse(
-      new Request("http://x/y", { method: "HEAD", headers: { "accept-encoding": "gzip" } }),
+      new Request("http://x/console/api/y", { method: "HEAD", headers: { "accept-encoding": "gzip" } }),
       new Response("x".repeat(5000), { headers: { "content-type": "application/json" } }),
     );
     expect(response.headers.get("content-encoding")).toBeNull();
   });
 
   test("a 204 is not compressed", async () => {
-    const response = await gzipResponse(gzipRequest("/x"), new Response(null, { status: 204 }));
+    const response = await gzipResponse(gzipRequest("/console/api/x"), new Response(null, { status: 204 }));
     expect(response.headers.get("content-encoding")).toBeNull();
   });
 
   test("an existing vary is extended rather than replaced", async () => {
     const response = await gzipResponse(
-      gzipRequest("/x"),
+      gzipRequest("/console/api/x"),
       new Response(JSON.stringify({ rows: "x".repeat(5000) }), {
         headers: { "content-type": "application/json", vary: "origin" },
       }),
@@ -262,7 +264,7 @@ describe("gzipResponse end to end", () => {
 
   test("a vary that already names accept-encoding is not duplicated", async () => {
     const response = await gzipResponse(
-      gzipRequest("/x"),
+      gzipRequest("/console/api/x"),
       new Response(JSON.stringify({ rows: "x".repeat(5000) }), {
         headers: { "content-type": "application/json", vary: "accept-encoding" },
       }),
@@ -272,7 +274,7 @@ describe("gzipResponse end to end", () => {
 
   test("a wildcard vary is left as the stronger statement", async () => {
     const response = await gzipResponse(
-      gzipRequest("/x"),
+      gzipRequest("/console/api/x"),
       new Response(JSON.stringify({ rows: "x".repeat(5000) }), {
         headers: { "content-type": "application/json", vary: "*" },
       }),
@@ -282,12 +284,118 @@ describe("gzipResponse end to end", () => {
 
   test("the response status survives compression", async () => {
     const response = await gzipResponse(
-      gzipRequest("/x"),
+      gzipRequest("/console/api/x"),
       new Response(JSON.stringify({ error: "x".repeat(5000) }), {
         status: 404,
         headers: { "content-type": "application/json" },
       }),
     );
     expect(response.status).toBe(404);
+  });
+
+  test("a /v1 path is left uncompressed", async () => {
+    // The allowlist the module documents. `/v1/models` used to be compressed
+    // as a side effect of `hoc` propagation to the root app.
+    const response = await gzipResponse(
+      gzipRequest("/v1/models"),
+      new Response(JSON.stringify({ data: "x".repeat(5000) }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(await response.text()).toContain("xxxx");
+  });
+
+  test("a console api path is still gzipped", async () => {
+    const response = await gzipResponse(
+      gzipRequest("/console/api/system/usage/summary"),
+      new Response(JSON.stringify({ rows: "x".repeat(5000) }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+  });
+
+  test("/metrics is gzipped, a sibling path is not", async () => {
+    const metrics = await gzipResponse(
+      gzipRequest("/metrics"),
+      new Response("x".repeat(5000), { headers: { "content-type": "text/plain" } }),
+    );
+    expect(metrics.headers.get("content-encoding")).toBe("gzip");
+    const other = await gzipResponse(
+      gzipRequest("/metricsx"),
+      new Response("x".repeat(5000), { headers: { "content-type": "text/plain" } }),
+    );
+    expect(other.headers.get("content-encoding")).toBeNull();
+  });
+
+  test("a bodiless response is returned unchanged", async () => {
+    const response = await gzipResponse(
+      gzipRequest("/console/api/x"),
+      new Response(null, { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.body).toBeNull();
+  });
+
+  test("a body over the ceiling is returned uncompressed and not emptied", async () => {
+    // `gzipSync` is synchronous; the ceiling bounds the stall for a multi-MB
+    // backup export. The body was already read, so it must be rebuilt.
+    const payload = "x".repeat(MAX_COMPRESSIBLE_BYTES + 1);
+    const response = await gzipResponse(
+      gzipRequest("/console/api/backup/export"),
+      new Response(payload, { headers: { "content-type": "application/json" } }),
+    );
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect((await response.text()).length).toBe(MAX_COMPRESSIBLE_BYTES + 1);
+  });
+
+  test("a body exactly at the ceiling is still compressed", async () => {
+    const response = await gzipResponse(
+      gzipRequest("/console/api/backup/export"),
+      new Response("x".repeat(MAX_COMPRESSIBLE_BYTES), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+  });
+
+  test("a small declared content-length skips compression without a read", async () => {
+    const response = await gzipResponse(
+      gzipRequest("/console/api/x"),
+      new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json", "content-length": "13" },
+      }),
+    );
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
+  test("a route that opts out is left alone and the signal is removed", async () => {
+    // The backup export's case: the body is base64 of a gzip stream, so a
+    // client told "this is gzip" inflates the base64 text and fails. The route
+    // cannot say `content-encoding: gzip` — that would be a lie — so it sets
+    // the opt-out instead, and the header must not survive to the client.
+    const body = JSON.stringify({ bytes: "aGVsbG8=".repeat(500) });
+    const response = await gzipResponse(
+      gzipRequest("/console/api/backup/export"),
+      new Response(body, {
+        headers: { "content-type": "application/json", [NO_COMPRESS_HEADER]: "1" },
+      }),
+    );
+    expect(response.headers.get(NO_COMPRESS_HEADER)).toBeNull();
+    expect(response.headers.get("content-encoding")).toBeNull();
+    // And the bytes are intact, which is the part the lie would have broken.
+    expect(await response.text()).toBe(body);
+  });
+
+  test("the opt-out wins even when the client asked for gzip and the body is huge", async () => {
+    const response = await gzipResponse(
+      gzipRequest("/console/api/backup/export"),
+      new Response("x".repeat(MAX_COMPRESSIBLE_BYTES + 1000), {
+        headers: { "content-type": "application/json", [NO_COMPRESS_HEADER]: "1" },
+      }),
+    );
+    expect(response.headers.get("content-encoding")).toBeNull();
   });
 });

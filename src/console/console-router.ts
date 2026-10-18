@@ -209,9 +209,11 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
   // nothing to compress and no size to judge. `wrap` sits outside the router
   // and sees the finished `Response`, which is what this needs.
   //
-  // Scoped to the console instance: `/v1/*` is a separate Elysia and is
-  // deliberately not covered, because a streaming completion must not be
-  // buffered and proxied bodies are the provider's own bytes. See
+  // Scoped by path *inside* `gzipResponse`, not by this instance: Elysia's
+  // `use()` merges a child's `hoc` into the root app's ext, so this wrap is
+  // reached by `/v1/*` as well. The allowlist is `/console/api/` + `/metrics`.
+  // `/v1/*` is deliberately excluded, because a streaming completion must not
+  // be buffered and proxied bodies are the provider's own bytes. See
   // `response-compression.ts` for the full reasoning and the measured win.
   console.wrap(
     (fetch) => (request: Request, ...rest: unknown[]) =>
