@@ -41,13 +41,38 @@ forwarders: [Why Cartethyia](documentation/why-cartethyia.md).
 
 ## <img src="https://api.iconify.design/lucide/image.svg?color=%238b949e" width="20" height="20" alt=""> Showcase
 
-The console that ships with the gateway — what an operator actually looks at.
+The console that runs with the gateway — the same six surfaces an operator
+uses every day.
+
+**Overview and usage.** One page for the health of the whole install, and one
+for what it cost: request volume, latency percentiles (P50/P95/P99), cached
+tokens, and per-model and per-account spend. Everything here is recorded at
+dispatch time, including on a retry, so a failover never quietly disappears
+from the totals.
 
 <img src="documentation/assets/screenshots/overview.png" width="49%" alt="Overview" /> <img src="documentation/assets/screenshots/usage.png" width="49%" alt="Usage" />
 
+**Provider detail.** Per-account credentials, quota windows, health state, and
+routing controls for one provider — including the **Usage floor** that drops an
+account before its allowance is actually gone, and **Max inflight / proxy**,
+a per-provider concurrency ceiling on a pool. Provider client versions are
+resolved from the upstream's own registry on every refresh, then fall back to a
+pinned constant only when that read fails, so the version a provider sees is
+never stale by default and never blocks a dispatch.
+
 <img src="documentation/assets/screenshots/provider.png" width="49%" alt="Provider detail" /> <img src="documentation/assets/screenshots/model-lab.png" width="49%" alt="Model Lab" />
 
+**Model Lab and customization.** Model Lab chats a routed model without
+leaving the console — the same gateway path a real client takes, so a
+provider's streaming, tool, and reasoning behavior can be inspected before a
+client depends on it. Customization sets the console's own theme and
+background; it changes nothing about routing.
+
 <img src="documentation/assets/screenshots/customization.png" width="49%" alt="Customization" /> <img src="documentation/assets/screenshots/settings.png" width="49%" alt="Settings" />
+
+**Settings.** Backups and restore, retention, payload capture limits, and
+update checks. A backup carries provider credentials, so treat it like a
+password.
 
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 
