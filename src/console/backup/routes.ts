@@ -18,6 +18,7 @@ import { Elysia, t } from "elysia";
 import type { ConsoleAccessResolver } from "../auth/access";
 import { invalidateApiKeyCache } from "../../security/api-key-auth";
 import { ConsoleDomainError, errorResponse, requireAnyScope } from "../shared/errors";
+import { NO_COMPRESS_HEADER } from "../response-compression";
 import { MAX_BACKUP_BYTES } from "./contracts";
 import type { BackupSection } from "./contracts";
 import { DELETE_ALL_SCOPES, compressBackup } from "./store";
@@ -124,6 +125,13 @@ export function createBackupRoutes(config: BackupRoutesConfig): Elysia {
         }
         const bytes = compressBackup(payload);
         set.headers["content-type"] = "application/json; charset=utf-8";
+        // Opt out of the response wrapper's gzip rather than declaring
+        // `content-encoding: gzip`: the bytes here are base64 of a gzip
+        // stream, and a client told "this is gzip" tries to inflate the
+        // base64 text and fails. The payload inside is already compressed,
+        // and a second pass over base64 would find nothing to gain while
+        // paying a synchronous `gzipSync` over the whole multi-MB body.
+        set.headers[NO_COMPRESS_HEADER] = "1";
         return { compressed: true, filename: `cartethyia_backup_${stamp}.json.gz`, bytes: bytes.toString("base64") };
       } catch (error) {
         return errorResponse(error, set, "Backup export failed");
