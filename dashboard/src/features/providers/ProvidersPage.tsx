@@ -22,6 +22,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state"
 import { Switch } from "../../components/ui/switch";
 import { Inline } from "../../components/ui/inline";
 import { Stack } from "../../components/ui/stack";
+import { useHideUnconfiguredProviders } from "../../lib/privacy-mode";
 const CARD_SHELL = cn(
   "relative flex flex-col min-w-0 border border-inner-border rounded-card",
   "transition-[transform,border-color,box-shadow]",
@@ -968,18 +969,24 @@ const SECTIONS = [
 export default function Providers(): ReactNode {
   const [collapsedSections, setCollapsedSections] = useState<ReadonlySet<string>>(readCollapsedSections);
   const q = useProviders();
+  const hideUnconfigured = useHideUnconfiguredProviders();
+  const hideUnconfiguredOn = hideUnconfigured.enabled;
+  // A credential-less provider (OpenCode Free, Exa, Parallel) is usable with no
+  // account, so hiding it would hide a working route rather than a dead one.
+  const isVisible = (p: ProviderResponse) =>
+    !hideUnconfiguredOn || p.configured === true || p.requiresAccount === false;
   const allProviders = useMemo(() => q.data ?? [], [q.data]);
   const customProviders = useMemo(
-    () => [...allProviders.filter((p) => !p.isBuiltIn)].sort(compareConfiguredProviders),
-    [allProviders],
+    () => [...allProviders.filter((p) => !p.isBuiltIn && isVisible(p))].sort(compareConfiguredProviders),
+    [allProviders, hideUnconfiguredOn],
   );
   const searchProviders = useMemo(
-    () => allProviders.filter((p) => providerServiceKinds(p).includes("websearch")),
-    [allProviders],
+    () => allProviders.filter((p) => providerServiceKinds(p).includes("websearch") && isVisible(p)),
+    [allProviders, hideUnconfiguredOn],
   );
   const llmProviders = useMemo(
-    () => allProviders.filter((p) => providerServiceKinds(p).includes("llm")),
-    [allProviders],
+    () => allProviders.filter((p) => providerServiceKinds(p).includes("llm") && isVisible(p)),
+    [allProviders, hideUnconfiguredOn],
   );
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
@@ -997,10 +1004,11 @@ export default function Providers(): ReactNode {
     () =>
       allProviders.filter(
         (p) =>
-          providerServiceKinds(p).includes("imageGeneration") ||
-          providerServiceKinds(p).includes("videoGeneration"),
+          (providerServiceKinds(p).includes("imageGeneration") ||
+            providerServiceKinds(p).includes("videoGeneration")) &&
+          isVisible(p),
       ),
-    [allProviders],
+    [allProviders, hideUnconfiguredOn],
   );
   const orderedSearch = useMemo(
     () => [...searchProviders].sort((a, b) => (a.label || a.displayName).localeCompare(b.label || b.displayName)),
@@ -1083,6 +1091,19 @@ export default function Providers(): ReactNode {
             </button>
           ))}
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={hideUnconfiguredOn ? <EyeOff size={12} /> : <Eye size={12} />}
+          onClick={() => hideUnconfigured.setEnabled(!hideUnconfiguredOn)}
+          title={
+            hideUnconfiguredOn
+              ? "Show providers that have no account yet"
+              : "Hide providers that have no account yet"
+          }
+        >
+          {hideUnconfiguredOn ? "Show unconfigured" : "Hide unconfigured"}
+        </Button>
         <span className="ml-auto text-micro text-text-tertiary">
           {tab === "search"
             ? "Fallback runs only when the model invokes Websearch"

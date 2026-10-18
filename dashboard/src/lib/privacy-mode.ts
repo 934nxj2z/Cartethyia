@@ -79,3 +79,12 @@ export function useMysteriousAccounts(providerId: string): { readonly enabled: b
 export function useMaskIp(): { readonly enabled: boolean; readonly setEnabled: (next: boolean) => void } {
   return useStoredFlag("cartethyia.mask-ip", "cartethyia:mask-ip");
 }
+
+/**
+ * Hides providers that have no account yet on the providers page. Providers
+ * that take no credential at all (`requiresAccount: false`) are never hidden —
+ * they have no account by design, not through omission.
+ */
+export function useHideUnconfiguredProviders(): { readonly enabled: boolean; readonly setEnabled: (next: boolean) => void } {
+  return useStoredFlag("cartethyia.hide-unconfigured-providers", "cartethyia:hide-unconfigured-providers");
+}
