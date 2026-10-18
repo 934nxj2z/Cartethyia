@@ -495,6 +495,50 @@ async function resetConsoleAccount(port: number, token: string): Promise<number>
 }
 
 /**
+ * Asks a gateway we do not own to drain, then waits for its port to close.
+ *
+ * Used by `cartethyia stop` and by an adopted tray's Exit: in both cases the
+ * gateway is a separate process, so the loopback endpoint is the only handle.
+ * Returns 0 only once the port stops answering — a drain that is accepted but
+ * leaves the listener up is not a stop.
+ */
+async function drainThroughEndpoint(port: number, token: string): Promise<number> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
+      method: "POST",
+      headers: { "x-drain-token": token },
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (response.status !== 202) {
+      console.error(
+        response.status === 401
+          ? `The gateway on port ${port} rejected the drain token. It was started by a different install; stop it where it was started.`
+          : `The gateway refused the drain request (HTTP ${response.status}).`,
+      );
+      return 1;
+    }
+  } catch {
+    console.error(`No gateway is listening on port ${port}. It may already be stopped.`);
+    return 1;
+  }
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const alive = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(500),
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (!alive) return 0;
+    await Bun.sleep(250);
+  }
+  console.error(
+    `The gateway accepted the drain but is still answering on port ${port} after 20 seconds.`,
+  );
+  return 1;
+}
+
+/**
  * Stops a running gateway through its loopback drain endpoint.
  *
  * That process is not a child of this one, so it cannot be signalled directly —
@@ -512,46 +556,9 @@ async function stopRunningGateway(): Promise<number> {
     );
     return 1;
   }
-
-  let accepted = false;
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
-      method: "POST",
-      headers: { "x-drain-token": token },
-      signal: AbortSignal.timeout(3_000),
-    });
-    accepted = response.status === 202;
-    if (!accepted) {
-      console.error(
-        response.status === 401
-          ? `The gateway on port ${port} rejected the drain token. It was started by a different install; stop it where it was started.`
-          : `The gateway refused the drain request (HTTP ${response.status}).`,
-      );
-      return 1;
-    }
-  } catch {
-    console.error(`No gateway is listening on port ${port}. It may already be stopped.`);
-    return 1;
-  }
-
-  // Wait for the listener to actually go away before claiming success.
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    const alive = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(500),
-    })
-      .then(() => true)
-      .catch(() => false);
-    if (!alive) {
-      console.log("Cartethyia stopped.");
-      return 0;
-    }
-    await Bun.sleep(250);
-  }
-  console.error(
-    `The gateway accepted the drain but is still answering on port ${port} after 20 seconds.`,
-  );
-  return 1;
+  const code = await drainThroughEndpoint(port, token);
+  if (code === 0) console.log("Cartethyia stopped.");
+  return code;
 }
 
 
@@ -619,6 +626,7 @@ async function startTray(): Promise<void> {
   let closing = false;
   let busy = false;
   let resetArmed = false;
+  const adopted = process.env.CARTETHYIA_TRAY_ADOPT_RUNNING === "1";
   let latestVersion: string | null = null;
   let closePromise: Promise<void> | undefined;
 
@@ -628,7 +636,15 @@ async function startTray(): Promise<void> {
     closePromise = (async () => {
       const current: ReturnType<typeof Bun.spawn> | null = gateway;
       gateway = null;
-      if (current) await stopGateway(current, port, drainToken);
+      if (current) {
+        await stopGateway(current, port, drainToken);
+      } else if (adopted) {
+        // An adopted tray never held the gateway as a child, so there is no
+        // process to signal. Draining through the loopback endpoint is the only
+        // way Exit stops it — without this, Exit closed the icon and left the
+        // gateway listening, which looked like a phantom process.
+        await drainThroughEndpoint(port, drainToken);
+      }
       await stopTray(tray, trayReady, trayExited);
       process.exitCode = exitCode;
     })();
