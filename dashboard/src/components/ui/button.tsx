@@ -1,0 +1,122 @@
+import { Loader2 } from "lucide-react";
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { cn } from "../../lib/classnames";
+
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonSize = "sm" | "md" | "lg" | "icon";
+
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  icon?: ReactNode;
+  loading?: boolean;
+  /**
+   * Text shown beside the icon for a `size="icon"` button. The label collapses
+   * away (leaving the square icon button) when the surrounding `@container`
+   * is too narrow, so dense toolbars stay readable without overflowing.
+   */
+  label?: string;
+}
+
+/*
+ * The `btn*` tokens below are marker classes, not styling: two contracts still
+ * select on them. `primitives.test.tsx` pins the emitted DOM, and the
+ * `@container rule-row` collapse in base.css hides `.btn-label` when the row is
+ * narrow — a container query cannot be expressed as a utility here because the
+ * queried container is the caller's, not the button's. Everything visual is a
+ * utility; `twMerge` would strip the markers if they collided, so they are
+ * emitted through `cn` as plain strings.
+ */
+const VARIANT: Record<ButtonVariant, string> = {
+  primary: "btn-primary bg-accent text-accent-foreground hover:bg-accent-hover",
+  secondary: "btn-secondary border border-inner-border bg-hover text-text-primary hover:bg-active-pill hover:border-border-strong",
+  ghost: "btn-ghost text-text-secondary hover:bg-hover hover:text-text-primary",
+  danger: "btn-danger bg-red text-white hover:opacity-90",
+};
+
+const SIZE: Record<ButtonSize, string> = {
+  sm: "btn-sm h-15 px-5 text-badge [&_svg]:size-6.5",
+  md: "",
+  lg: "",
+  icon: "btn-icon size-17 p-0 grid place-items-center [&_svg]:size-7.5",
+};
+
+/**
+ * The button's own visual recipe, for the call sites that need an element the
+ * `Button` atom cannot emit.
+ *
+ * Two exist and both were broken in the same way: a hand-written
+ * `className="btn btn-secondary btn-sm"` on an `<a>` (the credential notice's
+ * external link) and on the file-input `<label>` in the add-account dialog.
+ * Those `btn*` names are markers — they exist for `primitives.test.tsx` and
+ * the `@container rule-row` collapse — and nothing in the stylesheet styles
+ * them, so both elements rendered as unstyled text while every neighbouring
+ * `<Button>` was styled. Composing the recipe keeps one source for the shape.
+ *
+ * Anything that CAN be a `<button>` should use `Button` itself; this exists for
+ * the anchors and labels where it cannot.
+ */
+export function buttonClass({
+  variant = "secondary",
+  size = "md",
+  className,
+}: {
+  readonly variant?: ButtonVariant;
+  readonly size?: ButtonSize;
+  readonly className?: string;
+} = {}): string {
+  return cn(
+    "btn inline-flex items-center justify-center gap-3.5 rounded-control font-semibold text-caption px-7 py-2 transition-all active:scale-[0.97]",
+    VARIANT[variant],
+    SIZE[size],
+    className,
+  );
+}
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  (
+    {
+      className = "",
+      variant = "secondary",
+      size = "md",
+      icon,
+      label,
+      loading = false,
+      children,
+      type = "button",
+      ...props
+    },
+    ref,
+  ) => {
+    const labeled = size === "icon" && label !== undefined;
+    const renderedIcon = loading ? <Loader2 size={14} className="animate-spin" /> : icon;
+    return (
+      <button
+        ref={ref}
+        type={type}
+        className={buttonClass({
+          variant,
+          // The labeled form supplies its own h-15/px-5 sizing, so the icon
+          // variant's square `size-17 p-0 grid place-items-center` must not be
+          // merged in alongside it — the two are mutually exclusive and
+          // emitting both leaves the width decided by CSS source order.
+          size: labeled ? ("md" as const) : size,
+          className: labeled
+            ? cn("btn-labeled h-15 px-5 gap-3 text-badge [&_svg]:size-6.5", className)
+            : className,
+        })}
+        aria-busy={loading || undefined}
+        {...props}
+      >
+        {renderedIcon ? (
+          <span className="btn-icon-wrapper inline-flex items-center" aria-hidden="true">
+            {renderedIcon}
+          </span>
+        ) : null}
+        {labeled ? <span className="btn-label">{label}</span> : children}
+      </button>
+    );
+  },
+);
+
+Button.displayName = "Button";

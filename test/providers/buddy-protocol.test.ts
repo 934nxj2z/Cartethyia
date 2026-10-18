@@ -1,0 +1,472 @@
+import { describe, expect, test } from "bun:test";
+import { buddyPrePayloadCommon, buildBuddyPromptCacheKey } from "../../src/providers/integrations/buddy/buddy-chat-shared";
+import { codeBuddyCnPrePayload } from "../../src/providers/integrations/buddy/codebuddy/cn-provider";
+import { readBuddyDeviceToken, workbuddyHeaders } from "../../src/providers/integrations/buddy/workbuddy/shared";
+import { fetchTencentBillingQuota } from "../../src/providers/integrations/buddy/buddy-quota-shared";
+import { fetchWorkBuddyCnQuota } from "../../src/providers/integrations/buddy/workbuddy/quota";
+import { parseDsmlToolCalls } from "../../src/protocol/response/dsml";
+import { parseChatResponseToEvents } from "../../src/protocol/response/chat";
+import type { CanonicalRequest } from "../../src/protocol/canonical-model";
+import type { ProviderDispatchContext, ProviderDispatchTarget } from "../../src/providers/provider-contracts";
+
+const candidate = {
+  provider_id: "cbcn",
+  model_id: "glm-5.2",
+  wire_family: "openai-chat",
+  endpoint_path: "/chat/completions",
+  capabilities: {},
+} as unknown as ProviderDispatchTarget;
+const request = { model: "glm-5.2", messages: [] } as unknown as CanonicalRequest;
+const context = {
+  credential: { account_id: "abcdef123456", auth_state: { deviceToken: "desktop-token" } },
+} as unknown as ProviderDispatchContext;
+
+describe("Buddy upstream protocol alignment", () => {
+  test("injects an account-isolated cache key when the client sent none", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "run_shell" } }],
+      tool_choice: "none",
+    };
+    buddyPrePayloadCommon(payload, request);
+    expect(payload["tool_choice"]).toBe("none");
+    expect(payload["tools"]).toHaveLength(1);
+    // No credential and no conversation: the anonymous segment, still injected
+    // so two such requests do not silently share a client-less key shape.
+    expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", ""));
+  });
+
+  test("clamps an unsupported international effort to the nearest served level", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [],
+      reasoning_effort: "max",
+      prompt_cache_key: "client-key",
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["prompt_cache_key"]).toBe("client-key");
+  });
+
+  test("raising the effort also lifts a max_tokens sized for the lower one", () => {
+    const payload: Record<string, unknown> = {
+      model: "hy4-preview-f",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "low",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(32_000);
+  });
+
+  test("a supported effort leaves the caller's max_tokens alone", () => {
+    // Nothing was raised, so nothing is owed a bigger budget: a caller who
+    // deliberately asked for a small answer still gets one.
+    const payload: Record<string, unknown> = {
+      model: "hy4-preview-f",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "high",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(2048);
+  });
+
+  test("clamps a max_tokens above the catalog output limit down to it", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 200_000,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["max_tokens"]).toBe(131_072);
+  });
+
+  test("an effort the ladder serves as asked leaves max_tokens alone", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.3",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "low",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("low");
+    expect(payload["max_tokens"]).toBe(2048);
+  });
+
+  test("a model with no ladder is not refused for its effort", () => {
+    const payload: Record<string, unknown> = {
+      model: "claude-opus-4.6",
+      messages: [],
+      reasoning_effort: "max",
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("uses the CN effort ladder for the same model", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [],
+      reasoning_effort: "max",
+    };
+    buddyPrePayloadCommon(payload, request, "cn");
+    expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("CodeBuddy CN keeps an effort the international ladder would clamp away", () => {
+    // The CN realm was never threaded: every call site passed two arguments, so
+    // `realm` defaulted to "intl" and BUDDY_CN_EFFORTS was dead code. The same
+    // model id served at `max` by the CN backend was silently downgraded to
+    // `high`, which is what the international backend accepts.
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [],
+      reasoning_effort: "max",
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("CodeBuddy CN keeps a mid-ladder effort that is unsupported everywhere else", () => {
+    // `medium` is the only level CN's glm-5.1 serves. No other ladder lists it,
+    // so before the realm was threaded this request was rewritten to `high`.
+    const payload: Record<string, unknown> = {
+      model: "glm-5.1",
+      messages: [],
+      reasoning_effort: "medium",
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("medium");
+  });
+
+  test("a CN effort the ladder does not serve is clamped, and the budget is lifted", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4-pro",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "max",
+      max_tokens: 2048,
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("xhigh");
+    expect(payload["max_tokens"]).toBe(192_000);
+  });
+
+  test("`auto` stays `auto` on the international roster", () => {
+    // `default-model` was removed from the catalog, so rewriting `auto` onto
+    // it would send clients to an id that is no longer served.
+    const viaAuto: Record<string, unknown> = { model: "auto", messages: [] };
+    buddyPrePayloadCommon(viaAuto, request, "intl");
+    expect(viaAuto["model"]).toBe("auto");
+  });
+
+  test("CN `auto` resolves to the CN backend-selected id, not the intl one", () => {
+    const payload: Record<string, unknown> = { model: "auto", messages: [] };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["model"]).toBe("default");
+  });
+
+  test("a qualified model name that merely contains `auto` is left alone", () => {
+    // `auto` is a real model name on other providers, and a prefix or suffix
+    // makes a different request — only the bare id is the alias.
+    const payload: Record<string, unknown> = { model: "auto-turbo", messages: [] };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["model"]).toBe("auto-turbo");
+  });
+
+  test("two accounts with the same conversation get different cache keys", () => {
+    const token = (uid: string) =>
+      `h.${Buffer.from(JSON.stringify({ sub: uid })).toString("base64url")}.s`;
+    const forAccount = (uid: string): string => {
+      const payload: Record<string, unknown> = {
+        model: "glm-5.2",
+        messages: [],
+        conversation_id: "conv-shared",
+      };
+      const account = {
+        credential: { secret: new TextEncoder().encode(token(uid)) },
+        request_headers: { "x-conversation-id": "conv-shared" },
+      } as unknown as ProviderDispatchContext;
+      buddyPrePayloadCommon(payload, request, "intl", account);
+      return payload["prompt_cache_key"] as string;
+    };
+    const first = forAccount("account-one-uid");
+    const second = forAccount("account-two-uid");
+    expect(first).not.toBe(second);
+    expect(first.startsWith("wb2a-account-")).toBe(true);
+    expect(second.startsWith("wb2a-account-")).toBe(true);
+    // Same account and conversation is stable across calls.
+    expect(forAccount("account-one-uid")).toBe(first);
+  });
+
+  test("a client-supplied cache key is never overwritten", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [],
+      prompt_cache_key: "caller-knows-best",
+      conversation_id: "conv-1",
+    };
+    const account = {
+      credential: { secret: new TextEncoder().encode("h.e30.s") },
+    } as unknown as ProviderDispatchContext;
+    buddyPrePayloadCommon(payload, request, "intl", account);
+    expect(payload["prompt_cache_key"]).toBe("caller-knows-best");
+  });
+
+  test("the body conversation id wins over the inbound header", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [],
+      conversation_id: "from-body",
+    };
+    const account = {
+      request_headers: { "x-conversation-id": "from-header" },
+    } as unknown as ProviderDispatchContext;
+    buddyPrePayloadCommon(payload, request, "intl", account);
+    const fromHeaderOnly: Record<string, unknown> = { model: "glm-5.2", messages: [] };
+    buddyPrePayloadCommon(fromHeaderOnly, request, "intl", account);
+    expect(payload["prompt_cache_key"]).not.toBe(fromHeaderOnly["prompt_cache_key"]);
+    expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", "from-body"));
+  });
+
+  test("rewrites a quoted 11128 so the upstream does not block the request for mentioning it", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [
+        { role: "user", content: "the last call failed with code 11128" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "saw 11128" }],
+          reasoning_content: "code 11128 again",
+          tool_calls: [{ id: "c1", function: { name: "note", arguments: "{\"code\":11128}" } }],
+        },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const user = messages.find((m) => m["role"] === "user");
+    const text = JSON.stringify(user?.["content"]);
+    expect(text).toContain("11-128");
+    expect(text).not.toContain("11128");
+    const assistant = messages.find((m) => m["role"] === "assistant");
+    expect(JSON.stringify(assistant)).not.toContain("11128");
+    expect(JSON.stringify(assistant)).toContain("11-128");
+  });
+
+  test("leaves neighbouring codes untouched", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: "11148 and 11101 are different codes" }],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    expect(JSON.stringify(messages)).toContain("11148");
+    expect(JSON.stringify(messages)).toContain("11101");
+  });
+
+  test("keeps the first 16 images and replaces the rest with a note", () => {
+    const images = Array.from({ length: 18 }, (_, i) => ({
+      type: "image_url",
+      image_url: { url: `https://example.test/${i}.png` },
+    }));
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: images }],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const content = JSON.stringify(messages);
+    const kept = content.match(/example\.test/g)?.length ?? 0;
+    expect(kept).toBe(16);
+    expect(content).toContain("[Image omitted by request image limit.]");
+  });
+
+  test("sends the desktop device token only when the account has one", async () => {
+    const headers = await workbuddyHeaders(context, request);
+    expect(headers["x-device-token"]).toBe("desktop-token");
+    expect(readBuddyDeviceToken({ credential: { auth_state: {} } } as unknown as ProviderDispatchContext)).toBeUndefined();
+  });
+
+  test("WorkBuddy CN changes only the host identity in the shared headers", async () => {
+    const cnHeaders = await workbuddyHeaders(context, request, "www.workbuddy.cn", "5.7.7.40774747");
+    const intlHeaders = await workbuddyHeaders(context, request);
+    expect(cnHeaders["origin"]).toBe("https://www.workbuddy.cn");
+    expect(cnHeaders["referer"]).toBe("https://www.workbuddy.cn/");
+    expect(cnHeaders["x-domain"]).toBe("www.workbuddy.cn");
+    expect(cnHeaders["user-agent"]).toMatch(
+      /^WorkBuddy\/5\.7\.7\.40774747 WorkBuddy AI\/5\.7\.7\.40774747 CLI\/\S+$/,
+    );
+    expect(cnHeaders["user-agent"]).toContain("5.7.7.40774747");
+    expect(cnHeaders["x-product"]).toBe(intlHeaders["x-product"]);
+  });
+
+  test("recovers a complete DSML block as a tool call", () => {
+    const pipe = "\uFF5C\uFF5C";
+    const text = `<${pipe}DSML${pipe} calls><${pipe}DSML${pipe} invoke name="run_shell"><${pipe}DSML${pipe} parameter name="command" string="true">ls</${pipe}DSML${pipe} parameter></${pipe}DSML${pipe} invoke></${pipe}DSML${pipe} calls>`;
+    const recovered = parseDsmlToolCalls(text);
+    expect(recovered?.calls[0]?.name).toBe("run_shell");
+    expect(JSON.parse(recovered?.calls[0]?.arguments ?? "{}")).toEqual({ command: "ls" });
+    const events = parseChatResponseToEvents({
+      choices: [{ message: { role: "assistant", content: text }, finish_reason: "stop" }],
+    }, request);
+    expect(events.some((event) => event.type === "tool_call_delta" && event.name === "run_shell")).toBe(true);
+  });
+
+  test("drops a replayed tool call whose function name is empty, and its orphan result", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "search this" },
+        {
+          role: "assistant",
+          content: "on it",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "", arguments: '{"query":"x"}' } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "<tool_use_error>No such tool available: </tool_use_error>" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    expect(messages.some((m) => m["role"] === "tool" && m["tool_call_id"] === "call_1")).toBe(false);
+    const assistant = messages.find((m) => m["role"] === "assistant") as Record<string, unknown> | undefined;
+    expect(assistant?.["tool_calls"]).toBeUndefined();
+  });
+
+  test("keeps a named call on the same turn when a sibling name is empty", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: "working",
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "run_shell", arguments: "{}" } },
+            { id: "call_2", type: "function", function: { name: "", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "ok" },
+        { role: "tool", tool_call_id: "call_2", content: "err" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const assistant = messages.find((m) => m["role"] === "assistant") as Record<string, unknown>;
+    const kept = (assistant["tool_calls"] ?? []) as Array<Record<string, unknown>>;
+    expect(kept).toHaveLength(1);
+    expect((kept[0]?.["function"] as Record<string, unknown> | undefined)?.["name"]).toBe("run_shell");
+    expect(messages.some((m) => m["tool_call_id"] === "call_2")).toBe(false);
+  });
+
+  test("does not remove an assistant turn that keeps content after dropping a nameless call", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: "checking",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "  ", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "err" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    // The turn said something before calling, so it survives without its call.
+    expect(messages.some((m) => m["role"] === "assistant" && m["content"] === "checking")).toBe(true);
+  });
+
+  test("reads enterprise usage when the personal package list is empty", async () => {
+    const fetcher = (async (url: string) => new Response(JSON.stringify(
+      String(url).endsWith("/get-user-resource")
+        ? { code: 0, data: { Response: { Data: { Accounts: [] } } } }
+        : { code: 0, data: { credit: 200, limitNum: 1000, cycleEndTime: "2026-10-26 23:59:59" } },
+    ), { status: 200 })) as unknown as typeof fetch;
+    const result = await fetchTencentBillingQuota({
+      source: "workbuddy",
+      display: "WorkBuddy",
+      url: "https://www.workbuddy.ai/v2/billing/meter/get-user-resource",
+      headers: { "X-Enterprise-Id": "ent-1" },
+      credential: "token",
+      fetcher,
+      defaultPlan: "WorkBuddy",
+    });
+
+    expect(result.plan).toBe("Enterprise");
+    expect(result.windows[0]?.remaining).toBe(800);
+    expect(result.windows[0]?.limit).toBe(1000);
+  });
+
+  test("WorkBuddy CN quota uses its own host and client version", async () => {
+    let capturedUrl = "";
+    let capturedHeaders: Headers | undefined;
+    const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedHeaders = new Headers(init?.headers);
+      return new Response(JSON.stringify({
+        code: 0,
+        data: {
+          Response: {
+            Data: {
+              Accounts: [{
+                PackageName: "WorkBuddy CN",
+                CapacityUsed: 10,
+                CapacitySize: 100,
+                CycleEndTime: "2026-11-01T00:00:00.000Z",
+              }],
+            },
+          },
+        },
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await fetchWorkBuddyCnQuota("token", fetcher);
+
+    expect(result.source).toBe("workbuddycn");
+    expect(capturedUrl).toBe("https://www.workbuddy.cn/v2/billing/meter/get-user-resource");
+    expect(capturedHeaders?.get("x-domain")).toBe("www.workbuddy.cn");
+    expect(capturedHeaders?.get("user-agent")).toContain("WorkBuddy/5.8.3.41334564");
+  });
+
+  test("classifies refill and bonus packages into the same spendable credit pool", async () => {
+    const fetcher = (async () => new Response(JSON.stringify({
+      code: 0,
+      data: {
+        Response: {
+          Data: {
+            Accounts: [
+              {
+                PackageName: "Monthly",
+                CycleCapacityUsedPrecise: "0",
+                CycleCapacitySizePrecise: "100",
+                CycleEndTime: "2030-11-01 00:00:00",
+                DeductionEndTime: "2030-12-01 00:00:00",
+              },
+              {
+                PackageName: "Bonus",
+                CapacityUsedPrecise: "30",
+                CapacitySizePrecise: "30",
+                CycleEndTime: "2030-11-15 00:00:00",
+              },
+            ],
+          },
+        },
+      },
+    }), { status: 200 })) as unknown as typeof fetch;
+    const result = await fetchTencentBillingQuota({
+      source: "cb",
+      display: "CodeBuddy",
+      url: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
+      headers: {},
+      credential: "token",
+      fetcher,
+      defaultPlan: "CodeBuddy",
+    });
+
+    expect(result.windows.map((entry) => entry.accounting)).toEqual(["pooled", "pooled"]);
+  });
+});

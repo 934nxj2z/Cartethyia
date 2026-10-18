@@ -1,0 +1,1627 @@
+/*
+ * Shared shell frame and irreducible application rules: topbar/sidebar layout,
+ * page scroller, document framing, and effects utilities cannot express.
+ */
+@layer components {
+/* ===== shell ===== */
+/* App shell, sidebar, navigation, topbar, main column, and footer. */
+/* ==========================================================================
+   App Shell Layout — True OS Desktop Split Screen
+   ========================================================================== */
+.app-shell-frame {
+  /* The container lives on the wrapper, not the grid: a container query cannot
+     match the element that declares it, so the collapse is measured one level
+     up. The drawer below keys off this container, not the viewport, so a wide
+     window with a narrow shell (a docked panel, a split view) still collapses.
+     A size container with no width of its own sizes to its content, and the
+     grid inside it could then never grow past that — the frame must be a
+     full-width block or the content column stops where the content stops. */
+  display: block;
+  /* #root is a flex column, and a flex item's percentage width resolves against
+     an indefinite size, so `width: 100%` shrinks this to its content and the
+     page ends up centered in the window. Flex growth is what fills it. */
+  flex: 1 0 auto;
+  width: 100%;
+  container-type: inline-size;
+  container-name: app-shell;
+}
+.app-shell-root {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  max-width: 1560px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  /* The sidebar column collapses the moment the shell itself is too narrow to
+     hold it, not at a fixed viewport width. A window can be wide while this
+     column is not (a docked panel, a split view), and a viewport query kept
+     reserving 272px there, pushing the page off the right edge. */
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 16px;
+  box-sizing: border-box;
+}
+
+/* The log and audit views keep the shell fixed to the viewport so their
+   entries scroll inside the card instead of extending the document. */
+.app-shell-root[data-page-scroll="contained"] {
+  height: 100dvh;
+  min-height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+@container app-shell (max-width: 860px) {
+  .app-shell-root {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+    gap: 12px;
+  }
+  .app-shell-root[data-drawer="open"] .app-main-column {
+    position: relative;
+    z-index: 1;
+  }
+  .app-shell-root[data-drawer="open"] .app-main-column::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    background: rgba(0, 0, 0, 0.62);
+    border-radius: var(--radius-card);
+    pointer-events: auto;
+  }
+}
+
+/* Sidebar rail. It is a grid item, so it takes its column from the grid instead
+   of a hand-computed offset, and it sticks to the viewport while the document
+   scrolls. Long nav lists scroll inside the rail. */
+.app-sidebar {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  width: 100%;
+  min-width: 0;
+  height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: var(--radius-sidebar);
+  padding: 18px 14px;
+  overflow-y: auto;
+  z-index: 30;
+  box-sizing: border-box;
+}
+/* Off-canvas: below the shell collapse the rail leaves the grid and slides in
+   over the content. It is fixed only in this state; at desktop width it is an
+   ordinary sticky grid item. This follows the base rule so it wins on source order. */
+@container app-shell (max-width: 860px) {
+  .app-sidebar {
+    position: fixed;
+    top: 12px;
+    bottom: 12px;
+    left: 12px;
+    z-index: 80;
+    width: min(280px, calc(100vw - 24px));
+    max-width: 280px;
+    /* top and bottom alone do not stretch a fixed box; give it the height. */
+    height: calc(100dvh - 24px);
+    transform: translateX(calc(-100% - 24px));
+    transition: transform 280ms var(--ease-spring);
+    box-shadow: var(--shadow-popout);
+  }
+  .app-sidebar.is-open {
+    transform: translateX(0);
+  }
+}
+
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--page-bg);
+}
+
+/* Custom background, rendered by `BackgroundLayer` and framed by the variables
+   the Customization page writes onto `<html>`. It mounts inside
+   `.app-main-column`, so a card's backdrop-filter samples this image instead
+   of the black body. Inert — it must never catch a click meant for the page.
+
+   The media is oversized by the zoom and anchored with the offsets, then the
+   layer clips it. That is what makes "taller" and "shift left" real instead of
+   letterboxing. `contain` stays `none`: any other value both hides this image
+   from backdrop-filter and pins the fixed layer to the scroller. */
+.custom-background {
+  contain: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--bg-opacity, 0.4);
+}
+
+.custom-background-media {
+  position: absolute;
+  top: calc(50% + var(--bg-y, 0%));
+  left: calc(50% + var(--bg-x, 0%));
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translate(-50%, -50%) scale(var(--bg-scale, 1));
+  filter: blur(var(--bg-blur, 0px));
+}
+
+/* A phone decodes a full-viewport video badly. The component pauses playback;
+   the first frame still fills the screen. */
+
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Sidebar Brand Header */
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 16px 8px;
+  border-bottom: 1px solid var(--inner-border);
+}
+
+.brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-foreground);
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.brand-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.brand-name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.brand-version-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+.brand-version-link {
+  color: inherit;
+  text-decoration: none;
+}
+.brand-version-link:hover {
+  color: var(--text-primary);
+}
+
+/* Update badge: a flat pill, no glow. It sits beside the version so an operator
+ * sees "an update exists" without the badge reading as an alert. */
+.brand-update-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-decoration: none;
+  transition: background var(--dur-micro) var(--ease-spring);
+}
+
+.brand-update-badge:hover {
+  background: var(--active-pill);
+}
+
+/* Navigation Groups */
+.nav-group-section {
+  margin-top: 14px;
+}
+
+.nav-group-section:first-child {
+  margin-top: 0;
+}
+
+.nav-group-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  padding: 4px 10px 6px;
+}
+
+
+.nav-items-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-active-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--active-pill);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition:
+    transform var(--dur-macro) var(--ease-spring),
+    height var(--dur-macro) var(--ease-spring),
+    opacity var(--dur-macro) var(--ease-spring);
+  pointer-events: none;
+}
+
+.nav-link-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition:
+    color var(--dur-micro) var(--ease-spring),
+    transform var(--dur-micro) var(--ease-spring);
+}
+
+.nav-link-item:hover {
+  color: var(--text-primary);
+}
+
+.nav-link-item.active {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.nav-link-item:active {
+  transform: scale(0.98);
+}
+
+.nav-link-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.nav-link-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.nav-link-badge {
+  margin-left: auto;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+}
+
+/* Sidebar Footer User Card */
+.sidebar-user-card {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--inner-border);
+}
+
+.user-card-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--inner-border);
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent);
+  backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+  -webkit-backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, #ff9f0a, #ff375f);
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.user-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-role {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   Main Content Column — THE ONE THAT SCROLLS
+   ========================================================================== */
+.app-main-column {
+  min-width: 0;
+  max-width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
+}
+
+/* The document is the scroller, so a page grows with its content and a short
+   page (combos, quota) still reaches the footer through this floor. A page
+   that wants to fill the floor and scroll internally (console log, model lab)
+   opts in with its own `flex: 1`; the shell does not force it onto every page
+   root, because that is what collapsed the settings grid and shrank cards
+   below their content. */
+main.route-enter {
+  flex: 1 1 auto;
+  min-height: calc(100dvh - 104px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app-shell-root[data-page-scroll="contained"] .app-main-column {
+  min-height: 0;
+}
+.app-shell-root[data-page-scroll="contained"] main.route-enter {
+  min-height: 0;
+  overflow: hidden;
+}
+/* A page root is only as tall as its content, so a short page (overview,
+   combos, proxy) stopped above the viewport bottom even though `main` itself
+   reaches it. Grow the root to fill `main`; a page taller than the floor
+   keeps its own height and scrolls as before. */
+main.route-enter > :only-child {
+  flex: 1 1 auto;
+}
+/* The last card of a page grows to fill whatever the page root has left, so
+   every page ends on a card edge at the viewport bottom instead of empty
+   space. A page taller than the viewport is unaffected: there is no free
+   space left to grow into. */
+main.route-enter > :only-child > .card-solid:last-child {
+  flex: 1 1 auto;
+}
+main.route-enter .card-body-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Tables keep card width; scoped to the container so grids do not get a forced
+   min-width that makes cells overflow and cards overlap. */
+main.route-enter .card-body-content > .data-table-container {
+  min-width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+main.route-enter .state-viewport {
+  flex: 1 1 auto;
+  min-height: clamp(220px, calc(100dvh - 270px), 1000px);
+}
+main.route-enter .state-viewport-compact {
+  min-height: 0;
+}
+
+.dashboard-page {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Toolbar pinned under the topbar. The document scrolls, and the topbar sticks
+   at the shell padding, so a toolbar clears it by the topbar's own height. The
+   opaque surface and shadow keep cards legible as they pass beneath. */
+
+/* Topbar sticks to the viewport while the document scrolls. Its opaque surface
+   and shadow are what keep the content passing beneath it readable. */
+.app-topbar {
+  position: sticky;
+  top: 16px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--inner-border);
+  box-shadow: var(--shadow-card);
+}
+
+.app-topbar-popover {
+  position: fixed;
+  top: 84px;
+  right: 24px;
+  width: min(340px, calc(100vw - 40px));
+  max-height: calc(100vh - 108px);
+  max-height: calc(100dvh - 108px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .app-topbar-popover {
+    right: 16px;
+    width: min(340px, calc(100vw - 32px));
+  }
+}
+
+.topbar-menu-btn {
+  display: none;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--hover);
+  color: var(--text-primary);
+  place-items: center;
+  flex-shrink: 0;
+}
+/* The menu button and the title icon trade places: below the shell collapse the
+   button opens the drawer, and the title icon would only double it. This follows
+   the base rule so it wins on source order. */
+@container app-shell (max-width: 860px) {
+  .topbar-menu-btn {
+    display: grid;
+  }
+  .topbar-title-icon {
+    display: none;
+  }
+}
+.topbar-meta {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+/* The page icon marks the route on desktop. On mobile the menu button already
+   is an icon at the left, so the title icon would double it — hide it there. */
+.topbar-title-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+
+.topbar-subtitle {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-button {
+  height: 38px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--hover);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: all var(--dur-micro) var(--ease-spring);
+}
+
+.topbar-button:hover {
+  background: var(--active-pill);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.topbar-icon-button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--hover);
+  color: var(--text-secondary);
+  transition: all var(--dur-micro) var(--ease-spring);
+}
+
+.topbar-icon-button:hover {
+  background: var(--active-pill);
+  color: var(--text-primary);
+}
+
+.topbar-icon-button:active {
+  transform: scale(0.92);
+}
+
+@media (max-width: 640px) {
+  .topbar-button span,
+  .topbar-button kbd {
+    display: none;
+  }
+  .topbar-button {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+  .topbar-title {
+    font-size: 14.5px;
+  }
+  .topbar-subtitle {
+    display: none;
+  }
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .section-header-action {
+    width: 100%;
+  }
+  .section-header-action button {
+    width: 100%;
+  }
+}
+
+
+
+.status-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.status-indicator-dot.online {
+  background: var(--green);
+}
+
+.status-indicator-dot.offline {
+  background: var(--red);
+}
+
+.status-indicator-dot.pulse {
+  animation: pulse-subtle 1.8s infinite;
+}
+
+/* Public share document framing and key-art backdrop. Page visuals are utilities. */
+html[data-app="share"],
+html[data-app="share"] body {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html[data-app="share"] #root {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+html[data-app="share"] body {
+  --share-backdrop-veil: 0.8;
+  /* The image lives on the document element behind this. An opaque body
+     background covers it on desktop and leaves the page dark. */
+  background: transparent;
+}
+
+/* A fixed element inside the page, not a background on the document. The
+   document and the body both paint an opaque color, so a background image on
+   either of them never shows. This layer sits behind the content and does not
+   scroll with it. */
+html[data-app="share"] .share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--page-bg) calc(var(--share-backdrop-veil) * 100%), transparent),
+      color-mix(in srgb, var(--page-bg) calc(var(--share-backdrop-veil) * 100%), transparent)
+    ),
+    url("/assets/brand/bansos_page.png");
+  background-position: center, center 28%;
+  background-repeat: no-repeat, no-repeat;
+  background-size: cover, cover;
+  pointer-events: none;
+}
+
+/* Full-bleed at the top of the page, a floating pill once content scrolls
+   under it. Same shape as the landing header, in the share tokens. */
+html[data-app="share"] .share-header {
+  position: fixed;
+  z-index: var(--z-index-header);
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  background-color: var(--page-bg);
+  transition: padding 260ms ease, background-color 260ms ease;
+}
+
+html[data-app="share"] .share-header[data-scrolled="true"] {
+  padding: 8px 16px;
+  background-color: transparent;
+}
+
+html[data-app="share"] .share-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(100%, 960px);
+  min-height: 66px;
+  margin-inline: auto;
+  transition: width 260ms ease, min-height 260ms ease, border-radius 260ms ease, background-color 260ms ease, box-shadow 260ms ease;
+}
+
+html[data-app="share"] .share-header-inner[data-scrolled="true"] {
+  width: min(720px, calc(100vw - 32px));
+  min-height: 56px;
+  padding-inline: 12px;
+  border: 1px solid var(--glass-border-2);
+  border-radius: var(--radius-pill);
+  background-color: var(--glass-bg);
+  backdrop-filter: blur(12px) saturate(1.5);
+  box-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.6);
+}
+
+html[data-app="share"][data-theme="dark"] body {
+  --share-backdrop-veil: 0.6;
+}
+
+/* Landing document framing is viewport-level and cannot be expressed by a child utility. */
+html[data-app="landing"] {
+  height: auto;
+  min-height: 100%;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--page-bg);
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+html[data-app="landing"] body {
+  height: auto;
+  min-height: 100%;
+  min-height: 100dvh;
+  overflow: visible;
+  background: var(--page-bg);
+  background-image: none;
+  color: var(--text-primary);
+}
+
+html[data-app="landing"] #root {
+  display: block;
+  height: auto;
+  min-height: 100%;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+html[data-app="landing"] .landing-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 650px;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--color-story-white) 18%, transparent);
+}
+
+html[data-app="landing"] .landing-signal-tile {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-story-white) 16%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-story-white) 3%, transparent);
+}
+
+html[data-app="landing"] .landing-signal-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--story-accent) 35%, transparent);
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--story-accent) 8%, transparent);
+  color: var(--story-accent);
+}
+
+html[data-app="landing"] .landing-signal-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+}
+
+html[data-app="landing"] .landing-signal-label {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--color-story-white) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+html[data-app="landing"] .landing-signal-value {
+  color: var(--color-story-white);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+html[data-app="landing"] .landing-header {
+  position: fixed;
+  z-index: var(--z-index-header);
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  background-color: var(--story-deep);
+  transition: padding 260ms ease, background-color 260ms ease;
+}
+
+html[data-app="landing"] .landing-header[data-scrolled="true"] {
+  padding: 8px 16px;
+  background-color: transparent;
+}
+
+html[data-app="landing"] .landing-header-inner {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(100%, 1280px);
+  height: 72px;
+  margin-inline: auto;
+  transition:
+    width 260ms ease,
+    height 260ms ease,
+    border-radius 260ms ease,
+    border-color 260ms ease,
+    background-color 260ms ease,
+    box-shadow 260ms ease;
+}
+
+html[data-app="landing"] .landing-header-inner[data-scrolled="true"] {
+  width: min(720px, calc(100vw - 32px));
+  height: 56px;
+  padding-inline: 12px;
+  border: 1px solid color-mix(in srgb, var(--story-accent) 20%, transparent);
+  border-radius: var(--radius-pill);
+  background-color: var(--story-deep);
+  box-shadow:
+    0 12px 32px -12px rgb(0 0 0 / 0.76),
+    0 0 0 1px color-mix(in srgb, var(--story-accent) 10%, transparent);
+}
+
+html[data-app="landing"] .landing-header-brand {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-story-white);
+  text-decoration: none;
+}
+
+html[data-app="landing"] .landing-header-desktop-nav {
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+
+html[data-app="landing"] .landing-header-desktop-nav a,
+html[data-app="landing"] .landing-header-desktop-nav button {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 14px;
+  border: 0;
+  border-radius: var(--radius-inset);
+  background: transparent;
+  color: color-mix(in srgb, var(--color-story-white) 68%, transparent);
+  font-size: var(--text-badge);
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+html[data-app="landing"] .landing-header-desktop-nav a:hover,
+html[data-app="landing"] .landing-header-desktop-nav button:hover {
+  background-color: color-mix(in srgb, var(--color-story-white) 10%, transparent);
+  color: var(--color-story-white);
+}
+
+html[data-app="landing"] .landing-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+html[data-app="landing"] .landing-header-github,
+html[data-app="landing"] .landing-header-control,
+html[data-app="landing"] .landing-header-menu-toggle {
+  box-sizing: border-box;
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-inline: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-story-white) 25%, transparent);
+  border-radius: var(--radius-control);
+  background-color: color-mix(in srgb, var(--color-story-white) 8%, transparent);
+  color: var(--color-story-white);
+  font-size: var(--text-badge);
+  font-weight: 700;
+  font-family: inherit;
+  text-decoration: none;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+html[data-app="landing"] .landing-header-github {
+  min-height: 38px;
+  padding-inline: 10px;
+  border-color: color-mix(in srgb, var(--color-story-white) 25%, transparent);
+  background-color: color-mix(in srgb, var(--color-story-white) 8%, transparent);
+  color: var(--color-story-white);
+}
+
+html[data-app="landing"] .landing-header-github:hover,
+html[data-app="landing"] .landing-header-control:hover {
+  border-color: var(--color-story-white);
+  background-color: var(--color-story-white);
+  color: var(--story-deep);
+}
+
+html[data-app="landing"] .landing-header-control {
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+html[data-app="landing"] .landing-header-show-all {
+  display: none;
+}
+
+html[data-app="landing"] .landing-header-show-all.is-active {
+  border-color: var(--color-story-white);
+  background-color: var(--color-story-white);
+  color: var(--story-deep);
+}
+
+html[data-app="landing"] .landing-header-menu-toggle {
+  display: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  cursor: pointer;
+}
+
+html[data-app="landing"] .landing-header-menu-toggle:focus-visible,
+html[data-app="landing"] .landing-header-desktop-nav a:focus-visible,
+html[data-app="landing"] .landing-header-desktop-nav button:focus-visible,
+html[data-app="landing"] .landing-header-control:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+html[data-app="landing"] .landing-header-menu-overlay,
+html[data-app="landing"] .landing-header-mobile-nav {
+  display: none;
+}
+
+html[data-app="landing"] .landing-header-menu-overlay {
+  position: fixed;
+  z-index: var(--z-index-mobile-overlay);
+  inset: 0;
+  background-color: rgb(0 0 0 / 0.62);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+html[data-app="landing"] .landing-header-menu-overlay[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+html[data-app="landing"] .landing-header-mobile-nav {
+  position: fixed;
+  z-index: var(--z-index-mobile-panel);
+  top: 72px;
+  left: 50%;
+  box-sizing: border-box;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 88px);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--story-accent) 22%, transparent);
+  border-radius: var(--radius-panel);
+  background-color: var(--story-deep);
+  box-shadow: 0 18px 42px -16px rgb(0 0 0 / 0.78);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -8px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+html[data-app="landing"] .landing-header-mobile-nav[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+html[data-app="landing"] .landing-header-mobile-nav > div {
+  min-height: 36px;
+}
+
+html[data-app="landing"] .landing-header-mobile-nav > button {
+  min-height: 44px;
+  border-radius: var(--radius-inset);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+html[data-app="landing"] .landing-header-mobile-nav > button:hover,
+html[data-app="landing"] .landing-header-mobile-nav > button:focus-visible {
+  background-color: color-mix(in srgb, var(--color-story-white) 9%, transparent);
+  color: var(--color-story-white);
+}
+
+html[data-app="landing"] .landing-header-mobile-nav > button:focus-visible,
+html[data-app="landing"] .landing-header-mobile-nav > a:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+html[data-app="landing"] .landing-header-mobile-nav > a {
+  min-height: 44px;
+  margin-top: 4px;
+  border-radius: var(--radius-control);
+}
+
+html[data-app="landing"] .landing-story-shell {
+  width: min(
+    calc(100% - 2 * var(--landing-story-gutter)),
+    var(--landing-story-max-width)
+  );
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+  column-gap: clamp(2rem, 5vw, 5rem);
+}
+
+html[data-app="landing"] .landing-story-visual {
+  height: var(--landing-story-figure-height);
+}
+
+@media (min-width: 641px) {
+  html[data-app="landing"] .landing-header-show-all {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 1025px) {
+  html[data-app="landing"] .landing-header-desktop-nav {
+    display: flex;
+  }
+
+  html[data-app="landing"] .landing-header-inner[data-scrolled="true"] {
+    width: min(900px, calc(100vw - 32px));
+  }
+}
+
+@media (max-width: 1024px) {
+  html[data-app="landing"] .landing-header-menu-toggle,
+  html[data-app="landing"] .landing-header-menu-overlay {
+    display: inline-flex;
+  }
+
+  html[data-app="landing"] .landing-header-menu-overlay {
+    display: block;
+  }
+
+  html[data-app="landing"] .landing-header-mobile-nav {
+    display: grid;
+  }
+
+  html[data-app="landing"] .landing-header-console {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  html[data-app="landing"] .landing-header {
+    padding-inline: 16px;
+  }
+
+  html[data-app="landing"] .landing-header-inner {
+    gap: 8px;
+  }
+
+  html[data-app="landing"] .landing-header-inner[data-scrolled="true"] {
+    padding-inline: 10px;
+  }
+
+  html[data-app="landing"] .landing-header-show-all,
+  html[data-app="landing"] .landing-header-github .github-badge-metric {
+    display: none;
+  }
+
+  html[data-app="landing"] .landing-header-github {
+    width: 38px;
+    padding-inline: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  html[data-app="landing"] .landing-header-brand small {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  html[data-app="landing"] .landing-story-shell {
+    width: calc(100% - 2 * var(--landing-story-tablet-gutter));
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--landing-story-stack-gap);
+  }
+
+  html[data-app="landing"] .landing-story-visual {
+    height: var(--landing-story-tablet-figure-height);
+    max-width: var(--landing-story-figure-max-width);
+    margin-inline: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  html[data-app="landing"] .landing-signal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 18px;
+    padding-top: 10px;
+  }
+
+  html[data-app="landing"] .landing-signal-tile {
+    gap: 8px;
+    padding: 9px;
+  }
+
+  html[data-app="landing"] .landing-signal-label {
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 700px) {
+  html[data-app="landing"] main > article {
+    min-height: 0;
+    align-items: flex-start;
+    padding-block: 80px 16px;
+  }
+
+  html[data-app="landing"] .landing-story-shell {
+    width: calc(100% - 2 * var(--landing-story-mobile-gutter));
+    gap: 10px;
+  }
+
+  html[data-app="landing"] .landing-story-visual {
+    height: auto;
+    aspect-ratio: 2.35 / 1;
+  }
+
+  html[data-app="landing"] .landing-story-shell > div > h1 {
+    max-width: 15ch;
+    margin-top: 10px;
+    font-size: clamp(29px, 8vw, 36px);
+    line-height: 0.98;
+    letter-spacing: -0.035em;
+  }
+
+  html[data-app="landing"] .landing-story-description {
+    max-width: none;
+    margin-top: 12px;
+    font-size: clamp(15px, 4vw, 16px);
+    line-height: 1.5;
+  }
+}
+
+@media (max-width: 700px) and (max-height: 760px) {
+  html[data-app="landing"] main > article {
+    padding-block: 80px 16px;
+  }
+
+  html[data-app="landing"] .landing-story-shell {
+    gap: 10px;
+  }
+
+  html[data-app="landing"] .landing-story-visual {
+    aspect-ratio: 2.4 / 1;
+  }
+
+  html[data-app="landing"] .landing-story-description {
+    margin-top: 12px;
+  }
+
+  html[data-app="landing"] .landing-signal-grid {
+    gap: 6px;
+    margin-top: 14px;
+    padding-top: 8px;
+  }
+
+  html[data-app="landing"] .landing-signal-tile {
+    gap: 6px;
+    padding: 7px;
+  }
+
+  html[data-app="landing"] .landing-signal-icon {
+    width: 24px;
+    height: 24px;
+  }
+
+  html[data-app="landing"] .landing-story-shell > div > div:last-child {
+    margin-top: 8px;
+  }
+}
+
+::view-transition-group(story-backdrop),
+::view-transition-group(story-copy) {
+  animation-duration: 620ms;
+  animation-timing-function: cubic-bezier(.22,.61,.36,1);
+}
+
+::view-transition-old(story-backdrop),
+::view-transition-new(story-backdrop) {
+  animation-duration: 620ms;
+}
+
+::view-transition-old(story-copy),
+::view-transition-new(story-copy) {
+  animation-duration: 420ms;
+}
+
+@keyframes story-reveal-up {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Shared motion. Route entry moves top only: opacity/transform/filter would
+   create a grouping layer and prevent cards from sampling the backdrop. */
+@keyframes motion-route-in {
+  from { top: 6px; }
+  to { top: 0; }
+}
+@keyframes popout-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes dialog-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dialog-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes dialog-panel-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes dialog-panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(8px) scale(0.97); }
+}
+@keyframes drawer-panel-in {
+  from { transform: translateX(105%); }
+  to { transform: translateX(0); }
+}
+@keyframes drawer-panel-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(105%); }
+}
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes message-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes stream-caret {
+  0%, 100% { opacity: 0.4; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* Fixed viewport-relative caps utilities cannot name: `max-h-*` has no theme
+   namespace, so these live as classes beside `.signal-grid`. */
+.thinking-clamp {
+  max-height: calc(1.5em * 5);
+}
+.media-preview-frame {
+  max-height: calc(100dvh - 16rem);
+}
+.svg-preview-frame {
+  max-height: 50vh;
+}
+@keyframes reset-credit-sheen {
+  0% { background-position: -160% 0; }
+  100% { background-position: 260% 0; }
+}
+@keyframes reset-credit-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 4px color-mix(in srgb, var(--status-success) 55%, transparent)); }
+}
+.reset-credit-live {
+  display: inline-block;
+  background: linear-gradient(100deg, var(--text-tertiary) 32%, var(--status-success) 50%, var(--text-tertiary) 68%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: reset-credit-sheen 2.4s linear infinite, reset-credit-glow 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reset-credit-live {
+    animation: none;
+    color: var(--status-success);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+.route-enter {
+  position: relative;
+  animation: motion-route-in var(--dur-macro) var(--ease-spring) both;
+}
+.popout-enter {
+  animation: popout-in var(--dur-micro) var(--ease-spring) both;
+  transform-origin: top right;
+}
+
+/* Presence animations and viewport limits use runtime width/safe-area values.
+   Overlay and panel chrome is owned by utilities in ui/dialog and ui/drawer. */
+.dialog-overlay {
+  animation: dialog-overlay-in var(--dur-macro) var(--ease-spring) both;
+}
+.dialog-overlay.closing {
+  animation: dialog-overlay-out var(--dur-micro) var(--ease-spring) both;
+}
+.dialog-panel {
+  width: min(var(--dialog-width, 520px), calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  animation: dialog-panel-in var(--dur-macro) var(--ease-spring) both;
+}
+.dialog-panel.expanded {
+  width: min(1160px, calc(100vw - 32px));
+}
+.dialog-panel.closing {
+  animation: dialog-panel-out var(--dur-micro) var(--ease-spring) both;
+}
+@media (max-width: 640px) {
+  .dialog-overlay {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .dialog-panel {
+    max-height: calc(100dvh - 24px);
+  }
+  .dialog-panel.expanded {
+    width: min(1160px, calc(100vw - 24px));
+  }
+}
+.drawer-overlay {
+  animation: dialog-overlay-in 180ms var(--ease-spring) both;
+}
+.drawer-overlay.closing,
+.drawer-overlay[data-state="closing"] {
+  animation: dialog-overlay-out var(--dur-micro) var(--ease-spring) both;
+}
+.drawer-panel {
+  animation: drawer-panel-in 220ms var(--ease-spring) both;
+}
+.drawer-panel.closing,
+.drawer-panel[data-state="closing"] {
+  animation: drawer-panel-out 220ms var(--ease-spring) both;
+}
+
+/* Runtime clarity/depth arithmetic cannot be expressed by a fixed utility. */
+.composer-glass {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent);
+  backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+  -webkit-backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+}
+
+@media (max-width: 640px) {
+  .studio-model-picker {
+    max-width: calc(100vw - 210px);
+  }
+}
+
+/* Browser-native range thumbs and a track painted from the runtime fill. */
+.blur-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  background: linear-gradient(to right, var(--text-primary) var(--fill, 0%), var(--surface-active) var(--fill, 0%));
+}
+.blur-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--surface-1);
+  border-radius: var(--radius-full);
+  background: white;
+  box-shadow: 0 0 0 1px var(--inner-border);
+}
+.blur-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 3px solid var(--surface-1);
+  border-radius: var(--radius-full);
+  background: white;
+  box-shadow: 0 0 0 1px var(--inner-border);
+}
+
+/* The chip inherits the parent's complete mono shorthand, not UA code sizing. */
+.code-chip-value { font: inherit; }
+
+/* Metric cards stay compact on phones while dropping to one column when the
+   available width cannot fit two readable tracks. */
+.metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+}
+/* Keep empty tracks so a partial final row does not stretch its remaining card. */
+.provider-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+}
+/* The routing controls form a balanced pair; auto-fit collapses unused tracks
+   so the two cards always share the available row instead of leaving a gap. */
+.routing-controls-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+}
+.quota-account-grid {
+  display: grid;
+  grid-template-columns: var(--grid-template-columns-quota-account);
+}
+}
+
+/* Preserve the account row layout at narrow widths; container sizing belongs to
+   the list, so this follows the actual provider-detail panel rather than viewport. */
+@container account-list (max-width: 560px) {
+  .account-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 8px;
+  }
+  .account-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+/* Auto-fit column templates: a narrow shell drops a column instead of crushing
+   the cards. Utilities cannot express `repeat(auto-fit, minmax(min(100%, Npx), 1fr))`
+   without smuggling the whole function through an arbitrary value, so each
+   breakpoint gets one named class, beside `.metric-grid` and `.provider-grid`. */
+.signal-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 110px), 1fr));
+}
+
+/* Account row and bulk-menu caps utilities cannot name: `grid-cols-[…]` and
+   `max-w-[calc(100vw-…)]` smuggle whole functions through arbitrary values,
+   so they live as classes beside `.signal-grid`. */
+.account-row-grid {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.popover-max {
+  max-width: calc(100vw - 2rem);
+}
+
+/* Estimated-limits badge: a fixed 13px dot grid the Button cannot size. */
+.estimate-dot {
+  width: 13px;
+  height: 13px;
+}
+
+/* Range input tracks and thumbs require browser-specific pseudo-elements. The
+   fill percentage and unlimited state are supplied by the routing control.
+   Sized to sit beside the text inputs in the same row rather than tower over
+   them: 20px track, 12px thumb. */
+.routing-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--surface-2);
+  cursor: pointer;
+  --slider-fill: var(--accent);
+}
+.routing-slider[data-unlimited="true"] {
+  --slider-fill: var(--status-success);
+}
+.routing-slider:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.routing-slider::-webkit-slider-runnable-track {
+  height: 20px;
+  border-radius: var(--radius-control);
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) var(--slider-pct, 0%),
+    transparent var(--slider-pct, 0%)
+  );
+}
+.routing-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: var(--accent-foreground);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-primary) 35%, transparent);
+}
+.routing-slider::-moz-range-track {
+  height: 20px;
+  border-radius: var(--radius-control);
+  background: transparent;
+}
+.routing-slider::-moz-range-progress {
+  height: 20px;
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+  background: var(--slider-fill);
+}
+.routing-slider::-moz-range-thumb {
+  width: 8px;
+  height: 12px;
+  border: none;
+  border-radius: 3px;
+  background: var(--accent-foreground);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-primary) 35%, transparent);
+}
+
+/*
+ * Banner tinting. The status colour is chosen by the block's `data-tone`, so the
+ * mix exists once per tone instead of once per call site — eight sites were
+ * each spelling their own `color-mix(…)` and the alphas had already drifted
+ * apart (40% here, 45% on the setup chip).
+ *
+ * `--banner-accent` is the resolved status colour; the block reads only
+ * `--banner-line` and `--banner-surface`, so a fourth tone is a selector here
+ * and nothing else.
+ */
+.banner {
+  --banner-accent: var(--status-info);
+}
+.banner[data-tone="success"] {
+  --banner-accent: var(--status-success);
+  --banner-ink: var(--status-success);
+}
+.banner[data-tone="danger"] {
+  --banner-accent: var(--status-danger);
+  --banner-ink: var(--status-danger);
+}
+.banner[data-tone="warning"] {
+  --banner-accent: var(--status-warning);
+  --banner-ink: var(--text-secondary);
+}
+
+/*
+ * `page` washes over transparent, for a banner on the page's own background.
+ * `raised` composites over the surface it sits on, because a translucent wash
+ * on a card would show the card's colour through and read as a different tone.
+ */
+.banner[data-surface="page"] {
+  --banner-line: color-mix(in srgb, var(--banner-accent) var(--banner-line-alpha), transparent);
+  --banner-surface: color-mix(in srgb, var(--banner-accent) var(--banner-surface-alpha), transparent);
+}
+.banner[data-surface="raised"] {
+  --banner-line: color-mix(in srgb, var(--banner-accent) var(--banner-line-alpha), var(--inner-border));
+  --banner-surface: color-mix(in srgb, var(--banner-accent) var(--banner-surface-alpha), var(--surface-2));
+}
+.banner {
+  border-color: var(--banner-line);
+  background: var(--banner-surface);
+  color: var(--banner-ink);
+}

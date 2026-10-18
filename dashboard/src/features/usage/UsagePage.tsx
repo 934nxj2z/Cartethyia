@@ -1,0 +1,1997 @@
+import { cn } from "../../lib/classnames";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  Activity,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpFromLine,
+  Ban,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Coins,
+  Copy,
+  Database,
+  DollarSign,
+  Download,
+  Eye,
+  EyeOff,
+  Cog,
+  Image as ImageIcon,
+  LogIn,
+  Maximize2,
+  Minimize2,
+  Paperclip,
+  Radio,
+  Route,
+  Scaling,
+  Server,
+  Wrench,
+} from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { Button } from "../../components/ui/button";
+import { useBanIp } from "../../hooks/model-bans";
+import { downloadTextFile } from "../../lib/download";
+import { toast } from "../../lib/toast";
+import { consoleRequest, getErrorMessage } from "../../data/api";
+import { Card, CardBody, CardHeader } from "../../components/ui/card";
+import { DataTable, StatCard } from "../../components/ui/layout";
+import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state";
+import { Drawer } from "../../components/ui/drawer";
+import { Select } from "../../components/ui/select";
+import { Inline } from "../../components/ui/inline";
+import { Stack } from "../../components/ui/stack";
+import { Banner } from "../../components/patterns/banner";
+import { useReducedMotion } from "../../hooks/use-reduced-motion";
+import {
+  useUsageBy,
+  useUsageChart,
+  useUsageRequestDetail,
+  useUsageRequests,
+  useUsageSummary,
+} from "../../hooks/system";
+import { requestProviderId } from "./request-provider";
+import { usageApiKeyLabel, usageClientLabel } from "./usage-labels";
+
+import { useProviderAccounts, useProviders } from "../../hooks/providers";
+import { useInFlight, type InFlightState } from "../../hooks/live";
+import { useTrackedTimeout } from "../../hooks/use-timeout";
+import { USAGE_PERIODS, type UsagePeriod as Period } from "../../data/usage-periods";
+import { httpStatusLabel, httpStatusShortLabel, httpStatusTone } from "./http-status";
+import { USAGE_DIMENSIONS, type UsageDimension, type UsageSummaryTotals } from "../../data/contracts";
+import {
+  DEFAULT_TOKEN_SCALE,
+  RAW_TOKEN_SCALE,
+  TOKEN_SCALE_AUTO,
+  TOKEN_SCALES,
+  formatTokens,
+  tokenScaleIndex,
+  tokenScaleValue,
+} from "../../lib/format/tokens";
+import {
+  formatBytes,
+  formatCredits,
+  formatDuration,
+  formatNumber,
+} from "../../lib/format/numbers";
+import { formatChartTick, formatChartTooltip } from "../../lib/format/instants";
+
+type Metric = "requests" | "tokens" | "cached";
+/** Mirrors the backend `USAGE_DIMENSIONS`; keep in sync by hand. */
+type Dimension = UsageDimension;
+
+/** Breakdown rows the panel holds before it scrolls; the rest scrolls inside.
+ *  The body is locked to this height so the card keeps it when the list is
+ *  empty, loading, or short. */
+const BREAKDOWN_VISIBLE_ROWS = 6;
+/** Measured row box (39px) plus the 8px flex gap, minus the trailing gap. */
+const BREAKDOWN_LIST_HEIGHT = BREAKDOWN_VISIBLE_ROWS * 47 - 8;
+
+
+/**
+ * Payload panels shown in the request inspector. The client leg (what the
+ * client sent / what Cartethyia produced / what the client actually received)
+ * comes first; the provider leg (what was forwarded upstream / what the
+ * upstream returned) follows so proxy and server legs are readable separately.
+ * Provider internals stay redacted and bounded at the source
+ * (`completeAttempt` capture), never raw secrets.
+ */
+type PayloadKind = "request" | "clientResponse" | "providerRequest" | "providerResponse";
+
+function formatPayload(value: unknown): { readonly text: string; readonly bytes: number } {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        const text = JSON.stringify(parsed, null, 2);
+        return { text, bytes: new TextEncoder().encode(value).byteLength };
+      } catch {
+        return { text: value, bytes: new TextEncoder().encode(value).byteLength };
+      }
+    }
+    return { text: value, bytes: new TextEncoder().encode(value).byteLength };
+  }
+  const text = JSON.stringify(value, null, 2);
+  return { text, bytes: new TextEncoder().encode(JSON.stringify(value)).byteLength };
+}
+
+const PERIOD_LABELS: Record<Period, string> = {
+  "1h": "Last 1 Hour",
+  "6h": "Last 6 Hours",
+  "12h": "Last 12 Hours",
+  "24h": "Last 24 Hours",
+  "7d": "Last 7 Days",
+  "30d": "Last 30 Days",
+  all: "All retained",
+};
+const PERIOD_OPTIONS = USAGE_PERIODS.map((value) => ({
+  value,
+  label: PERIOD_LABELS[value as Period] ?? value,
+}));
+
+function periodLabel(period: Period): string {
+  return PERIOD_LABELS[period] ?? period;
+}
+
+/**
+ * The card headline. The period alone read as a label with nothing under it,
+ * so it carries what moved in the period: how many calls, how many tokens,
+ * and how long a call took on average.
+ */
+function usageHeadline(
+  period: Period,
+  pending: boolean,
+  totals: UsageSummaryTotals | undefined,
+): string {
+  const label = periodLabel(period);
+  if (pending || totals === undefined) return label;
+  const tokens = totals.inputTokens + totals.outputTokens;
+  return `${label} · ${formatNumber(totals.requests)} calls · ${formatTokens(tokens)} tokens · avg ${formatDuration(totals.avgDurationMs)}`;
+}
+
+function asPeriod(value: string | null): Period {
+  return value !== null && (USAGE_PERIODS as readonly string[]).includes(value)
+    ? (value as Period)
+    : "24h";
+}
+
+function asMetric(value: string | null): Metric {
+  return value === "tokens" || value === "cached" ? value : "requests";
+}
+/**
+ * Resolves the card scale. No `scale` param means the exact count (the
+ * default); `scale=auto` asks for the compact unit the value lands on; a
+ * number pins one of `TOKEN_SCALES`.
+ */
+function asTokenScale(value: string | null): number {
+  if (value === null) return DEFAULT_TOKEN_SCALE;
+  if (value === "auto") return TOKEN_SCALE_AUTO;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= RAW_TOKEN_SCALE ? parsed : DEFAULT_TOKEN_SCALE;
+}
+
+function asDimension(value: string | null): Dimension {
+  return value !== null && (USAGE_DIMENSIONS as readonly string[]).includes(value)
+    ? (value as Dimension)
+    : "model";
+}
+
+function formatUsd(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+/**
+ * Provider-billed credits (Tencent buddy-meter `credit`) with the unit label:
+ * two decimals like the live probe reported (`1.01`), `—` when the upstream
+ * sent no credit. The numeric formatting delegates to the shared
+ * `formatCredits`, so this page and the provider-detail credit pool round the
+ * same way; only the ` CR` suffix is local here.
+ */
+export function formatCredit(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${formatCredits(value)} CR`;
+}
+function formatSpeed(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return "—";
+  const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${rounded.toLocaleString("en-US")} tok/s`;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+
+/**
+ * Wire surface mapped to its protocol family name for the status cell.
+ * The `API KEY` column already identifies the client, so the status cell
+ * names only the protocol family — never the endpoint or client string.
+ */
+export function surfaceFamilyLabel(surface: string | undefined): string {
+  switch (surface) {
+    case "chat":
+      return "OpenAI Completions";
+    case "messages":
+      return "Anthropic Messages";
+    case "responses":
+      return "OpenAI Responses";
+    case "completion":
+      return "OpenAI Completions";
+    default:
+      return surface ? surface : "—";
+  }
+}
+
+/**
+ * Relative age of a request start for the time cell's second line:
+ * minutes below an hour, hours below a day, days below a week, weeks above.
+ * Pure display — the absolute clock stays on the first line.
+ */
+export function formatAgo(value: string, nowMs: number = Date.now()): string {
+  const started = new Date(value).getTime();
+  if (Number.isNaN(started)) return "—";
+  const diffMs = Math.max(0, nowMs - started);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  if (diffMs < hour) {
+    const minutes = Math.max(0, Math.floor(diffMs / minute));
+    return minutes <= 1 ? "just now" : `${minutes}m ago`;
+  }
+  if (diffMs < day) {
+    const hours = Math.floor(diffMs / hour);
+    return hours <= 1 ? "1h ago" : `${hours}h ago`;
+  }
+  if (diffMs < week) {
+    const days = Math.floor(diffMs / day);
+    return days <= 1 ? "1d ago" : `${days}d ago`;
+  }
+  const weeks = Math.floor(diffMs / week);
+  return weeks <= 1 ? "1w ago" : `${weeks}w ago`;
+}
+
+/**
+ * Lifecycle status mapped to an HTTP-style code label for the compact table cell.
+ *
+ * `cancelled` renders as `499` (client closed the request) — a distinct status
+ * from `500 ERR`: it is expected client behavior, not a gateway failure, and
+ * is never counted in any error total. The code cell carries the explainer so
+ * the distinction is visible exactly where the number appears.
+ */
+function statusCode(
+  status: string,
+  httpStatus?: number,
+): { code: string; tone: "ok" | "err" | "warn" } {
+  if (httpStatus !== undefined) {
+    const tone = httpStatus >= 500 || (httpStatus >= 400 && httpStatus !== 499)
+      ? "err"
+      : httpStatus === 200
+        ? "ok"
+        : "warn";
+    return { code: httpStatusShortLabel(httpStatus), tone };
+  }
+  switch (status) {
+    case "completed":
+      return { code: httpStatusShortLabel(200), tone: "ok" };
+    case "failed":
+      return { code: httpStatusShortLabel(500), tone: "err" };
+    case "cancelled":
+      return { code: httpStatusShortLabel(499), tone: "warn" };
+    case "truncated":
+      return { code: httpStatusShortLabel(502), tone: "err" };
+    default:
+      return { code: status, tone: "warn" };
+  }
+}
+
+/** The full-phrase code for the explainer: `500` -> `"500 Internal Server Error"`. */
+function statusFullCode(status: string, httpStatus?: number): string {
+  if (httpStatus !== undefined) return httpStatusLabel(httpStatus);
+  switch (status) {
+    case "completed":
+      return httpStatusLabel(200);
+    case "failed":
+      return httpStatusLabel(500);
+    case "cancelled":
+      return httpStatusLabel(499);
+    case "truncated":
+      return httpStatusLabel(502);
+    default:
+      return status;
+  }
+}
+
+/** One-line explainer for the actual client-facing HTTP status. */
+function statusExplainer(
+  status: string,
+  errorKind: string | undefined,
+  httpStatus?: number,
+): string {
+  if (httpStatus === 499 || status === "cancelled") {
+    return `499 · client aborted the request (${errorKind ?? "cancelled"}) — not a gateway error`;
+  }
+  if (httpStatus === 200 || status === "completed") return "200 · request succeeded";
+  const code = statusFullCode(status, httpStatus);
+  return errorKind ? `${code} · ${errorKind}` : code;
+}
+
+/**
+ * `200` confirms success, `499` names the client abort so a cancelled row is
+ * never mistaken for a gateway error. Pure display — no error totals change.
+ */
+function StatusCodeWithExplainer({
+  status,
+  errorKind,
+  httpStatus,
+}: {
+  readonly status: string;
+  readonly errorKind: string | undefined;
+  readonly httpStatus?: number;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  const code = statusCode(status, httpStatus);
+  const explainer = statusExplainer(status, errorKind, httpStatus);
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        aria-expanded={open}
+        aria-label={explainer}
+        title={explainer}
+        className={cn(
+          "font-mono font-bold tabular-nums bg-transparent border border-transparent",
+          "rounded-chip cursor-pointer px-2 py-0 text-[inherit]",
+        )}
+        style={{ color: STATUS_TONE_COLOR[code.tone] }}
+      >
+        {code.code}
+      </button>
+      {open ? (
+        <span
+          role="status"
+          className="absolute top-full z-30 mt-1.5 left-0 whitespace-normal min-w-110 max-w-140 border border-inner-border rounded-control bg-popover-bg shadow-popout px-5 py-4 font-sans font-normal text-badge leading-snug text-text-secondary"
+        >
+          {explainer}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+function errorMessageFor(errorKind: string | undefined): string {
+  const messages: Record<string, string> = {
+    transport_closed: "request was cancelled by client",
+    transport_unavailable: "upstream stream failed or ended before completion",
+    timeout: "request timed out before a response was received",
+    deadline_exceeded: "upstream stream stalled past the deadline",
+    invalid_request: "request was rejected as invalid",
+    internal_error: "the gateway was misconfigured for this request",
+    provider_error: "upstream provider returned an error",
+    platform_unavailable: "upstream provider was unavailable",
+    proxy_unreachable: "network proxy was unreachable",
+    proxy_auth_required: "network proxy rejected the credential",
+    quota_exceeded: "upstream rate limit or quota was exceeded",
+    authentication_failed: "upstream rejected the credential",
+    capacity_exhausted: "upstream capacity was exhausted",
+    model_not_found: "no route served this model",
+    context_length_exceeded: "the request exceeded the model's context window",
+    capability_unsupported: "the route does not support this request",
+    admission_unavailable: "gateway dependencies were unavailable",
+    unknown_error: "the upstream failure could not be classified",
+    // Codes that previously had no entry and fell through to a mechanical
+    // underscore-to-space rendering of the raw code.
+    accounts_unavailable: "no account for this route was available",
+    accounts_rate_limited: "every account for this route is rate limited or cooling down",
+    ambiguous_model: "the model id matched more than one route",
+    invalid_pool_limits: "the network pool limits were rejected",
+    max_connections_exceeded: "the connection ceiling was reached",
+    proxy_pool_capacity_exceeded: "the proxy pool had no free slot",
+    proxy_pool_cooldown: "the proxy pool is cooling down",
+    proxy_pool_unavailable: "no usable proxy pool was available",
+    proxy_pool_unhealthy: "the selected proxy pool could not establish a tunnel",
+    slug_reserved: "that slug is reserved by the gateway",
+    tenant_capacity_exhausted: "the tenant concurrency ceiling was reached",
+    tls_rejected: "the upstream TLS handshake was rejected",
+    tool_call_loop_detected: "the request looped on the same tool call",
+    tunnel_setup_failed: "the tunnel could not be established",
+    unsupported_field: "the request carried a field this route rejects",
+    shutting_down: "the gateway was draining for a restart",
+    restart_for_update: "the gateway was restarting for an update; retry shortly",
+  };
+  if (errorKind && messages[errorKind]) return messages[errorKind];
+  if (errorKind) return errorKind.replaceAll("_", " ");
+  return "request failed";
+}
+
+/**
+ * Names the failing layer before the message.
+ *
+ * `invalid_request` is recorded both when the caller's body is malformed (our
+ * rejection) and when the upstream rejects a well-formed body (theirs). Without
+ * the layer, an operator cannot tell whether to look at the router or at the
+ * provider — which is the whole point of recording `error_origin`.
+ */
+function originLabel(errorOrigin: string | undefined): string {
+  if (errorOrigin === "cartethyia") return "Gateway";
+  if (errorOrigin === "upstream") return "Upstream";
+  if (errorOrigin === "network") return "Network";
+  return "";
+}
+
+/**
+ * Drawer headline for a failed or cancelled request. A client abort is not an
+ * error: the headline says so explicitly instead of blaming the gateway.
+ */
+function errorLabel(
+  status: string,
+  errorKind: string | undefined,
+  errorOrigin: string | undefined,
+  httpStatus?: number,
+): string {
+  if (status === "cancelled") {
+    const layer = originLabel(errorOrigin);
+    const message = errorMessageFor(errorKind);
+    return layer
+      ? `Cancelled 499 · ${layer}: ${message} — not a gateway error`
+      : `Cancelled 499: ${message} — not a gateway error`;
+  }
+  const code = statusCode(status, httpStatus).code.split(" ", 1)[0] ?? status;
+  const layer = originLabel(errorOrigin);
+  const message = errorMessageFor(errorKind);
+  return layer ? `${message} · ${code} · ${layer}` : `${message} · ${code}`;
+}
+
+const STATUS_TONE_COLOR: Record<"ok" | "err" | "warn", string> = {
+  ok: "var(--green)",
+  err: "var(--red)",
+  warn: "var(--orange)",
+};
+function PillTabs<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  readonly options: ReadonlyArray<{ readonly id: T; readonly label: string }>;
+  readonly value: T;
+  readonly onChange: (value: T) => void;
+  readonly ariaLabel: string;
+}): ReactNode {
+  return (
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className="flex flex-wrap gap-2 min-w-0"
+    >
+      {options.map((option) => (
+        <Button
+          key={option.id}
+          role="tab"
+          aria-selected={value === option.id}
+          variant={value === option.id ? "primary" : "secondary"}
+          size="sm"
+          onClick={() => onChange(option.id)}
+        >
+          {option.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+/** Which panel a control refers to: the traffic chart or the breakdown list. */
+type PanelKey = "traffic" | "breakdown";
+
+/**
+ * Width control for one panel, rendered at the far left of the card header.
+ *
+ * Widening makes the panel span both grid columns — the one thing the
+ * side-by-side layout cannot do on its own, for a chart or list that needs the
+ * full row.
+ */
+function PanelWidthToggle({
+  label,
+  wide,
+  onToggleWide,
+}: {
+  readonly label: string;
+  readonly wide: boolean;
+  readonly onToggleWide: () => void;
+}): ReactNode {
+  return (
+    <Button
+      size="icon"
+      variant="ghost"
+      aria-label={wide ? `Restore ${label} width` : `Widen ${label}`}
+      aria-pressed={wide}
+      title={wide ? "Restore width" : "Widen"}
+      icon={wide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+      onClick={onToggleWide}
+    />
+  );
+}
+
+/** Statuses pinned as chips; everything else folds into the "More" menu. */
+const PINNED_STATUS = 200;
+
+function StatusFilterButton({
+  status,
+  count,
+  pressed,
+  onToggle,
+}: {
+  readonly status: number;
+  readonly count: number;
+  readonly pressed: boolean;
+  readonly onToggle: (status: number) => void;
+}): ReactNode {
+  const label = httpStatusLabel(status);
+  const tone = httpStatusTone(status);
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-2.5 min-h-10.5 px-3 py-0.5 border rounded-chip bg-surface-1 font-sans text-micro font-semibold leading-none whitespace-nowrap cursor-pointer ${pressed ? "border-current" : "border-inner-border text-text-secondary hover:border-current"} ${tone === "ok" ? "text-green" : tone === "warn" ? "text-orange" : "text-red"} ${pressed ? "" : "hover:bg-surface-muted"}`}
+      data-tone={tone}
+      aria-pressed={pressed}
+      aria-label={`Filter ${label}: ${formatNumber(count)} requests`}
+      title={`Show ${formatNumber(count)} requests with HTTP ${label}`}
+      onClick={() => onToggle(status)}
+    >
+      <span>{label}</span>
+      <span className="font-mono tabular-nums opacity-65" aria-hidden="true">· {formatNumber(count)}</span>
+    </button>
+  );
+}
+
+/**
+ * HTTP status filters for the Requests table. `200 OK` stays a chip; the rest
+ * live in a menu so a period full of errors does not flood the header.
+ */
+function StatusFilters({
+  counts,
+  active,
+  onToggle,
+}: {
+  readonly counts: readonly { readonly status: number; readonly count: number }[];
+  readonly active: number | null;
+  readonly onToggle: (status: number) => void;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const present = counts.filter((entry) => entry.count > 0);
+  const pinned = present.filter((entry) => entry.status === PINNED_STATUS);
+  const rest = present.filter((entry) => entry.status !== PINNED_STATUS);
+  const restTotal = rest.reduce((sum, entry) => sum + entry.count, 0);
+  const restActive = rest.some((entry) => entry.status === active);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  if (present.length === 0) return null;
+  return (
+    <div className="inline-flex items-center flex-wrap gap-2" role="group" aria-label="Filter requests by HTTP status">
+      {pinned.map((entry) => (
+        <StatusFilterButton
+          key={entry.status}
+          status={entry.status}
+          count={entry.count}
+          pressed={active === entry.status}
+          onToggle={onToggle}
+        />
+      ))}
+      {rest.length > 0 ? (
+        <div ref={rootRef} className="relative">
+          <button
+            type="button"
+            className={`inline-flex items-center gap-2.5 min-h-10.5 px-3 py-0.5 border rounded-chip bg-surface-1 font-sans text-micro font-semibold leading-none whitespace-nowrap cursor-pointer ${restActive ? "border-current" : "border-inner-border text-text-secondary hover:border-current hover:bg-surface-muted"} ${restActive ? (httpStatusTone(active ?? 0) === "ok" ? "text-green" : httpStatusTone(active ?? 0) === "warn" ? "text-orange" : "text-red") : ""}`}
+            data-tone={restActive ? httpStatusTone(active ?? 0) : undefined}
+            aria-pressed={restActive}
+            aria-expanded={open}
+            aria-haspopup="menu"
+            aria-label={`More statuses: ${formatNumber(restTotal)} requests across ${rest.length}`}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span>More</span>
+            <span className="font-mono tabular-nums opacity-65" aria-hidden="true">· {formatNumber(restTotal)}</span>
+            <ChevronDown size={10} aria-hidden="true" className={cn("transition-transform", open && "rotate-180")} />
+          </button>
+          {open ? (
+            <div
+              role="menu"
+              aria-label="Other HTTP statuses"
+              className="absolute top-full z-50 mt-1 right-0 min-w-90 flex flex-col gap-1 border border-inner-border rounded-control bg-popover-bg shadow-popout p-2"
+            >
+              {rest.map((entry) => (
+                <div key={entry.status} role="none" className="[&>button]:w-full [&>button]:justify-between">
+                  <StatusFilterButton
+                    status={entry.status}
+                    count={entry.count}
+                    pressed={active === entry.status}
+                    onToggle={(status) => {
+                      onToggle(status);
+                      setOpen(false);
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ChartPanel({ period, metric }: { readonly period: Period; readonly metric: Metric }): ReactNode {
+  const chartQuery = useUsageChart(period);
+  const reducedMotion = useReducedMotion();
+  const buckets = useMemo(
+    () => (chartQuery.data?.buckets ?? []).map((bucket) => ({ ...bucket, total: bucket.input + bucket.output })),
+    [chartQuery.data],
+  );
+  const dataKey = metric === "requests" ? "requests" : metric === "cached" ? "cached" : "total";
+  // The backend fills every bucket of the window, so an idle period arrives as
+  // a full series of zeroes rather than an empty array. A chart of that draws
+  // nothing — a blank strip — so it reads as empty instead.
+  const hasTraffic = buckets.some((bucket) => bucket[dataKey] > 0);
+  if (chartQuery.isPending && !hasTraffic) {
+    return <LoadingState label="Loading chart…" />;
+  }
+  if (chartQuery.isError && !hasTraffic) {
+    return <ErrorState message="Failed to load chart data." onRetry={() => void chartQuery.refetch()} />;
+  }
+  if (!hasTraffic) {
+    return (
+      <EmptyState
+        title="No usage for this period"
+        message="Route requests to populate the usage."
+      />
+    );
+  }
+  return (
+    <div className="usage-panel-body h-113.5 w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={buckets} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
+          <defs>
+            <linearGradient id="usageChartFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.45} />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.02} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke="var(--inner-border)" strokeDasharray="3 3" vertical={false} />
+          <XAxis
+            dataKey="t"
+            tick={{ fontSize: 10, fill: "var(--text-tertiary)" }}
+            tickFormatter={(value: string) => formatChartTick(value)}
+            axisLine={false}
+            tickLine={false}
+            minTickGap={28}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: "var(--text-tertiary)" }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(value: number) => formatTokens(value)}
+            width={48}
+          />
+          <Tooltip
+            contentStyle={{
+              background: "var(--surface-2)",
+              border: "1px solid var(--inner-border)",
+              borderRadius: 12,
+              fontSize: 12,
+              color: "var(--text-primary)",
+            }}
+            formatter={(value) => [formatNumber(Number(value)), metric]}
+            labelFormatter={(label) => formatChartTooltip(String(label))}
+          />
+          <Area
+            type="monotone"
+            dataKey={dataKey}
+            stroke="var(--accent)"
+            strokeWidth={2}
+            fill="url(#usageChartFill)"
+            isAnimationActive={!reducedMotion}
+            animationDuration={250}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function BreakdownSnapshot({
+  period,
+  dimension,
+  onDimensionChange,
+  wide,
+  onToggleWide,
+}: {
+  readonly period: Period;
+  readonly dimension: Dimension;
+  readonly onDimensionChange: (value: Dimension) => void;
+  readonly wide: boolean;
+  readonly onToggleWide: () => void;
+}): ReactNode {
+  const byQuery = useUsageBy(period, dimension);
+  const providersQuery = useProviders();
+  const providerNames = useMemo(
+    () => new Map((providersQuery.data ?? []).map((provider) => [provider.providerId, provider.label || provider.displayName])),
+    [providersQuery.data],
+  );
+  // A response that names another dimension is a tab the operator already left.
+  // Showing it would leave the list unchanged after the click.
+  const rows = byQuery.data?.dimension === dimension ? byQuery.data.rows : [];
+  const maxTotal = rows.length > 0 ? Math.max(...rows.map((row) => row.total)) : 1;
+  const totalRequests = rows.reduce((sum, row) => sum + row.requests, 0);
+  const totalErrors = rows.reduce((sum, row) => sum + row.errors, 0);
+  const breakdownSubtitle = (() => {
+    if (byQuery.isPending && rows.length === 0) return "Loading…";
+    if (rows.length === 0) return "No traffic in this period";
+    const ok = Math.max(0, totalRequests - totalErrors);
+    const pct = totalRequests > 0 ? Math.round((ok / totalRequests) * 100) : 0;
+    const plural = rows.length === 1 ? "group" : "groups";
+    return `${rows.length} ${plural} · ${formatNumber(totalRequests)} hits · ${pct}% ok`;
+  })();
+  return (
+    <Card className={wide ? "col-span-full" : ""}>
+      <CardHeader
+        title="Breakdown"
+        subtitle={breakdownSubtitle}
+        icon={<Wrench size={16} />}
+        leading={
+          <PanelWidthToggle label="Breakdown" wide={wide} onToggleWide={onToggleWide} />
+        }
+        action={
+          <PillTabs
+            ariaLabel="Breakdown dimension"
+            value={dimension}
+            onChange={onDimensionChange}
+            options={[
+              { id: "model", label: "Model" },
+              { id: "provider", label: "Provider" },
+              { id: "client", label: "Client" },
+              { id: "client_ip", label: "Client IP" },
+              { id: "key", label: "Key" },
+            ]}
+          />
+        }
+      />
+      <CardBody style={{ height: `${BREAKDOWN_LIST_HEIGHT}px` }}>
+        {byQuery.isPending && rows.length === 0 ? (
+          <LoadingState label="Loading breakdown…" />
+        ) : byQuery.isError && rows.length === 0 ? (
+          <ErrorState message="Failed to load breakdown." onRetry={() => void byQuery.refetch()} />
+        ) : rows.length === 0 ? (
+          <EmptyState title="No usage for this period" message="Route requests to populate the breakdown." />
+        ) : (
+          <div
+            className="scroll-region flex h-full flex-col gap-4 pr-1"
+          >
+            {rows.map((row) => {
+              const pct = maxTotal > 0 ? Math.max(2, (row.total / maxTotal) * 100) : 2;
+              const displayName =
+                dimension === "provider"
+                  ? (providerNames.get(row.name) ?? row.name)
+                  : dimension === "key"
+                    ? (row.label ?? `${row.name.slice(0, 8)}…`)
+                    : row.name;
+              const okCount = Math.max(0, row.requests - row.errors);
+              return (
+                <div
+                  key={row.name}
+                  title={`${displayName} · ${formatNumber(row.requests)} hits · ${formatNumber(okCount)} ok · ${formatNumber(row.total)} tokens · ${formatUsd(row.costUsd)}`}
+                  className="relative shrink-0 overflow-hidden rounded-control border border-inner-border bg-surface-2"
+                >
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-0 bg-[linear-gradient(to_right,color-mix(in_srgb,var(--accent)_20%,transparent),transparent)]"
+                    style={{ width: `${pct}%` }}
+                  />
+                  <div
+                    className="relative flex items-center justify-between gap-4 px-6 py-5"
+                  >
+                    <span
+                      className="truncate font-mono tabular-nums min-w-0 flex-1 text-badge font-semibold"
+                    >
+                      {displayName}
+                    </span>                    <span
+                      className="font-mono tabular-nums shrink-0 text-micro text-text-secondary"
+                    >
+                      {formatNumber(row.requests)} hit · {formatNumber(okCount)} ok
+                    </span>
+                    <span className="shrink-0 text-badge font-bold text-orange">
+                      {formatUsd(row.costUsd)}
+                    </span>
+                    <span className="shrink-0 text-badge font-bold text-purple">
+                      {formatTokens(row.total)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+
+
+
+function FlowNode({
+  title,
+  meta,
+  icon,
+  tone,
+  last,
+}: {
+  readonly title: string;
+  readonly meta: string;
+  readonly icon: ReactNode;
+  readonly tone?: string;
+  readonly last?: boolean;
+}): ReactNode {
+  return (
+    <div className="flex gap-5 min-w-0">
+      <div className="flex flex-col items-center shrink-0">
+        <span
+          aria-hidden="true"
+          className="grid place-items-center w-11 h-11 rounded-pill"
+          style={{
+            color: tone ?? "var(--accent)",
+            background: `color-mix(in srgb, ${tone ?? "var(--accent)"} 16%, var(--surface-2))`,
+          }}
+        >
+          {icon}
+        </span>
+        {last ? null : (
+          <span aria-hidden="true" className="w-1 flex-1 min-h-7 bg-inner-border" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1" style={{ paddingBottom: last ? 0 : "12px" }}>
+        <div className="text-caption font-bold">{title}</div>
+        <div
+          className="select-text mt-1 whitespace-pre-line text-badge text-text-secondary [overflow-wrap:anywhere] break-words"
+        >
+          {meta}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RequestDetailDrawer({
+  requestId,
+  onClose,
+}: {
+  readonly requestId: string | null;
+  readonly onClose: () => void;
+}): ReactNode {
+  const detailQuery = useUsageRequestDetail(requestId);
+  const detail = detailQuery.data;
+  const providerAccounts = useProviderAccounts(detail?.providerId);
+  const accountLabel = (item: { readonly accountId?: string } | null | undefined): string => {
+    const accountId = item?.accountId;
+    if (!accountId) return "—";
+    const found = (providerAccounts.data ?? []).find((account) => account.id === accountId);
+    return found?.label || `${accountId.slice(0, 8)}…`;
+  };
+  const apiKeyName = detail?.apiKeyLabel ?? (detail?.apiKeyId ? `${detail.apiKeyId.slice(0, 8)}…` : "—");
+  const isProbe = detail?.userAgent === "Cartethyia Probe";
+  const displayApiKeyName = isProbe ? "Probe" : apiKeyName;
+  const [copiedRequestId, setCopiedRequestId] = useState(false);
+  const [copiedPayload, setCopiedPayload] = useState<PayloadKind | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const banIp = useBanIp();
+  const scheduleReset = useTrackedTimeout();
+  const copyRequestId = () => {
+    void navigator.clipboard?.writeText(detail?.requestId ?? "");
+    setCopiedRequestId(true);
+    scheduleReset(() => setCopiedRequestId(false), 1500);
+  };
+  const copyPayload = (kind: PayloadKind, payload: unknown) => {
+    const text = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+    void navigator.clipboard?.writeText(text);
+    setCopiedPayload(kind);
+    scheduleReset(() => setCopiedPayload(null), 1500);
+  };
+  const downloadTelemetry = async () => {
+    if (!detail) return;
+    setDownloading(true);
+    try {
+      const telemetry = await consoleRequest<unknown>(
+        `/system/usage/requests/${encodeURIComponent(detail.requestId)}/download`,
+      );
+      downloadTextFile(
+        `telemetry-${detail.requestId}.json`,
+        JSON.stringify(telemetry, null, 2),
+        "application/json",
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not download telemetry."));
+    } finally {
+      setDownloading(false);
+    }
+  };
+  const banThisUser = async () => {
+    if (!detail?.clientIp) return;
+    try {
+      await banIp.mutateAsync(detail.clientIp);
+      toast.success(`Banned ${detail.clientIp}.`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not ban the address."));
+    }
+  };
+  const payloadViews = useMemo(
+    () =>
+      (["request", "clientResponse", "providerRequest", "providerResponse"] as const).map((kind) => {
+        const payload = detail?.payloads?.[kind];
+        if (payload === undefined) return { kind, text: null, bytes: null };
+        try {
+          const formatted = formatPayload(payload);
+          return { kind, text: formatted.text, bytes: formatted.bytes };
+        } catch {
+          return { kind, text: null, bytes: null };
+        }
+      }),
+    [detail?.payloads],
+  );
+  const payloadView = (kind: PayloadKind) =>
+    payloadViews.find((view) => view.kind === kind) ?? { kind, text: null, bytes: null };
+
+  return (
+    <Drawer open={requestId !== null} onClose={onClose} title="Request Detail">
+      {detailQuery.isPending ? (
+        <Stack gap="12px">
+          <div className="animate-pulse h-12 w-[66%] rounded-inset bg-surface-2" />
+          <div className="animate-pulse h-48 rounded-control bg-surface-2" />
+          <div className="animate-pulse h-48 rounded-control bg-surface-2" />
+        </Stack>
+      ) : detailQuery.isError || !detail ? (
+        <ErrorState message="Failed to load request detail." onRetry={() => void detailQuery.refetch()} />
+      ) : (
+        <Stack gap="12px">
+          <div className="flex items-center gap-4 rounded-control border border-inner-border bg-surface-2 px-6 py-4 min-w-0">
+            <span
+              className="select-text font-mono tabular-nums min-w-0 flex-1 [overflow-wrap:anywhere] break-words text-badge"
+              title={detail.requestId}
+            >
+              request_id {detail.requestId}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={copiedRequestId ? <Check size={12} /> : <Copy size={12} />}
+              aria-label="Copy request ID"
+              title="Copy request ID"
+              onClick={copyRequestId}
+              className="shrink-0 p-1.5"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Ban size={13} />}
+              disabled={!detail.clientIp || banIp.isPending}
+              title={detail.clientIp ? `Ban ${detail.clientIp}` : "No client IP recorded for this request"}
+              onClick={() => void banThisUser()}
+              className="w-full"
+            >
+              Banned User
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Download size={13} />}
+              disabled={downloading}
+              title="Download all captured telemetry for this request as JSON"
+              onClick={() => void downloadTelemetry()}
+              className="w-full"
+            >
+              Download telemetry
+            </Button>
+          </div>
+
+          {detail.errorKind ? (
+            <Banner tone="danger" live="alert" className="flex flex-col gap-2 [overflow-wrap:anywhere] break-words">
+              <strong className="text-caption">
+                {errorLabel(detail.status, detail.errorKind, detail.errorOrigin, detail.httpStatus)}
+              </strong>
+              <span className="font-mono tabular-nums text-text-tertiary text-micro [overflow-wrap:anywhere]">
+                {detail.errorKind}
+              </span>
+            </Banner>
+          ) : null}
+          <section className="border border-inner-border rounded-control overflow-hidden">
+            <div className="border-b border-inner-border px-6 py-5 text-caption font-bold">
+              Flow and Detail
+            </div>
+            <div className="flex flex-col p-6">
+              <FlowNode
+                icon={<LogIn size={13} />}
+                title="Client request in"
+                meta={`Client IP : ${detail.clientIp ?? "—"}\n${detail.clientName ?? "—"} · ${detail.userAgent ?? "—"} · ${detail.surface ?? "—"} · ${detail.mode === "stream" ? "streaming" : "non-streaming"}`}
+              />
+              <FlowNode
+                icon={<Route size={13} />}
+                title="Gateway"
+                meta={`${formatDuration(detail.durationMs)} total · TTFT ${formatDuration(detail.ttfbMs)} · ${formatSpeed(detail.tokensPerSec)} · ${detail.cachedTokens !== undefined ? formatNumber(detail.cachedTokens) : "—"} from cache`}
+              />
+              <FlowNode
+                icon={<Server size={13} />}
+                title={`Upstream · ${detail.providerId ?? "—"}`}
+                meta={`${[accountLabel(detail), detail.model ?? "—"].filter((part) => part !== "—").join(" · ") || "—"}\nApi Key : ${displayApiKeyName}\nProxy : ${detail.proxy ?? "direct"}`}
+              />
+              <FlowNode
+                icon={<CheckCircle2 size={13} />}
+                last
+                title="Response out"
+                meta={`${statusCode(detail.status, detail.httpStatus).code}${payloadView("clientResponse").bytes !== null ? ` · ${formatBytes(payloadView("clientResponse").bytes)}` : ""}${detail.estimatedCost ? ` · ${formatUsd(detail.estimatedCost)}` : ""}`}
+                tone={STATUS_TONE_COLOR[statusCode(detail.status, detail.httpStatus).tone]}
+              />
+            </div>
+          </section>
+          {(() => {
+            const signals = detail.payloadSignals;
+            const signalItems = [
+              { label: "Tool calls", value: signals?.toolCalls ?? "—", icon: Wrench },
+              { label: "Images", value: signals?.images ?? "—", icon: ImageIcon },
+              { label: "Attachments", value: signals?.attachments ?? "—", icon: Paperclip },
+            ] as const;
+            return (
+              <section
+                aria-label="Session signals"
+                className="signal-grid grid gap-4 border border-inner-border rounded-control p-5 bg-surface-2"
+              >
+                {signalItems.map(({ label, value, icon: Icon }) => (
+                  <div
+                    key={label}
+                    className="flex items-center gap-3.5 min-w-0 text-text-secondary"
+                  >
+                    <Icon size={14} aria-hidden="true" className="shrink-0 text-accent" />
+                    <span className="min-w-0 [overflow-wrap:anywhere] text-badge">
+                      {label}: <strong className="text-text-primary">{value}</strong>
+                    </span>
+                  </div>
+                ))}
+              </section>
+            );
+          })()}
+
+
+          {(
+            [
+              ["request", "1. Client Request (Input)", detail.payloads?.request, LogIn],
+              ["providerRequest", "2. Provider Request (Translated)", detail.payloads?.providerRequest, Route],
+              ["providerResponse", "3. Provider Response (Raw)", detail.payloads?.providerResponse, Server],
+              ["clientResponse", "4. Client Response (Final)", detail.payloads?.clientResponse, CheckCircle2],
+            ] as const
+          ).map(([kind, label, payload, Icon]) => (
+            <details
+              key={kind}
+              className="rounded-control border border-inner-border bg-surface-2 overflow-hidden"
+            >
+              <summary
+                className="flex items-center justify-between gap-4 cursor-pointer px-6 py-5 text-caption font-bold"
+              >
+                <span className="inline-flex items-center gap-3.5 min-w-0">
+                  <Icon size={14} className={cn("shrink-0", kind === "request" ? "text-accent" : "text-green")} />
+                  <span className="[overflow-wrap:anywhere] break-words">{label}</span>
+                </span>
+                <span className="font-mono tabular-nums shrink-0 text-text-tertiary text-micro font-medium">
+                  {formatBytes(payloadView(kind).bytes)}
+                </span>
+              </summary>
+              {payload === undefined ? (
+                <div
+                  className="flex items-start gap-5 border-t border-inner-border bg-surface-1 px-6 py-7"
+                >
+                  <Database size={15} className="shrink-0 text-text-tertiary mt-0.5" />
+                  <div className="min-w-0 flex flex-col gap-1.5">
+                    <strong className="text-caption text-text-secondary">No payload captured</strong>
+                    <span className="text-badge text-text-tertiary [overflow-wrap:anywhere] break-words">
+                      {label} is unavailable for this request.
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex justify-end border-t border-inner-border pt-2.5 px-4">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={copiedPayload === kind ? <Check size={11} /> : <Copy size={11} />}
+                      aria-label={`Copy ${label}`}
+                      title={`Copy ${label}`}
+                      onClick={() => copyPayload(kind, payload)}
+                      className="p-1"
+                    />
+                  </div>
+                  <pre
+                    className="select-text font-mono tabular-nums max-h-128 overflow-auto whitespace-pre-wrap [overflow-wrap:break-word] break-words m-0 border-t border-inner-border pt-4 px-6 pb-6 text-micro text-text-secondary"
+                  >
+                    {payloadView(kind).text}
+                  </pre>
+                </>
+              )}
+            </details>
+          ))}
+        </Stack>
+      )}
+    </Drawer>
+  );
+}
+
+/**
+ * Live in-flight gauge for the Requests card header: `50 in flight · 40 IPs`.
+ * The two numbers answer different questions — the count is the load, the IP
+ * split is its shape — so one client hammering (`5 in flight · 1 IP`) reads
+ * differently from the whole fleet (`5 in flight · 5 IPs`). Green pulse while
+ * the SSE stream pushes, grey with the last value when the stream drops.
+ */
+function InFlightPill({
+  count,
+  uniqueIps,
+  live,
+}: {
+  count: number | null;
+  uniqueIps: number | null;
+  live: boolean;
+}): ReactNode {
+  const active = count;
+  const ips = uniqueIps;
+  const requestWord = active === 1 ? "request" : "requests";
+  const ipWord = ips === 1 ? "IP" : "IPs";
+  let title: string;
+  if (!live) title = "Live feed disconnected — last seen value";
+  else if (active === null || ips === null) title = "Waiting for the first in-flight snapshot";
+  else title = `${active} ${requestWord} executing right now from ${ips} unique client ${ipWord} — all clients combined, not a summary of the table below`;
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-3 text-badge text-text-secondary whitespace-nowrap"
+    >
+      <span
+        aria-hidden="true"
+        className="w-3.5 h-3.5 rounded-[50%] shrink-0"
+        style={{
+          background: live ? "var(--success)" : "var(--text-tertiary)",
+          boxShadow: live ? "0 0 6px var(--success)" : "none",
+        }}
+      />
+      <span className="font-mono tabular-nums font-bold text-text-primary">
+        {active === null || ips === null ? "In-flight unavailable" : `${active} in flight · ${ips} ${ipWord}`}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Live in-flight count, held above the page body.
+ *
+ * The stream ticks whenever any request starts or finishes. Subscribing in the
+ * page component itself re-rendered the whole page — every row, every chart —
+ * on each tick, which is what made a busy Usage page feel heavy. The
+ * subscription lives here instead and children pass through as a prop, so the
+ * subtree stays referentially stable and a tick re-renders only the pill and
+ * the one tile that read this context. One stream per open page.
+ */
+const InFlightContext = createContext<InFlightState>({ count: null, uniqueIps: null, live: false });
+
+function InFlightProvider({ children }: { readonly children: ReactNode }): ReactNode {
+  const state = useInFlight();
+  const value = useMemo(
+    () => ({ count: state.count, uniqueIps: state.uniqueIps, live: state.live }),
+    [state.count, state.uniqueIps, state.live],
+  );
+  return <InFlightContext.Provider value={value}>{children}</InFlightContext.Provider>;
+}
+
+/** The header pill, subscribed without dragging the page into the tick. */
+function LiveInFlightPill(): ReactNode {
+  const flight = useContext(InFlightContext);
+  return <InFlightPill count={flight.count} uniqueIps={flight.uniqueIps} live={flight.live} />;
+}
+
+/**
+ * The Requests tile. Split out because its detail line carries the live count;
+ * the other tiles never change on a tick and stay in the page.
+ */
+function RequestsStatCard({
+  pending,
+  requests,
+}: {
+  readonly pending: boolean;
+  readonly requests: number | undefined;
+}): ReactNode {
+  const flight = useContext(InFlightContext);
+  return (
+    <StatCard
+      label="Requests"
+      value={pending ? "…" : formatNumber(requests)}
+      detail={
+        flight.count === null || flight.uniqueIps === null
+          ? "In-flight unavailable"
+          : `${flight.count} in flight from ${flight.uniqueIps} IPs`
+      }
+      icon={<Activity size={13} />}
+    />
+  );
+}
+
+/**
+ * Latency bar above the Requests table.
+ *
+ * Routing-average lives here (not in the top metric row) because the P50/P95/
+ * P99 chips overflowed their grid cell at narrow widths. A flex-wrap row
+ * inside the table's rounded panel gives the chips the horizontal room they
+ * need and keeps the per-request table right beside the figures that
+ * summarise it. Hidden while the summary is still loading so the panel does
+ * not flash a "—" row before real numbers arrive.
+ *
+ * One row, four figures of the same size: `RESOLVE 367 ms · P50 … · P95 … ·
+ * P99 …`. The average used to be larger and labelled "Route latency AVG",
+ * which read as a heading sitting on top of the percentiles, then "Latency" —
+ * which put it in the same series as the percentiles beside it when it is a
+ * different measurement entirely (pre-dispatch delay, not response time).
+ * "Resolve" says which one it is. It wraps rather than overflows when there is
+ * no room.
+ *
+ * Each figure carries a native `title` explaining the metric, the window, and
+ * how many requests it was computed from — a percentile over twenty requests
+ * and one over twenty thousand do not deserve the same confidence.
+ *
+ * It sits outside `DataTable`'s own scroll box, so it stays put while the
+ * rows scroll under it.
+ */
+function RoutingLatencyBar({
+  pending,
+  avgMs,
+  p50Ms,
+  p95Ms,
+  p99Ms,
+  latencySampleCount,
+  resolveSampleCount,
+  periodLabel: windowLabel,
+}: {
+  readonly pending: boolean;
+  readonly avgMs: number | undefined;
+  readonly p50Ms: number | undefined;
+  readonly p95Ms: number | undefined;
+  readonly p99Ms: number | undefined;
+  readonly latencySampleCount: number | undefined;
+  readonly resolveSampleCount: number | undefined;
+  readonly periodLabel: string;
+}): ReactNode {
+  // The summary is shared across the whole page; treat the first paint the
+  // same way the top tiles do (a "…") so a long load reads as one state,
+  // not a mix of numbers and placeholders.
+  if (pending) return null;
+
+  // The first tile is the pre-dispatch delay, not end-to-end latency —
+  // labelling it "Latency" put it in the same series as the percentiles
+  // beside it, and the two were read as one metric.
+  const resolveTitle =
+    `Resolve — average time from request arrival to just before the upstream is called ` +
+    `(credential, admission, pool slot, preparation). Not response latency. ` +
+    `${windowLabel} · ${formatNumber(resolveSampleCount ?? 0)} requests with a resolve measurement.`;
+  const percentileTitle = (name: string, percentile: string): string =>
+    `${name} — the ${percentile} of total request duration (arrival to final byte), nearest rank. ` +
+    `${windowLabel} · from ${formatNumber(latencySampleCount ?? 0)} requests.`;
+
+  const tiles: ReadonlyArray<{
+    readonly label: string;
+    readonly value: number | undefined;
+    readonly title: string;
+  }> = [
+    { label: "Resolve", value: avgMs, title: resolveTitle },
+    { label: "P50", value: p50Ms, title: percentileTitle("P50", "median") },
+    { label: "P95", value: p95Ms, title: percentileTitle("P95", "95th percentile") },
+    { label: "P99", value: p99Ms, title: percentileTitle("P99", "99th percentile") },
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label="Routing latency summary"
+      className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-inner-border px-6 py-5 text-badge"
+    >
+      <Route size={12} aria-hidden="true" className="shrink-0 text-text-secondary" />
+      {tiles.map((tile) => (
+        <span
+          key={tile.label}
+          // Native title, matching the other hover hints on this page: the
+          // explanation costs no space until asked for.
+          title={tile.title}
+          className="inline-flex items-baseline gap-1.5 font-mono tabular-nums leading-none text-caption"
+        >
+          <span className="font-semibold tracking-label uppercase text-text-tertiary">
+            {tile.label}
+          </span>
+          <span className="font-semibold text-text-secondary">
+            {formatDuration(tile.value)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Scale switcher on a token card. Cards start on the exact count; each click
+ * steps through the compact units from the coarsest that fits down to K and
+ * then wraps back to the exact count, so the raw number and the readable
+ * abbreviated form are both one click away with no dead end. Hidden when the
+ * value is so small that no unit would compress it.
+ */
+function TokenScaleSwitch({
+  label,
+  value,
+  scale,
+  onChange,
+}: {
+  label: string;
+  value: number | null | undefined;
+  scale: number;
+  onChange: (next: number) => void;
+}): ReactNode {
+  const auto =
+    value === null || value === undefined || !Number.isFinite(value)
+      ? null
+      : tokenScaleIndex(value);
+  if (auto === null || auto >= RAW_TOKEN_SCALE) return null;
+  const next =
+    scale === TOKEN_SCALE_AUTO
+      ? Math.min(auto + 1, RAW_TOKEN_SCALE)
+      : scale >= RAW_TOKEN_SCALE
+        ? TOKEN_SCALE_AUTO
+        : scale + 1;
+  const currentName =
+    scale === TOKEN_SCALE_AUTO
+      ? TOKEN_SCALES[auto]?.suffix ?? "raw"
+      : scale >= RAW_TOKEN_SCALE
+        ? "raw"
+        : TOKEN_SCALES[scale]?.suffix ?? "raw";
+  const nextName =
+    next === TOKEN_SCALE_AUTO
+      ? "default unit"
+      : next >= RAW_TOKEN_SCALE
+        ? "exact count"
+        : TOKEN_SCALES[next]?.suffix;
+  return (
+    <button
+      type="button"
+      aria-label={`${label}: currently ${currentName}, switch to ${nextName}`}
+      title={`Show ${nextName}`}
+      onClick={() => onChange(next)}
+      className="font-mono tabular-nums inline-flex items-center gap-2 px-3.5 py-1.5 border border-inner-border rounded-pill bg-surface-2 text-text-secondary cursor-pointer text-micro font-bold tracking-[0.04em] leading-[1]"
+    >
+      <Scaling size={11} aria-hidden="true" />
+      {currentName}
+    </button>
+  );
+}
+
+
+/**
+ * Returns `current` with one parameter set, leaving every other parameter
+ * untouched.
+ *
+ * The page re-renders on its own every 10s (four queries carry
+ * `refetchInterval`), so a handler that built its `URLSearchParams` from the
+ * `searchParams` of an earlier render could write that stale snapshot back and
+ * silently revert a sibling parameter — the "breakdown tab will not switch"
+ * symptom, where a click set `dim` and a concurrent update from an older
+ * closure restored the previous value.
+ *
+ * React Router 7's `setSearchParams` accepts a functional updater that reads
+ * the *current* params, so the snapshot never goes stale. This helper is the
+ * pure core of that updater, kept separate so it can be tested directly.
+ */
+export function withParam(
+  current: URLSearchParams,
+  key: string,
+  value: string,
+): URLSearchParams {
+  const next = new URLSearchParams(current);
+  next.set(key, value);
+  return next;
+}
+
+/**
+ * Returns `set` with `key` flipped: removed when present, added when absent.
+ *
+ * Backs the per-panel collapse and widen toggles. Kept pure and separate from
+ * the component so the transition can be tested without a DOM.
+ */
+export function toggleInSet<T>(set: ReadonlySet<T>, key: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
+export default function Usage(): ReactNode {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const period = asPeriod(searchParams.get("period"));
+  const metric = asMetric(searchParams.get("metric"));
+  const dimension = asDimension(searchParams.get("dim"));
+  const tokenScale = asTokenScale(searchParams.get("scale"));
+  // Per-panel presentation state. Deliberately not in the URL: a widened panel
+  // is a local reading preference, and putting it in the query string would
+  // make every toggle a navigation.
+  const [widePanels, setWidePanels] = useState<ReadonlySet<PanelKey>>(() => new Set());
+  const togglePanel = (
+    setter: React.Dispatch<React.SetStateAction<ReadonlySet<PanelKey>>>,
+    key: PanelKey,
+  ) => {
+    setter((prev) => toggleInSet(prev, key));
+  };
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hideProviderName, setHideProviderName] = useState(() => {
+    try {
+      return localStorage.getItem("cartethyia:usage:hide-provider") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleHideProviderName = () => {
+    setHideProviderName((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("cartethyia:usage:hide-provider", String(next));
+      } catch {}
+      return next;
+    });
+  };
+  /**
+   * Whether the model the upstream reported is shown beside the one we asked
+   * for. Off by default: it is a diagnostic, and a third line on every row
+   * would bury the two that matter.
+   */
+  const [showReported, setShowReported] = useState(() => {
+    try {
+      return localStorage.getItem("cartethyia:usage:show-reported") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleShowReported = () => {
+    setShowReported((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("cartethyia:usage:show-reported", String(next));
+      } catch {}
+      return next;
+    });
+  };
+  const summaryQuery = useUsageSummary(period);
+  const providersQuery = useProviders();
+  const providerNames = useMemo(
+    () => new Map((providersQuery.data ?? []).map((provider) => [provider.providerId, provider.label || provider.displayName])),
+    [providersQuery.data],
+  );
+  const [requestLimit, setRequestLimit] = useState(50);
+  const [requestStatusFilter, setRequestStatusFilter] = useState<number | null>(null);
+  const requestsQuery = useUsageRequests(period, requestLimit, requestStatusFilter);
+  /** Scroll offset of the Requests table, restored after each live refresh. */
+  const requestsScrollTopRef = useRef(0);
+  const [requestSortKey, setRequestSortKey] = useState<"startedAt" | "model" | "status" | "tokens" | "tps" | "ttft" | "duration">("startedAt");
+  const [requestSortDirection, setRequestSortDirection] = useState<"asc" | "desc">("desc");
+  const toggleRequestSort = (key: typeof requestSortKey): void => {
+    setRequestSortKey((current) => {
+      if (current !== key) {
+        setRequestSortDirection(key === "model" ? "asc" : "desc");
+        return key;
+      }
+      setRequestSortDirection((direction) => (direction === "asc" ? "desc" : "asc"));
+      return current;
+    });
+  };
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  const [newRowIds, setNewRowIds] = useState<Set<string>>(new Set());
+
+  // Detect newly arrived requests and briefly highlight them
+  useEffect(() => {
+    const items = requestsQuery.data?.items ?? [];
+    if (items.length === 0) return;
+    const seen = seenIdsRef.current;
+    if (seen.size === 0) {
+      // First load: seed without highlighting
+      for (const item of items) seen.add(item.requestId);
+      return;
+    }
+    const fresh = new Set<string>();
+    for (const item of items) {
+      if (!seen.has(item.requestId)) {
+        seen.add(item.requestId);
+        fresh.add(item.requestId);
+      }
+    }
+    if (fresh.size > 0) {
+      setNewRowIds((prev) => new Set([...prev, ...fresh]));
+      const timer = window.setTimeout(() => {
+        setNewRowIds((current) => {
+          const next = new Set(current);
+          for (const id of fresh) next.delete(id);
+          return next;
+        });
+      }, 3000);
+      return () => window.clearTimeout(timer);
+    }
+  }, [requestsQuery.data?.items]);
+
+  const handleTableScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    // Recorded on every scroll so a live poll that replaces the rows can put
+    // the operator back where they were. `requestItems` is keyed by request id,
+    // so a refetch remounts the rows and the browser resets scrollTop to 0.
+    requestsScrollTopRef.current = target.scrollTop;
+    if (target.scrollHeight - target.scrollTop - target.clientHeight < 40) {
+      if (!requestsQuery.isFetching && requestItems.length >= requestLimit && requestLimit < 500) {
+        setRequestLimit((prev) => prev + 50);
+      }
+    }
+  };
+  const summary = summaryQuery.data?.totals;
+  const requestItems = useMemo(() => {
+    const items = [...(requestsQuery.data?.items ?? [])];
+    const direction = requestSortDirection === "asc" ? 1 : -1;
+    const numeric = (value: number | undefined): number => (typeof value === "number" && Number.isFinite(value) ? value : -1);
+    items.sort((left, right) => {
+      switch (requestSortKey) {
+        case "model":
+          return `${left.providerId ?? ""}/${left.model ?? ""}`.localeCompare(`${right.providerId ?? ""}/${right.model ?? ""}`) * direction
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "status":
+          return ((left.httpStatus ?? 0) - (right.httpStatus ?? 0)) * direction
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "tokens":
+          return (((left.totalTokens ?? 0) - (right.totalTokens ?? 0)) * direction)
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "tps":
+          return ((numeric(left.tokensPerSec) - numeric(right.tokensPerSec)) * direction)
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "ttft":
+          return ((numeric(left.ttfbMs) - numeric(right.ttfbMs)) * direction)
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "duration":
+          return ((numeric(left.durationMs) - numeric(right.durationMs)) * direction)
+            || left.startedAt.localeCompare(right.startedAt) * -1;
+        case "startedAt":
+        default:
+          return left.startedAt.localeCompare(right.startedAt) * direction;
+      }
+    });
+    return items;
+  }, [requestsQuery.data?.items, requestSortKey, requestSortDirection]);
+
+  /**
+   * Puts the Requests table back at the offset it was scrolled to.
+   *
+   * The rows are keyed by request id, so a live poll that swaps the data
+   * replaces the `<tr>` elements and the browser resets the scroll container to
+   * 0 — the operator is thrown back to the newest row mid-read. Restore only
+   * when the row count changed, so an ordinary re-render with the same rows
+   * never fights the user's own scrolling. A deliberate reset (status filter,
+   * period change) clears the offset first via `resetRequestsScroll`.
+   */
+  useLayoutEffect(() => {
+    const scroller = document.getElementById("usage-requests-scroll");
+    if (scroller === null) return;
+    const target = Math.min(requestsScrollTopRef.current, scroller.scrollHeight);
+    scroller.scrollTop = target;
+  }, [requestItems.length]);
+
+  const resetRequestsScroll = () => {
+    requestsScrollTopRef.current = 0;
+  };
+  const toggleRequestStatus = (status: number): void => {
+    resetRequestsScroll();
+    setRequestLimit(50);
+    setRequestStatusFilter((current) => (current === status ? null : status));
+  };
+
+  const setParam = (key: string, value: string) => {
+    setSearchParams((current) => withParam(current, key, value), { replace: true });
+  };
+  const setTokenScale = (next: number) => {
+    setSearchParams(
+      (current) => {
+        const params = new URLSearchParams(current);
+        if (next === DEFAULT_TOKEN_SCALE) params.delete("scale");
+        else if (next === TOKEN_SCALE_AUTO) params.set("scale", "auto");
+        else params.set("scale", String(next));
+        return params;
+      },
+      { replace: true },
+    );
+  };
+
+  return (
+    <InFlightProvider>
+      <Stack gap="16px">
+      <Card>
+        <CardHeader
+          title="Usage"
+          subtitle={usageHeadline(period, summaryQuery.isPending, summary)}
+          icon={<Activity size={16} />}
+        />
+        <CardBody className="flex flex-col gap-8">
+      <div className="metric-grid grid gap-7 w-full min-w-0">
+        <RequestsStatCard
+          pending={summaryQuery.isPending}
+          requests={summary?.requests}
+        />
+        <StatCard
+          label="Input tokens"
+          value={summaryQuery.isPending ? "…" : tokenScaleValue(summary?.inputTokens, tokenScale)}
+          detail="Prompt tokens"
+          tone="accent"
+          action={
+            <TokenScaleSwitch
+              label="Input tokens scale"
+              value={summary?.inputTokens}
+              scale={tokenScale}
+              onChange={setTokenScale}
+            />
+          }
+        />
+        <StatCard
+          label="Cached tokens"
+          value={summaryQuery.isPending ? "…" : tokenScaleValue(summary?.cachedTokens, tokenScale)}
+          detail={
+            summaryQuery.isPending
+              ? "Cache hit rate"
+              : `${summary?.cacheHitRate !== undefined ? Math.round(summary.cacheHitRate * 10) / 10 : 0}% cache hit rate`
+          }
+          tone="purple"
+          icon={<Database size={13} />}
+          action={
+            <TokenScaleSwitch
+              label="Cached tokens scale"
+              value={summary?.cachedTokens}
+              scale={tokenScale}
+              onChange={setTokenScale}
+            />
+          }
+        />
+        <StatCard
+          label="Output tokens"
+          value={summaryQuery.isPending ? "…" : tokenScaleValue(summary?.outputTokens, tokenScale)}
+          detail="Completion tokens"
+          icon={<ArrowUpFromLine size={13} />}
+          action={
+            <TokenScaleSwitch
+              label="Output tokens scale"
+              value={summary?.outputTokens}
+              scale={tokenScale}
+              onChange={setTokenScale}
+            />
+          }
+        />
+        <StatCard
+          label="Est. cost"
+          value={summaryQuery.isPending ? "…" : formatUsd(summary?.estimatedCostUsd)}
+          // The figure is always an estimate, never an invoice. When completed
+          // rows exist without a persisted price the estimate is a floor, and
+          // the caption says so in plain words instead of naming the flag.
+          detail="Estimated not billing"
+          tone="orange"
+          icon={<DollarSign size={13} />}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-8 w-full min-w-0 max-medium:grid-cols-1">
+
+        <BreakdownSnapshot
+          period={period}
+          dimension={dimension}
+          onDimensionChange={(value) => setParam("dim", value)}
+          wide={widePanels.has("breakdown")}
+          onToggleWide={() => togglePanel(setWidePanels, "breakdown")}
+        />
+        <Card
+          className={widePanels.has("traffic") ? "col-span-full" : ""}
+        >
+          <CardHeader
+            title="Traffic"
+            subtitle={`Requests per bucket · ${periodLabel(period)}`}
+            icon={<Radio size={16} />}
+            leading={
+              <PanelWidthToggle
+                label="Traffic"
+                wide={widePanels.has("traffic")}
+                onToggleWide={() => togglePanel(setWidePanels, "traffic")}
+              />
+            }
+            action={
+              <Inline gap="6px" className="flex-wrap">
+                <PillTabs
+                  ariaLabel="Traffic metric"
+                  value={metric}
+                  onChange={(value) => setParam("metric", value)}
+                  options={[
+                    { id: "requests", label: "Requests" },
+                    { id: "tokens", label: "Tokens" },
+                    { id: "cached", label: "Cached" },
+                  ]}
+                />
+                <Select
+                  aria-label="Period"
+                  value={period}
+                  size="sm"
+                  className="w-auto min-w-46 shrink-0 grow-0 basis-auto"
+                  onValueChange={(value) => setParam("period", value)}
+                  options={PERIOD_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                />
+              </Inline>
+            }
+          />
+          <CardBody>
+            <ChartPanel period={period} metric={metric} />
+          </CardBody>
+        </Card>
+      </div>
+
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Requests"
+          subtitle={`Most recent first · ${requestItems.length} entries · open a row to inspect`}
+          subtitleAddon={
+            <StatusFilters
+              counts={summary?.statusCounts ?? []}
+              active={requestStatusFilter}
+              onToggle={toggleRequestStatus}
+            />
+          }
+          icon={<Activity size={16} />}
+          action={
+            <Inline gap="12px" align="center" className="flex-wrap">
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={hideProviderName ? <EyeOff size={13} /> : <Eye size={13} />}
+                onClick={toggleHideProviderName}
+                title={hideProviderName ? "Show real provider names" : "Mask provider names as Mysterious"}
+                className="text-badge h-13 px-4 py-0 text-text-secondary"
+              >
+                {hideProviderName ? "Provider masked" : "Mask provider"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Cog size={13} />}
+                onClick={toggleShowReported}
+                title={
+                  showReported
+                    ? "Hide the model each upstream reported"
+                    : "Show the model each upstream reported"
+                }
+                className={`text-badge h-13 px-4 py-0 ${showReported ? "text-accent" : "text-text-secondary"}`}
+              >
+                {showReported ? "Hide reported" : "Show reported"}
+              </Button>
+              <LiveInFlightPill />
+            </Inline>
+          }
+        />
+        <CardBody className="p-0">
+          {requestsQuery.isPending && requestItems.length === 0 ? (
+            <div className="p-10">
+              <LoadingState label="Loading requests…" />
+            </div>
+          ) : requestsQuery.isError && requestItems.length === 0 ? (
+            <div className="p-10">
+              <ErrorState message="Could not load recent requests." onRetry={() => void requestsQuery.refetch()} />
+            </div>
+          ) : requestItems.length === 0 ? (
+            <div className="p-10">
+              <EmptyState
+                title="No requests recorded for this period"
+                message="Route requests through the gateway to populate the table."
+                icon={<Activity size={20} />}
+              />
+            </div>
+          ) : (
+            <div id="usage-requests-scroll" className="rounded-control border border-inner-border bg-surface-1">
+              <RoutingLatencyBar
+                pending={summaryQuery.isPending}
+                avgMs={summary?.avgResolveMs}
+                p50Ms={summary?.latencyP50Ms}
+                p95Ms={summary?.latencyP95Ms}
+                p99Ms={summary?.latencyP99Ms}
+                latencySampleCount={summary?.latencySampleCount}
+                resolveSampleCount={summary?.resolveSampleCount}
+                periodLabel={periodLabel(period)}
+              />
+              <DataTable
+                maxHeight={445}
+                onScroll={handleTableScroll}
+                headers={[
+                  { key: "startedAt", label: "Time", sortable: true },
+                  { key: "model", label: "Provider/model", sortable: true },
+                  { key: "apiKey", label: "API Key" },
+                  { key: "status", label: "Status", sortable: true },
+                  { key: "tokens", label: "Tokens", sortable: true },
+                  { key: "tps", label: "TPS", sortable: true },
+                  { key: "ttft", label: "TTFT", sortable: true },
+                  { key: "duration", label: "Done", sortable: true },
+                ]}
+                sortKey={requestSortKey}
+                sortDirection={requestSortDirection}
+                onSort={(key) => toggleRequestSort(key as typeof requestSortKey)}
+              >
+                {requestItems.map((row) => {
+                  const isNew = newRowIds.has(row.requestId);
+                  const costText = row.estimatedCost === undefined ? "—" : formatUsd(row.estimatedCost);
+                  // A request that failed before a candidate was leased has no
+                  // serving provider, but the caller's qualified model ref still
+                  // names one, so the column stays populated either way.
+                  const rowProviderId = requestProviderId(row.providerId, row.model);
+                  return (
+                    <tr
+                      key={row.requestId}
+                      onClick={() => setSelectedId(row.requestId)}
+                      className="cursor-pointer transition-colors"
+                      style={{
+                        background: isNew ? "color-mix(in srgb, var(--accent) 14%, transparent)" : undefined,
+                      }}
+                    >
+                    <td className="text-badge text-text-tertiary whitespace-nowrap">
+                      <div>{formatTime(row.startedAt)}</div>
+                      <div className="text-micro mt-0.5">{formatAgo(row.startedAt)}</div>
+                    </td>
+                    <td className="max-w-105">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span
+                          className="truncate text-caption font-semibold"
+                          title={rowProviderId ?? "—"}
+                        >
+                          {hideProviderName ? "Mysterious" : rowProviderId ? (providerNames.get(rowProviderId) ?? rowProviderId) : "—"}
+                        </span>
+                      </div>
+                      <div className="truncate font-mono text-badge text-text-tertiary mt-px" title={row.model ?? "—"}>
+                        {hideProviderName && row.model && row.model.includes("/")
+                          ? row.model.slice(row.model.indexOf("/") + 1)
+                          : row.model ?? "—"}
+                      </div>
+                      {showReported && row.reportedModel ? (
+                        // Verbatim, exactly as the upstream wrote it: no prefix
+                        // stripping, no comparison. A provider answering with a
+                        // different model than the one asked for is the finding,
+                        // and normalising it would erase the only evidence.
+                        <div
+                          className="flex items-center gap-1.5 mt-px min-w-0 text-micro text-text-tertiary"
+                          title={`Reported by upstream: ${row.reportedModel}`}
+                        >
+                          <Cog size={10} aria-hidden="true" className="shrink-0" />
+                          <span className="truncate font-mono">{row.reportedModel}</span>
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="max-w-70">
+                      <div
+                        className="truncate text-caption font-semibold"
+                        title={usageApiKeyLabel(row)}
+                      >
+                        {usageApiKeyLabel(row)}
+                      </div>
+                      <div className="truncate font-mono text-badge text-text-tertiary mt-px" title={usageClientLabel(row)}>
+                        {usageClientLabel(row)}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap text-badge">
+                      <div>
+                        <span
+                          className="font-mono tabular-nums inline-block min-w-[13ch] text-text-secondary"
+                        >
+                          {row.mode === "stream" ? "streaming" : "non-streaming"}
+                        </span>
+                        {" "}
+                        <StatusCodeWithExplainer
+                          status={row.status}
+                          errorKind={row.errorKind}
+                          httpStatus={row.httpStatus}
+                        />
+                      </div>
+                      <div className="truncate font-mono text-badge text-text-tertiary mt-px max-w-110" title={surfaceFamilyLabel(row.surface)}>
+                        {surfaceFamilyLabel(row.surface)}
+                      </div>
+                    </td>
+                    <td className="font-mono text-badge whitespace-nowrap text-right tabular-nums">
+                      <div className="flex gap-6 justify-end">
+                        <span className="inline-flex items-center gap-2 text-text-secondary">
+                          <ArrowUp size={10} aria-label="Input tokens" /> IN {formatNumber(row.inputTokens)}
+                        </span>
+                        <span className="inline-flex items-center gap-2 text-text-secondary">
+                          <ArrowDown size={10} aria-label="Output tokens" /> OUT {formatNumber(row.outputTokens)}
+                        </span>
+                      </div>
+                      <div
+                        className="flex gap-6 justify-end mt-0.5 text-text-tertiary"
+                        title={row.estimatedCost === undefined ? "Unpriced model — no catalog rate" : undefined}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <Database size={10} aria-label="Cached tokens" /> CACHED {formatNumber(row.cachedTokens ?? 0)}
+                        </span>
+                        <span className="inline-flex items-center gap-2">
+                          <DollarSign size={10} aria-label="Estimated cost" /> COST {costText}
+                        </span>
+                        {row.creditUsed !== undefined ? (
+                          <span
+                            className="inline-flex items-center gap-2"
+                            title="Provider-billed credits for this turn"
+                          >
+                            <Coins size={10} aria-label="Credits used" /> {formatCredit(row.creditUsed)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="font-mono text-caption text-right text-text-secondary whitespace-nowrap">
+                      {formatSpeed(row.tokensPerSec)}
+                    </td>
+                    <td className="font-mono text-caption text-right text-text-secondary">
+                      <div>{formatDuration(row.ttfbMs)}</div>
+                      {row.resolveMs !== undefined ? (
+                        <div
+                          className="text-micro mt-0.5 text-text-tertiary"
+                          title="Gateway-side time before the upstream dispatch began"
+                        >
+                          ({formatDuration(row.resolveMs)})
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="font-mono text-caption text-right text-text-secondary">
+                      {formatDuration(row.durationMs)}
+                    </td>
+                    </tr>
+                  );
+                })}
+              </DataTable>
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      <RequestDetailDrawer requestId={selectedId} onClose={() => setSelectedId(null)} />
+      </Stack>
+    </InFlightProvider>
+  );
+}

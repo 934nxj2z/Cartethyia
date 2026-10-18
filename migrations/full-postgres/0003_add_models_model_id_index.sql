@@ -1,0 +1,16 @@
+-- Indexes `models.model_id` on its own.
+--
+-- Every index on `models` was left-prefixed on `provider_id`
+-- (`models_provider_model_route_uidx`, `models_provider_enabled_idx`), so a
+-- lookup by bare model id — with no provider named — could not use any of them
+-- and seq-scanned the largest catalog table (one row per
+-- provider x model x route). Two call sites do exactly that:
+--
+--   * `PublicModelCatalogStore.listPublicModels` / `getPublicModelDetail`
+--     resolve the bare ids a client sends (`/v1/models`, `/v1/models/info`).
+--   * `src/console/routing/model/store.ts` resolves a batch of bare ids with
+--     `inArray(models.modelId, ...)` for the model list.
+--
+-- `CREATE INDEX IF NOT EXISTS` keeps the file idempotent: a database built from
+-- a newer baseline that already carries the index must not fail startup.
+CREATE INDEX IF NOT EXISTS "models_model_id_idx" ON "models" USING btree ("model_id");

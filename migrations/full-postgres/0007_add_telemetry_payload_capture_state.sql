@@ -1,0 +1,17 @@
+-- Adds `telemetry_events.payload_capture_state` (text, nullable).
+--
+-- Why a request's drawer payloads are empty. The four panels read blank for
+-- every reason alike — capture switched off, no tenant, a non-terminal attempt,
+-- a failed preference read, a failed write — and the request row itself carries
+-- no way to tell them apart. An operator debugging remotely, with no access to
+-- the server's logs, could not distinguish "capture is off" from "capture is
+-- broken", and both look like a bug.
+--
+-- Values are the `PayloadCaptureState` union: `captured`, `captured_metadata`,
+-- `skipped_mode_none`, `skipped_no_tenant`, `skipped_not_terminal`,
+-- `skipped_preference_read_failed`, `failed_write`. NULL means the row predates
+-- this column (or the request never reached a decision).
+--
+-- `ADD COLUMN IF NOT EXISTS` keeps the file idempotent: a database built from a
+-- newer baseline that already carries the column must not fail startup.
+ALTER TABLE "telemetry_events" ADD COLUMN IF NOT EXISTS "payload_capture_state" text;

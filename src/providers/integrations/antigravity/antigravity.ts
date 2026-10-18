@@ -1,0 +1,1012 @@
+/**
+ * Antigravity adapter.
+ *
+ * Antigravity is Google's Cloud Code Assist backend
+ * (`daily-cloudcode-pa.googleapis.com`), reached via Google OAuth. The wire
+ * reuses the Gemini `buildGeminiPayload` envelope from `protocol/request/gemini.ts`,
+ * wrapped in Antigravity's agent envelope (`project`/`requestId`/wire
+ * `model`/`request`) and POSTed to the fixed `v1internal:{generate,stream
+ * Generate}Content` RPC — no per-model URL path.
+ *
+ * Antigravity-specific wire nuance lives in `./protocol.ts`:
+ *   - `antigravity/hub/<version>` User-Agent with lazy update-manifest
+ *     version discovery
+ *   - logical → wire model-id resolution (`antigravityWireModelId`) so the
+ *     console can show friendly names while upstream uses deployment ids
+ *   - per-wire-id `maxOutputTokens` + `labels.model_enum` override
+ *   - Gemini 3+ skip-thought-signature bypass for the first unsigned
+ *     `functionCall` in each `model`-role turn
+ *   - `loadCodeAssist` project-id lookup (cached per access-token hash;
+ *     warmed by the OAuth exchange in `./auth.ts`)
+ *
+ * Cross-brand model catalog: Antigravity serves Google Gemini SKUs,
+ * Anthropic Claude SKUs, and one GPT-OSS SKU behind the same wire.
+ */
+import type { CanonicalEvent, CanonicalRequest, CanonicalStopReason } from "../../../protocol/canonical-model";
+import { GatewayError } from "../../../protocol/gateway-error";
+import { firstUserText } from "../../../protocol/canonical-model";
+import { decodeSseEvents } from "../../../protocol/sse-decoder";
+import { geminiInlineImages, imageAspectRatio, imageCreatedSeconds, imagePrompt } from "../../../protocol/image-generation";
+import { mapUpstreamHttpError } from "../../../transport/failure-policy";
+import { usageFromProvider } from "../../provider-usage";
+import { isRecord } from "../../../protocol/codecs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { buildGeminiPayload } from "../../../protocol/request/gemini";
+import {
+  decodeGeminiStreamEvent,
+  geminiCandidate,
+  mapGeminiUsage,
+  responseParts,
+} from "../../../protocol/response/gemini";
+import {
+  antigravityWireModelId,
+  applySkipThoughtSignatureBypass,
+  getAntigravityModelWireProfile,
+  getAntigravityUserAgent,
+  loadAntigravityProject,
+} from "./antigravity-protocol";
+import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
+import { providerBaseUrl } from "../../provider-metadata";
+import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
+import { log } from "../../../observability/logger";
+import {
+  fetchWithEmptyStreamRecovery,
+  isEmptyStream,
+  type StreamTally,
+} from "../../../transport/dispatch/empty-stream";
+
+export const ANTIGRAVITY_PROVIDER_ID = "antigravity" as const;
+export const ANTIGRAVITY_BASE_URL = providerBaseUrl("antigravity");
+/** Cloud Code Assist accepts `/v1internal:generateContent` for the same body Gemini's v1beta accepts. */
+const GENERATE_PATH = "/v1internal:generateContent" as const;
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
+
+const antigravityModel = (
+  modelId: string,
+  contextLimit: number,
+  outputLimit: number,
+  reasoning: boolean,
+  image = false,
+): ModelDefinition =>
+  defineModel({
+    id: modelId,
+    wireFamily: "chat",
+    endpoint: GENERATE_PATH,
+    ctx: contextLimit,
+    out: outputLimit,
+    vision: true,
+    reasoning,
+    ...(image
+      ? { serviceKind: "imageGeneration" as const, output: ["image"] as const, toolCall: false }
+      : { toolCall: true }),
+  });
+
+export const ANTIGRAVITY_MODELS: readonly ModelDefinition[] = [
+  // Claude via Antigravity (Anthropic-branded SKUs, Gemini wire)
+  antigravityModel("claude-sonnet-4-6", 250_000, 64_000, true),
+  antigravityModel("claude-opus-4-6", 250_000, 64_000, true),
+  // The 5.5 generation. Anthropic's own model pages publish 1M context and
+  // 128k output for both, which is the same figure the Claude integration
+  // carries; Antigravity has no base-catalog rows of its own, so the numbers
+  // are stated here rather than resolved from a source that does not exist.
+  //
+  // `out` is published metadata, not a request field: the `maxOutputTokens` the
+  // envelope carries comes from `ANTIGRAVITY_MODEL_WIRE_PROFILES`, and an id
+  // absent from that table passes the caller's own value through. The 4.6 rows
+  // are pinned at 64000 because Antigravity was observed rejecting anything
+  // higher on `daily-cloudcode-pa`. The 5.5 cap is UNVERIFIED — no 5.5 request
+  // has been captured against that host — so if it turns out to carry the same
+  // 64000 ceiling, it needs its own profile entry; a catalog row cannot express
+  // it.
+  antigravityModel("claude-sonnet-5-5", 1_000_000, 128_000, true),
+  antigravityModel("claude-opus-5-5", 1_000_000, 128_000, true),
+  // Gemini
+  antigravityModel("gemini-2.5-flash", 1_048_576, 65_536, true),
+  antigravityModel("gemini-3-flash", 1_048_576, 65_536, true),
+  antigravityModel("gemini-3.1-flash-image", 200_000, 64_000, false, true),
+  antigravityModel("gemini-3.1-pro", 1_048_576, 65_535, true),
+  antigravityModel("gemini-3.6-flash", 1_048_576, 65_536, true),
+  antigravityModel("gemini-3.7-flash", 1_048_576, 65_536, true),
+  antigravityModel("gemini-3.8-flash", 1_048_576, 65_536, true),
+  // GPT-OSS
+  antigravityModel("gpt-oss-120b", 131_072, 32_768, true),
+];
+
+function normalizeAntigravityGrounding(data: unknown, maxResults: number): readonly WebSearchResult[] {
+  if (!isRecord(data)) return [];
+  const chunks = Array.isArray(data.groundingChunks) ? data.groundingChunks : [];
+  const results: WebSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const chunk of chunks) {
+    if (!isRecord(chunk) || !isRecord(chunk.web)) continue;
+    const url = typeof chunk.web.uri === "string" ? chunk.web.uri : "";
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    results.push({
+      title: typeof chunk.web.title === "string" ? chunk.web.title : "",
+      url,
+      snippet: "",
+      published_at: null,
+      score: null,
+    });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+const STREAM_GENERATE_PATH = "/v1internal:streamGenerateContent?alt=sse" as const;
+
+// Antigravity model catalog.
+
+// Adapter
+
+interface AntigravityAdapterOptions {
+  readonly fetch?: typeof fetch;
+  readonly baseUrl?: string;
+  /** Maximum session states when the host needs explicit limits. */
+  readonly sessionStateMaxEntries?: number;
+  /** Idle session lifetime in milliseconds. */
+  readonly sessionStateIdleTtlMs?: number;
+  /** Injectable clock for deterministic tests. */
+  readonly now?: () => number;
+}
+
+class AntigravityAdapter implements ProviderAdapter {
+  readonly provider_id = ANTIGRAVITY_PROVIDER_ID;
+  private readonly fetchFn: typeof fetch;
+  private readonly baseUrl: string;
+  private readonly sessionStates: AntigravitySessionStore;
+
+  constructor(options: AntigravityAdapterOptions = {}) {
+    this.fetchFn = options.fetch ?? globalThis.fetch;
+    this.baseUrl = (options.baseUrl ?? ANTIGRAVITY_BASE_URL).replace(/\/+$/, "");
+    this.sessionStates = new AntigravitySessionStore({
+      ...(options.sessionStateMaxEntries === undefined ? {} : { maxEntries: options.sessionStateMaxEntries }),
+      ...(options.sessionStateIdleTtlMs === undefined ? {} : { idleTtlMs: options.sessionStateIdleTtlMs }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+  }
+
+  /** Number of live conversation states (diagnostics/tests). */
+  sessionStateSize(): number {
+    return this.sessionStates.size;
+  }
+
+  /** Resets one conversation/model state, or all model states for a conversation. */
+  resetSession(routeIdentity: string, wireModelId?: string): number {
+    if (wireModelId !== undefined)
+      return this.sessionStates.resetByPrefix(sessionStateKey(routeIdentity, wireModelId));
+    return this.sessionStates.resetByPrefix(`${sessionIdentityDigest(routeIdentity)}:`);
+  }
+
+  async *dispatch(
+    request: CanonicalRequest,
+    candidate: ProviderDispatchTarget,
+    context: ProviderDispatchContext,
+  ): AsyncIterable<CanonicalEvent> {
+    if (
+      candidate.wire_family !== "chat" &&
+      candidate.wire_family !== "responses" &&
+      candidate.wire_family !== "messages"
+    ) {
+      throw new GatewayError(
+        "capability_unsupported",
+        400,
+        `antigravity supports chat/responses/messages, got ${candidate.wire_family}`,
+      );
+    }
+    if (context.credential.credential_kind !== "oauth") {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        `antigravity: Google OAuth credential required (got credential_kind=${context.credential.credential_kind})`,
+      );
+    }
+    const accessToken = context.credential.secret
+      ? new TextDecoder().decode(context.credential.secret).trim()
+      : "";
+    if (!accessToken) {
+      throw new GatewayError(
+        "authentication_failed",
+        401,
+        "antigravity: OAuth access token is required",
+      );
+    }
+
+    const model = candidate.model_id || request.model;
+    const wireModelId = antigravityWireModelId(model);
+    const url = `${this.baseUrl}${request.stream ? STREAM_GENERATE_PATH : GENERATE_PATH}`;
+
+    // Conversation stickiness: one state per (conversation, model); other
+    // models under the same conversation reset so parallel stale states
+    // never shadow the live one. The anonymous fallback is scoped per
+    // credential (never one static bucket shared by all anonymous traffic).
+    const accountId = context.credential.account_id;
+    const credentialScope =
+      accountId ??
+      (context.credential.secret
+        ? `cred:${createHash("sha256").update(context.credential.secret).digest("hex").slice(0, 16)}`
+        : "anon");
+    const routeIdentity =
+      request.conversation?.conversation_id ??
+      request.conversation_id ??
+      `account:${credentialScope}`;
+    const stateKey = sessionStateKey(routeIdentity, wireModelId);
+    const sessionState = this.sessionStates.getOrCreate(stateKey);
+    // Reset sibling-model states under the same conversation so parallel
+    // stale states never shadow the live one; the live key is kept.
+    this.sessionStates.resetByPrefix(`${sessionIdentityDigest(routeIdentity)}:`, stateKey);
+
+    // Every outbound call goes through the context's fetch: a probe injects one
+    // that strips `User-Agent`, so the control-plane lookups below never
+    // announce a desktop client the probe is not, while real dispatch keeps the
+    // Antigravity identity the backend gates on.
+    const outboundFetch: typeof fetch =
+      (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
+
+    // Best-effort project-id: CloudCode accepts requests without one for
+    // free-tier accounts; enterprise/subscribed accounts need it. Cached
+    // per access-token hash, so this is a single background call at first
+    // use per token.
+    const projectId = await loadAntigravityProject(accessToken, {
+      baseUrl: this.baseUrl,
+      fetcher: outboundFetch,
+      signal: context.abort_signal,
+    });
+
+    const payload = buildAntigravityEnvelope(
+      request,
+      projectId,
+      wireModelId,
+      model,
+      sessionState,
+      firstUserText(request),
+    );
+
+    const lifecycle = createUpstreamDeadlineLifecycle(context);
+
+    try {
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        accept: request.stream ? "text/event-stream" : "application/json",
+        authorization: `Bearer ${accessToken}`,
+        "user-agent": getAntigravityUserAgent(),
+      };
+      const attempt = (target: string): Promise<Response> =>
+        outboundFetch(target, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: lifecycle.signal,
+        });
+      let response = await attempt(url);
+      if (!response.ok && isFailoverStatus(response.status)) {
+        // Production→sandbox auto-failover (captured client behavior): one
+        // bounded retry on a fresh host for throttled/server-side failures.
+        // Auth and client errors never fail over.
+        const sandboxUrl = failoverAntigravityUrl(url, this.baseUrl);
+        if (sandboxUrl !== undefined) {
+          response = await attempt(sandboxUrl);
+        }
+      }
+      if (!response.ok) throw await mapUpstreamHttpError(response, "antigravity");
+      // Headers arrived: the pre-stream deadline has served its purpose.
+      // From here the gateway stall/first-chunk watchdog (propagated via
+      // context.abort_signal) governs the body.
+      lifecycle.release();
+
+      if (!request.stream) {
+        const json = (await response.json()) as Record<string, unknown>;
+        const { response: decoded, candidate: cand, parts } =
+          geminiCandidate(json);
+        const output = responseParts(parts);
+        let seq = 1;
+        yield {
+          type: "response_start",
+          sequence_number: seq++,
+          model: request.model,
+        } as CanonicalEvent;
+        if (output.thought) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: {
+              kind: "reasoning",
+              payload: null,
+              summary: output.thought,
+            },
+          } as CanonicalEvent;
+        }
+        if (output.text) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: { kind: "text", text: output.text },
+          } as CanonicalEvent;
+        }
+        for (const call of output.calls) {
+          yield {
+            type: "tool_call_delta",
+            sequence_number: seq++,
+            call_id: call.id,
+            name: call.name,
+            arguments_delta: JSON.stringify(call.args),
+          } as CanonicalEvent;
+        }
+        const usageRec = usageFromProvider(mapGeminiUsage(decoded));
+        const finishReason =
+          typeof cand["finishReason"] === "string"
+            ? (cand["finishReason"] as string)
+            : undefined;
+        const providerStopReason = isRecord(cand["groundingMetadata"])
+          ? `grounding:${JSON.stringify(cand["groundingMetadata"])}`
+          : finishReason;
+        if (typeof decoded["responseId"] === "string") {
+          sessionState.lastExecutionId = decoded["responseId"] as string;
+        }
+        yield {
+          type: "terminal",
+          sequence_number: seq++,
+          // No finishReason on a full body means the upstream response was
+          // truncated: never complete.
+          state: finishReason === undefined ? "failed" : "complete",
+          stop_reason: toCanonicalStop(finishReason, output.calls.length),
+          ...(providerStopReason ? { provider_stop_reason: providerStopReason } : {}),
+          usage: usageRec,
+        } as CanonicalEvent;
+        return;
+      }
+
+      if (!response.body) {
+        throw new GatewayError(
+          "platform_unavailable",
+          502,
+          "antigravity returned empty stream",
+          {},
+          "upstream",
+        );
+      }
+      // Empty-stream recovery: a 200 whose first burst carries nothing is a
+      // routable request the backend answered with silence. Peek on a *clone*
+      // (the original reader stays untouched and fully readable) and stop at
+      // the first meaningful event, so a healthy stream costs one bounded read
+      // of its opening burst and no extra request. Only a silent first burst
+      // triggers the byte-identical replay across prod → sandbox.
+      {
+        const firstBurst = await peekAntigravityTally(response.clone(), lifecycle.signal);
+        if (isEmptyStream(firstBurst)) {
+          const frozenBody = JSON.stringify(payload);
+          const sandbox = failoverAntigravityUrl(url, this.baseUrl);
+          const recovery = await fetchWithEmptyStreamRecovery(
+            sandbox === undefined ? [url] : [url, sandbox],
+            { headers, body: frozenBody },
+            {
+              fetch: (target, init) =>
+                outboundFetch(target, {
+                  method: "POST",
+                  headers: init.headers,
+                  body: init.body,
+                  signal: init.signal,
+                }),
+              drain: (res, signal) => peekAntigravityTally(res.clone(), signal),
+              signal: lifecycle.signal,
+              deadlineMs: context.deadline,
+            },
+          );
+          log.warn("antigravity: empty stream, replayed", {
+            endpoint: recovery.endpoint,
+            replays: recovery.replaysUsed,
+          });
+          response = recovery.response;
+        }
+      }
+      let seq = 1;
+      yield {
+        type: "response_start",
+        sequence_number: seq++,
+        model: request.model,
+      } as CanonicalEvent;
+      const activeCalls = new Set<string>();
+      let rawUsage: Record<string, unknown> | undefined;
+      let finishReason: string | undefined;
+      let toolCount = 0;
+      for await (const sse of decodeSseEvents(
+        response.body as ReadableStream<Uint8Array>,
+        { signal: lifecycle.signal },
+      )) {
+        const data = sse.data.trim();
+        if (data === "[DONE]") break;
+        const parsed = decodeGeminiStreamEvent(data, "antigravity stream error");
+        if (parsed === undefined) continue;
+        const { response: decoded, candidate: cand, parts } = geminiCandidate(parsed);
+        const output = responseParts(parts);
+        if (output.thought) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: {
+              kind: "reasoning",
+              payload: null,
+              summary: output.thought,
+            },
+          } as CanonicalEvent;
+        }
+        if (output.text) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: { kind: "text", text: output.text },
+          } as CanonicalEvent;
+        }
+        for (const call of output.calls) {
+          if (!activeCalls.has(call.id)) {
+            activeCalls.add(call.id);
+            yield {
+              type: "tool_call_delta",
+              sequence_number: seq++,
+              call_id: call.id,
+              name: call.name,
+              arguments_delta: "",
+            } as CanonicalEvent;
+          }
+          const argsText = JSON.stringify(call.args);
+          if (argsText !== "{}") {
+            yield {
+              type: "tool_call_delta",
+              sequence_number: seq++,
+              call_id: call.id,
+              arguments_delta: argsText,
+            } as CanonicalEvent;
+          }
+          toolCount++;
+        }
+        if (isRecord(decoded["usageMetadata"])) {
+          rawUsage = decoded["usageMetadata"] as Record<string, unknown>;
+        }
+        if (typeof decoded["responseId"] === "string") {
+          sessionState.lastExecutionId = decoded["responseId"] as string;
+        }
+        if (typeof cand["finishReason"] === "string") {
+          finishReason = cand["finishReason"] as string;
+        }
+      }
+      const usageRec = usageFromProvider(
+        rawUsage ? mapGeminiUsage({ usageMetadata: rawUsage }) : undefined,
+      );
+      if (context.abort_signal.aborted || finishReason === undefined) {
+        yield {
+          type: "terminal",
+          sequence_number: seq++,
+          // No finishReason means the stream ended without a terminal
+          // chunk: truncated, never complete.
+          state: finishReason === undefined ? "failed" : "aborted",
+          stop_reason: toCanonicalStop(finishReason, toolCount),
+          ...(finishReason ? { provider_stop_reason: finishReason } : {}),
+          usage: usageRec,
+        } as CanonicalEvent;
+      } else {
+        yield {
+          type: "terminal",
+          sequence_number: seq++,
+          state: "complete",
+          stop_reason: toCanonicalStop(finishReason, toolCount),
+          ...(finishReason ? { provider_stop_reason: finishReason } : {}),
+          usage: usageRec,
+        } as CanonicalEvent;
+      }
+    } catch (err: unknown) {
+      const abortError = abortGatewayError(lifecycle, err, context.abort_signal);
+      if (abortError) throw abortError;
+      throw err;
+    } finally {
+      lifecycle.release();
+    }
+  }
+
+  async websearch(
+    body: Record<string, unknown>,
+    candidate: ProviderDispatchTarget,
+    context: ProviderDispatchContext,
+  ): Promise<WebSearchOutcome> {
+    const query = typeof body.query === "string" ? body.query.trim() : "";
+    if (!query) throw new GatewayError("invalid_request", 400, "search query is required");
+    const rawMax = body.max_results;
+    const maxResults =
+      typeof rawMax === "number" && Number.isFinite(rawMax)
+        ? Math.min(Math.max(1, Math.floor(rawMax)), 50)
+        : 10;
+    const requested = typeof body.model === "string" ? body.model.trim() : "";
+    const model = requested.length > 0 && requested !== "antigravity" ? requested : "gemini-2.5-flash";
+    const request: CanonicalRequest = {
+      model,
+      messages: [{ role: "user", content: [{ kind: "text", text: query }] }],
+      tools: [{ name: "web_search", tool_type: "web_search", jsonSchema: {} }],
+      generation_controls: {},
+      stream: false,
+      source_surface: "chat",
+    };
+    let grounded: unknown;
+    for await (const event of this.dispatch(request, { ...candidate, model_id: model }, context)) {
+      const reason = event.type === "terminal" ? event.provider_stop_reason : undefined;
+      if (reason?.startsWith("grounding:")) grounded = JSON.parse(reason.slice("grounding:".length));
+    }
+    const results = normalizeAntigravityGrounding(grounded, maxResults);
+    if (results.length === 0)
+      throw new GatewayError("platform_unavailable", 502, "Antigravity search returned no grounded results");
+    return { results, total_results: results.length };
+  }
+
+  async generateImage(
+    body: Record<string, unknown>,
+    candidate: ProviderDispatchTarget,
+    context: ProviderDispatchContext,
+  ): Promise<ImageGenerationOutcome> {
+    if (context.credential.credential_kind !== "oauth") {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        `antigravity: Google OAuth credential required (got credential_kind=${context.credential.credential_kind})`,
+      );
+    }
+    const accessToken = context.credential.secret
+      ? new TextDecoder().decode(context.credential.secret).trim()
+      : "";
+    if (!accessToken) {
+      throw new GatewayError("authentication_failed", 401, "antigravity: OAuth access token is required");
+    }
+    const prompt = imagePrompt(body);
+    const model = candidate.model_id.length > 0 ? candidate.model_id : typeof body.model === "string" ? body.model : "";
+    if (model.length === 0) throw new GatewayError("invalid_request", 400, "model is required");
+    const outboundFetch: typeof fetch = (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
+    const projectId = await loadAntigravityProject(accessToken, {
+      baseUrl: this.baseUrl,
+      fetcher: outboundFetch,
+      signal: context.abort_signal,
+    });
+    const aspectRatio = imageAspectRatio(body.size);
+    const count = typeof body.n === "number" && Number.isFinite(body.n) ? Math.max(1, Math.floor(body.n)) : 1;
+    // the reference client's Antigravity image client streams the agent envelope and asks
+    // for IMAGE only. The chat envelope (tools, thinking, identity turn) makes
+    // Cloud Code answer as an agent instead of returning inline image bytes.
+    const payload: Record<string, unknown> = {
+      model: antigravityWireModelId(model),
+      request: {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        systemInstruction: {
+          parts: [
+            {
+              text: "You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.",
+            },
+          ],
+        },
+        generationConfig: {
+          responseModalities: ["IMAGE"],
+          candidateCount: count,
+          ...(aspectRatio === undefined ? {} : { imageConfig: { aspectRatio } }),
+        },
+        safetySettings: [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_ONLY_HIGH" },
+        ],
+      },
+      requestType: "agent",
+      requestId: `agent-${Date.now()}-${randomUUID().slice(0, 9)}`,
+      userAgent: "antigravity",
+      ...(projectId === undefined ? {} : { project: projectId }),
+    };
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "user-agent": getAntigravityUserAgent(),
+    };
+    const lifecycle = createUpstreamDeadlineLifecycle(context);
+    const url = `${this.baseUrl}${STREAM_GENERATE_PATH}`;
+    let response: Response;
+    try {
+      const attempt = (target: string): Promise<Response> =>
+        outboundFetch(target, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: lifecycle.signal,
+        });
+      response = await attempt(url);
+      if (!response.ok && isFailoverStatus(response.status)) {
+        const sandboxUrl = failoverAntigravityUrl(url, this.baseUrl);
+        if (sandboxUrl !== undefined) response = await attempt(sandboxUrl);
+      }
+    } catch (error: unknown) {
+      const abortError = abortGatewayError(lifecycle, error, context.abort_signal);
+      if (abortError) throw abortError;
+      throw new GatewayError(
+        "platform_unavailable",
+        502,
+        `Antigravity image generation unreachable: ${error instanceof Error ? error.message : String(error)}`,
+        {},
+        "upstream",
+      );
+    }
+    if (!response.ok) {
+      lifecycle.release();
+      throw await mapUpstreamHttpError(response, "antigravity");
+    }
+    lifecycle.release();
+    const images: Record<string, unknown>[] = [];
+    // One generated image is already several megabytes of base64, so the
+    // shared 4 MiB SSE cap would reject a successful generation.
+    for await (const event of decodeSseEvents(response.body, {
+      signal: context.abort_signal,
+      maxEventBytes: 32 * 1024 * 1024,
+    })) {
+      if (event.data.trim().length === 0 || event.data.trim() === "[DONE]") continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(event.data);
+      } catch {
+        throw new GatewayError("platform_unavailable", 502, "Antigravity image stream returned malformed JSON", {}, "upstream");
+      }
+      images.push(...geminiInlineImages(parsed));
+    }
+    if (images.length === 0) {
+      throw new GatewayError("platform_unavailable", 502, "Antigravity image generation returned no image", {}, "upstream");
+    }
+    return { created: imageCreatedSeconds(), data: images };
+  }
+}
+
+function toCanonicalStop(
+  finishReason: string | undefined,
+  toolCount: number,
+): CanonicalStopReason {
+  const map: Record<string, CanonicalStopReason> = {
+    MAX_TOKENS: "length",
+    STOP: "stop",
+    SAFETY: "content_filter",
+  };
+  if (finishReason && map[finishReason]) return map[finishReason]!;
+  return toolCount > 0 ? "tool_use" : "stop";
+}
+
+/**
+ * Per-conversation upstream session. Created once per (conversation, model)
+ * and sticky across turns so every turn looks like the same client instead
+ * of a brand-new one: stable agent/trajectory/session ids, an incrementing
+ * step index, and the previous turn's execution id echoed back.
+ */
+export interface AntigravitySessionState {
+  agentId?: string;
+  trajectoryId?: string;
+  sessionId?: string;
+  stepIndex?: number;
+  lastExecutionId?: string;
+}
+
+/** Maximum in-memory conversation sessions retained by the adapter. */
+const MAX_SESSION_STATES = 256;
+const DEFAULT_SESSION_STATE_IDLE_TTL_MS = 30 * 60_000;
+
+function sessionIdentityDigest(value: string): string {
+  let hash = 1469598103934665603n;
+  for (const character of value) {
+    hash ^= BigInt(character.codePointAt(0) ?? 0);
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+/**
+ * Bounded in-process conversation store keyed by route identity. Idle
+ * entries expire, recency refreshes on access, and the oldest entry is
+ * evicted at the cap so a fan-out over conversations cannot pin memory.
+ * A dedicated class (rather than the shared TTL cache) because session
+ * stickiness needs touch-on-read idle semantics plus prefix-scoped reset.
+ */
+export class AntigravitySessionStore {
+  private readonly entries = new Map<string, { state: AntigravitySessionState; at: number }>();
+  private readonly maxEntries: number;
+  private readonly idleTtlMs: number;
+  private readonly now: () => number;
+
+  constructor(options: { maxEntries?: number; idleTtlMs?: number; now?: () => number } = {}) {
+    this.maxEntries = options.maxEntries ?? MAX_SESSION_STATES;
+    this.idleTtlMs = options.idleTtlMs ?? DEFAULT_SESSION_STATE_IDLE_TTL_MS;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** Number of live entries. */
+  get size(): number {
+    this.evictExpired();
+    return this.entries.size;
+  }
+
+  /** Returns the live state for key, creating it when absent or expired. */
+  getOrCreate(key: string): AntigravitySessionState {
+    this.evictExpired();
+    const existing = this.entries.get(key);
+    if (existing !== undefined) {
+      existing.at = this.now();
+      return existing.state;
+    }
+    const state: AntigravitySessionState = {};
+    this.entries.set(key, { state, at: this.now() });
+    this.evictOverCap();
+    return state;
+  }
+
+  /** Deletes every entry whose key starts with prefix (except `keep`); returns the count. */
+  resetByPrefix(prefix: string, keep?: string): number {
+    let removed = 0;
+    for (const key of this.entries.keys()) {
+      if (key.startsWith(prefix) && key !== keep) {
+        this.entries.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  private evictExpired(): void {
+    const now = this.now();
+    for (const [key, entry] of this.entries) {
+      if (now - entry.at >= this.idleTtlMs) this.entries.delete(key);
+    }
+  }
+
+  private evictOverCap(): void {
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) return;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
+/**
+ * Negative signed session id, matching the captured client shape:
+ * `"-" + (sha256(first-user-text)[0:8] & INT63 | random <9e18)`.
+ * A positive or hyphenated-UUID value here is a one-glance synthetic signal.
+ */
+export function signedAntigravitySessionId(seed?: string): string {
+  if (seed !== undefined && /^-?\d+$/.test(seed)) return seed;
+  const text = seed !== undefined && seed.length > 0 ? seed : randomUUID();
+  const head = BigInt(`0x${createHash("sha256").update(text).digest("hex").slice(0, 8)}`);
+  const randomPart =
+    BigInt(`0x${randomBytes(8).toString("hex")}`) % BigInt("9000000000000000000");
+  const combined = (head & BigInt("0x7FFFFFFFFFFFFFFF")) | randomPart;
+  return `-${combined.toString()}`;
+}
+
+/** Thinking budget per wire model, matching the client's effort tiers. */
+export function antigravityThinkingBudget(modelId: string): number | undefined {
+  if (!modelId.includes("claude") && !modelId.includes("gemini-3")) return undefined;
+  if (modelId.endsWith("-low")) return 1_000;
+  if (modelId.endsWith("-medium")) return 4_000;
+  if (modelId.endsWith("-high")) return 10_000;
+  return modelId.includes("3.1-pro") ? 10_001 : 10_000;
+}
+
+const ANTIGRAVITY_SYSTEM_INSTRUCTION =
+  "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
+
+/**
+ * Restatement appended as a trailing user turn when a Gemini route carries a
+ * forced tool choice. The backend drops `toolConfig` on Gemini routes (answers
+ * in text under `mode: "ANY"`, still emits calls under `"NONE"`), so without
+ * the restatement `tool_choice=required` silently degrades to free text.
+ *
+ * UNCONFIRMED: the reference ships its directive text from an external file
+ * (`google-antigravity-forced-tool.md`, a 1-line "TOOL-ONLY TURN" stub at the
+ * compared commit) — no captured body shows the real wording. This constant is
+ * the explicit seam to confirm from live replay; the log line in
+ * `buildAntigravityEnvelope` marks every send for that comparison.
+ */
+const ANTIGRAVITY_FORCED_TOOL_DIRECTIVE =
+  "TOOL-ONLY TURN. Call exactly one available tool now. Do not emit any text before or after the call.";
+
+function sessionStateKey(routeIdentity: string, wireModelId: string): string {
+  return `${sessionIdentityDigest(routeIdentity)}:antigravity:${wireModelId}`;
+}
+
+/** Statuses worth one bounded sandbox failover (throttled or server-side). */
+function isFailoverStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * Drains just enough of an Antigravity SSE body to know whether it carries
+ * anything, then stops.
+ *
+ * The caller passes a *clone*, so the original body reader is never consumed
+ * and the real stream still flows untouched. Reading stops at the first
+ * meaningful event or after `maxChunks` data events, whichever comes first —
+ * a healthy stream therefore costs one bounded read of its opening burst
+ * rather than a full drain, which is what makes the pre-commit peek cheap
+ * enough to sit on the hot path.
+ */
+async function peekAntigravityTally(
+  response: Response,
+  signal: AbortSignal,
+  maxChunks = 8,
+): Promise<StreamTally> {
+  const body = response.body;
+  if (body === null) return { dataEvents: 0, meaningful: false, thoughtOnly: false };
+  let dataEvents = 0;
+  let thought = false;
+  for await (const sse of decodeSseEvents(body, { signal })) {
+    const data = sse.data.trim();
+    if (data.length === 0 || data === "[DONE]") continue;
+    dataEvents++;
+    const parsed = decodeGeminiStreamEvent(data, "antigravity stream error");
+    if (parsed === undefined) continue;
+    const { parts } = geminiCandidate(parsed);
+    const output = responseParts(parts);
+    if (output.thought) thought = true;
+    if (output.text || output.calls.length > 0) {
+      return { dataEvents, meaningful: true, thoughtOnly: false };
+    }
+    if (dataEvents >= maxChunks) break;
+  }
+  // A stream that ended with reasoning but no final output is a complete
+  // provider response (the donor's thought-only carve-out): replaying it
+  // burns a full reasoning pass for nothing, so it is never treated as empty.
+  return { dataEvents, meaningful: false, thoughtOnly: thought };
+}
+
+/**
+ * Sandbox twin of a production Antigravity URL, or undefined when the base
+ * is already custom (only the known production host has a sandbox twin).
+ */
+export function failoverAntigravityUrl(url: string, baseUrl: string): string | undefined {
+  if (!baseUrl.includes("daily-cloudcode-pa.googleapis.com")) return undefined;
+  const sandboxBase = baseUrl.replace(
+    "daily-cloudcode-pa.googleapis.com",
+    "daily-cloudcode-pa.sandbox.googleapis.com",
+  );
+  return url.startsWith(baseUrl) ? `${sandboxBase}${url.slice(baseUrl.length)}` : undefined;
+}
+
+/**
+ * Wraps the shared Gemini payload in the Antigravity agent envelope.
+ * Antigravity's `daily-cloudcode-pa` exposes the fixed
+ * `v1internal:streamGenerateContent` / `v1internal:generateContent` RPC
+ * (no per-model URL path): the resolved wire model id travels here as the
+ * envelope `model`, while the Gemini `contents`/`tools`/`generationConfig`
+ * ride inside `request` with Antigravity's `labels` telemetry.
+ */
+function buildAntigravityEnvelope(
+  request: CanonicalRequest,
+  projectId: string | undefined,
+  wireModelId: string,
+  logicalModelId: string,
+  state: AntigravitySessionState,
+  sessionSeed: string,
+): Record<string, unknown> {
+  const geminiPayload = buildGeminiPayload(request);
+  const profile = getAntigravityModelWireProfile(wireModelId);
+
+  const generationConfig = isRecord(geminiPayload["generationConfig"])
+    ? (geminiPayload["generationConfig"] as Record<string, unknown>)
+    : {};
+  if (profile) {
+    generationConfig["maxOutputTokens"] = profile.maxOutputTokens;
+  }
+  const budget = antigravityThinkingBudget(logicalModelId);
+  if (budget !== undefined) {
+    generationConfig["thinkingConfig"] = { includeThoughts: true, thinkingBudget: budget };
+  }
+
+  state.agentId ??= randomUUID();
+  state.trajectoryId ??= randomUUID();
+  state.sessionId ??= signedAntigravitySessionId(sessionSeed);
+  state.stepIndex = (state.stepIndex ?? 1) + 1;
+  const step = state.stepIndex;
+
+  const labels: Record<string, string> = {
+    ...(state.lastExecutionId ? { last_execution_id: state.lastExecutionId } : {}),
+    trajectory_id: state.trajectoryId,
+    last_step_index: String(step - 1),
+    used_claude: profile?.usageLabel ?? String(logicalModelId.includes("claude")),
+    used_claude_conservative: profile?.usageLabel ?? String(logicalModelId.includes("claude")),
+  };
+  if (profile?.modelEnum) {
+    labels["model_enum"] = profile.modelEnum;
+  }
+
+  const existingContents = Array.isArray(geminiPayload["contents"])
+    ? (geminiPayload["contents"] as Record<string, unknown>[])
+    : [];
+  const isClaudeRoute = logicalModelId.toLowerCase().includes("claude");
+  // Forced choice on Gemini routes: the backend drops `toolConfig` here, so a
+  // canonical `tool_choice=required` with no declared change is restated as a
+  // trailing user directive (reference behavior). Claude routes implement
+  // VALIDATED natively and are left untouched.
+  if (
+    !isClaudeRoute &&
+    (request.tool_choice === "required" ||
+      (typeof request.tool_choice === "object" &&
+        request.tool_choice !== null &&
+        request.tool_choice.type !== undefined)) &&
+    existingContents.length > 0
+  ) {
+    existingContents.push({
+      role: "user",
+      parts: [{ text: ANTIGRAVITY_FORCED_TOOL_DIRECTIVE }],
+    });
+    log.info("antigravity: forced tool choice restated for Gemini route", {
+      model: wireModelId,
+    });
+  }
+  const injectIdentity =
+    logicalModelId.toLowerCase().includes("claude") || logicalModelId.toLowerCase().includes("gemini-3");
+  // Identity rides the dedicated systemInstruction field (captured shape),
+  // never a fake user turn: a fabricated history turn pollutes multi-turn
+  // context, while systemInstruction stays out of the conversation.
+  const existingInstruction = isRecord(geminiPayload["systemInstruction"])
+    ? (geminiPayload["systemInstruction"] as Record<string, unknown>)
+    : undefined;
+  const existingParts = Array.isArray(existingInstruction?.["parts"])
+    ? (existingInstruction?.["parts"] as Record<string, unknown>[])
+    : [];
+  const hasIdentity = existingParts.some(
+    (part) => isRecord(part) && part["text"] === ANTIGRAVITY_SYSTEM_INSTRUCTION,
+  );
+  const systemInstruction =
+    !injectIdentity || hasIdentity
+      ? existingInstruction
+      : {
+          role: "user",
+          parts: [{ text: ANTIGRAVITY_SYSTEM_INSTRUCTION }, ...existingParts],
+        };
+
+  const requestPayload: Record<string, unknown> = {
+    ...geminiPayload,
+    contents: existingContents,
+    ...(systemInstruction === undefined ? {} : { systemInstruction }),
+    labels,
+    sessionId: state.sessionId,
+    ...(Object.keys(generationConfig).length > 0
+      ? { generationConfig }
+      : {}),
+  };
+  // No built-in tools on this route. A `googleSearch` entry alongside
+  // `functionDeclarations` is refused with
+  // `400 ... enable tool_config.include_server_side_tool_invocations to use
+  // Built-in tools with Function calling`, and the reference client never
+  // sends one: web search reaches Antigravity as an ordinary function tool.
+  // Injecting it was the only reason that refusal ever appeared here.
+  if (logicalModelId.includes("claude") && !isRecord(requestPayload["toolConfig"])) {
+    requestPayload["toolConfig"] = { functionCallingConfig: { mode: "VALIDATED" } };
+  }
+  // Gemini default is left unset: the shared Gemini builder owns toolConfig
+  // on this path, and stamping VALIDATED here would overwrite a caller choice
+  // the envelope cannot see. Only the forced-choice restatement above runs on
+  // the Gemini path.
+  applySkipThoughtSignatureBypass(requestPayload, logicalModelId);
+
+  const envelope: Record<string, unknown> = {
+    requestId: `agent/${state.agentId}/${Date.now()}/${state.trajectoryId}/${step}`,
+    model: wireModelId,
+    userAgent: "antigravity",
+    requestType: "agent",
+    request: requestPayload,
+  };
+  if (projectId) {
+    envelope["project"] = projectId;
+  }
+  return envelope;
+}
+
+export function createAntigravityAdapter(
+  options: AntigravityAdapterOptions = {},
+): ProviderAdapter {
+  return new AntigravityAdapter(options);
+}
+
+export const antigravityAdapter: ProviderAdapter = createAntigravityAdapter();
+
+export { AntigravityAdapter };

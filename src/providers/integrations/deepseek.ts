@@ -1,0 +1,60 @@
+import type { ModelDefinition } from "../provider-model-definition";
+import { defineModel } from "../provider-model-definition";
+
+const DEEPSEEK_PROVIDER_ID = "deepseek" as const;
+
+/**
+ * The DeepSeek V4 families that are still live upstream.
+ *
+ * The provider has live `/v1/models` discovery, so this catalog is not the only
+ * source — it is the floor that keeps these models listed when discovery has not
+ * run or the endpoint does not answer.
+ *
+ * Only two rows are needed; retired and alias ids are omitted. `deepseek-v4.1-flash`
+ * replaces `v4-flash` and `v4-flash-vision-exp` routes to it upstream.
+ * `v4-pro-max` and `v4-pro-none` are
+ * likewise routing aliases of `deepseek-v4-pro`, not models of their own.
+ *
+ * Limits and pricing resolve from the base catalog via `providerId`, so no
+ * number is restated here to drift. `deepseek-v4.1-flash` is the exception: the
+ * base catalog does not file it under `deepseek` (it files it under aihubmix,
+ * alibaba, …), so it resolves through the majority row instead of a
+ * provider-scoped one. That is the honest resolution — inventing limits here
+ * would publish a guess as a measurement.
+ *
+ * There is no `v4.1-pro` in the available model list, so `v4-pro` stays as the
+ * Pro row. `deepseek-chat` and `deepseek-reasoner` are excluded as V3.2
+ * families, not V4.
+ */
+export const DEEPSEEK_MODELS: readonly ModelDefinition[] = [
+  defineModel({
+    id: "deepseek-v4-pro",
+    providerId: DEEPSEEK_PROVIDER_ID,
+    wireFamily: "messages",
+    // The wire default for `messages` is `/messages`, but this provider's base
+    // already ends at `/anthropic`, so the default would compose to
+    // `/anthropic/messages`. DeepSeek publishes the versioned path, so the row
+    // declares it — the same reason the Anthropic rows above do.
+    endpoint: "/v1/messages",
+    reasoning: true,
+    toolCall: true,
+  }),
+  defineModel({
+    id: "deepseek-v4.1-flash",
+    providerId: DEEPSEEK_PROVIDER_ID,
+    wireFamily: "messages",
+    endpoint: "/v1/messages",
+    vision: true,
+    reasoning: true,
+    toolCall: true,
+  }),
+  defineModel({
+    id: "deepseek-flash",
+    providerId: DEEPSEEK_PROVIDER_ID,
+    wireFamily: "messages",
+    endpoint: "/v1/messages",
+    vision: true,
+    reasoning: true,
+    toolCall: true,
+  }),
+];

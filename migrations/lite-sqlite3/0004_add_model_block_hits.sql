@@ -1,0 +1,11 @@
+-- Adds `provider_accounts.model_block_hits` (text, nullable) — see the
+-- identically named PostgreSQL migration for why. Both backends must apply the
+-- same behavior; SQLite stores the JSON document as text and has no jsonb type.
+--
+-- Idempotency here comes from the migration ledger, not from the statement:
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, and the runner records the file in
+-- `cartethyia_schema_migrations` inside the same transaction, so a file that has
+-- already run is never re-executed. (The baseline is generated from
+-- `0000_baseline.sql` alone and does not carry this column, so a fresh database
+-- always reaches this file with the column still absent.)
+ALTER TABLE "provider_accounts" ADD COLUMN "model_block_hits" text;

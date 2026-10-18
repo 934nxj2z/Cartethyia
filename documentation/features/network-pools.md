@@ -1,0 +1,165 @@
+# Network pools
+
+A network pool is an egress path — an HTTP, HTTPS, or SOCKS5 proxy, optionally
+fronted by a hosted relay. Pools are chosen *after* the model and account are
+decided:
+`src/network` owns egress, SSRF, retry, and outbound fetch, and explicitly does
+not own model selection (`architecture.md`).
+
+## Data
+
+| Table | Key | Holds |
+| --- | --- | --- |
+| `network_pools` | `id` | `kind`, `endpoint_config`, `credential_ciphertext`, `max_inflight`, `weight`, `family`, health columns, speed-test and byte totals |
+| `pool_routing_settings` | PK `tenant_id` | `strategy` (`least_loaded` \| `round_robin`), `rotate_count` |
+| `provider_routing_settings` | `(tenant_id, provider_id)` or global when `tenant_id IS NULL` | Provider/account routing controls, including `skip_proxy`, `user_agent`, and the separate [Usage floor](usage-floor.md) setting |
+
+`skipProxy` and `userAgent` live on the *provider* row, not the pool row: when
+`skipProxy` is false and the tenant has pools configured, dispatch selects
+among every active pool the tenant owns using its pool strategy (weighted
+least-loaded by default, or round-robin), skips pools cooling for that provider,
+and never uses an admin-pinned pool.
+
+`kind` is `http`, `https`, or `socks5`. Health columns are the same eight every
+health-bearing row shares (`status`, `consecutive_failures`, `last_success_at`,
+`last_error`, `last_error_category`, `last_error_at`, `cooldown_until`,
+`last_recovered_at`), plus `last_latency_ms`, `last_health_check_at`, and
+`egress_ip` — the public address reported by the last successful probe.
+
+`quota_bytes` is an operator-set egress allowance; `null` means unmetered.
+`bytes_sent_total` is the metered running total.
+
+## Selection
+
+`NetworkPoolSelector` (`src/network/pool/selector.ts`) is weighted and
+cooldown-aware, and keeps inflight in a local map with Redis counters so two
+processes do not oversubscribe one proxy. `DEFAULT_PROXY_CONCURRENCY` is 10:
+that is the limit when a pool has no `max_inflight` value. The pool's configured
+limit replaces that default; `effectiveConcurrency()` validates the chosen
+limit rather than adding another cap.
+
+The role files are split on purpose:
+
+| File | Holds |
+| --- | --- |
+| `selector.ts` | The selection algorithm and the `NetworkPoolSelector` surface |
+| `pool-state.ts` | Local inflight, rotation cursor, cooldown entries |
+| `pool-scripts.ts` | Redis scripts and key builders (`POOL_ADMIT_SCRIPT`) |
+| `loader.ts` | `DrizzleNetworkPoolLoader` — the read the selector is given |
+| `agent.ts` | Building the agent, and the errors that classify a failed CONNECT |
+| `byte-accounting.ts` | In-memory sent/received counters |
+| `resolver.ts` | Turning a resolved endpoint into an outbound connection |
+
+Strategy is per tenant: `least_loaded` (the default) does a weighted scan with a
+rotating tie-break; `round_robin` serves `rotate_count` requests per pool before
+advancing and skips a pool the same way account failover does.
+
+An operator may set a pool to `disabled`; network failures can park it in
+`cooldown`, and a successful dispatch or recovery restores it to `active`.
+A proxy's `CONNECT` refusal with `402` or `407` is attributed to the pool,
+not the account dialed through it: the typed `ProxyConnectRefusalError` is
+the pool's own verdict and never cools a provider account.
+Only active pools enter automatic selection. `quota_bytes` is a metering/display
+allowance, not a dispatch stop: the gateway records sent/received totals but
+does not block traffic when those totals reach the allowance.
+
+## Agents and relays
+
+`agent.ts` exports `TRANSPORT_KINDS` (`http`, `https`, `socks5`) and two
+builders: `createHttpProxyAgent`, `createSocks5Agent`. Two refusal classes are
+typed so the caller can tell a dead proxy from a bad handshake —
+`ProxyConnectRefusalError`, `ProxyConnectHandshakeError`.
+
+`http` and `https` differ only in which flavor answers a `https:` target, so a
+hosted relay front door is recorded as the protocol it actually speaks. A
+serverless host that cannot answer CONNECT at all — `isRelayHost` recognizes
+`*.vercel.app`, `*.workers.dev`, `*.netlify.app`, `*.deno.dev` — carries a
+`relayEndpoint` instead, and `src/network/outbound-fetch.ts` sends the
+`x-relay-target`/`x-relay-path` contract to it. carte-bridge, the retired
+`bridge` kind with its own `x-bridge-*` contract, is gone; backup restore maps
+any legacy `bridge` pool to `https`.
+
+An SSRF policy check runs on every dial. `src/network/ssrf.ts` rejects
+destinations the policy does not allow; custom provider hosts go through the
+same check, and a provider registered after boot resolves its binding on first
+use rather than at boot. Console-side endpoint validation is
+`validateEndpoint` in `src/console/routing/pools/contracts.ts`.
+
+`src/network/retry.ts` is the *outbound* retry policy. It is distinct from the
+routing failover loop in `router.ts` — one decides whether to re-dial a
+connection, the other whether to try another candidate.
+
+## Metering
+
+Sockets are wrapped by `accountSocketBytes` / `accountSocketWrites`. Counters
+live in memory (`MAX_BYTE_ENTRY_COUNT` is 10 000), are drained per pool, and
+flush into `bytes_sent_total` on every pool-touching write — so the quota bar
+survives a restart instead of resetting to zero.
+
+## Console
+
+Domain: `src/console/routing/pools/`, mounted at `/console/api/network/pools`.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /`, `GET /:poolId` | List and detail |
+| `POST /`, `PATCH /:poolId`, `DELETE /:poolId` | Create, update, and remove |
+| `POST /test`, `POST /test-batch` | Single and batch endpoint probe |
+| `POST /:poolId/health-check`, `/recover`, `/cooldowns/clear` | Check health, recover a pool, or clear selected/all provider cooldowns |
+| `GET /:poolId/health-events` | The pool's health history |
+| `POST /:poolId/speed-test` | Measure transfer speed |
+| `POST /relay/deploy` | Hosted-relay deploy (`relay-deploy.ts`, `relay-regions.ts`) |
+| `GET /strategy`, `PATCH /strategy` | Read or update tenant strategy and rotate count |
+
+`contracts.ts` is deliberately Elysia-free — the note is at
+`src/console/routing/pools/contracts.ts:3` because the dashboard imports these
+types directly. Operations live in `operations.ts`, not `service.ts`, because
+this domain is large enough to have its own file.
+
+Writes invalidate the route snapshot: pool strategy and per-provider routing
+are part of the compiled snapshot, so a change that does not call
+`invalidate()` leaves the data plane on the old plan until something unrelated
+invalidates it.
+
+`provider_routing_settings` also owns the account quota threshold, but that
+threshold is not a pool-selection rule. Its evaluation and quota refresh
+behavior are documented in [Usage floor](usage-floor.md).
+
+## Dashboard
+
+`dashboard/src/features/proxy` — `ProxyPage.tsx` for the list and detail,
+`proxy-metrics.ts` for the inflight and quota figures. The live gauge itself
+comes from `src/console/observability/live.ts`, which reads per-pool inflight
+straight off the selector.
+
+## Where to change what
+
+| Change | Start here |
+| --- | --- |
+| Selection or cooldown behaviour | `src/network/pool/selector.ts`, then `pool-state.ts` |
+| Transport or relay fallback | `src/network/pool/agent.ts`, `src/network/outbound-fetch.ts` |
+| SSRF rules | `src/network/ssrf.ts`, `validateEndpoint` in `pools/contracts.ts` |
+| Byte metering | `src/network/pool/byte-accounting.ts` |
+| Console routes | `src/console/routing/pools/routes.ts` |
+| Schema | `networkPools`, `poolRoutingSettings` in `src/persistence/schema.ts` |
+
+
+## Known issues
+
+Direct egress falls back to the OS resolver when the configured c-ares resolver
+refuses a query (`test/network/vpn-dns.test.ts`). There is also a reported
+proxy-pool hang on the same host: the pool accepts TCP, but an HTTP request or
+`CONNECT` handshake may never answer, leaving the gateway request without a
+response. The proxy-side cause is not yet identified. The test verifies only
+the DNS fallback, not the proxy hang, so do not treat a DNS lookup timeout as a
+fix for it.
+
+## See also
+
+- [`configuration.md`](../reference/configuration.md) — "Account and pool cooldowns",
+  "Proxy pool agents", and "Network policy (trusted proxy and SSRF)". Generated
+  from `src/config/spec.ts`; do not edit it.
+- [Health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md) —
+  cooldown classes, retries, leases, and rotation procedure.
+- [`architecture.md`](../reference/architecture.md) — pool routing as part of the route
+  snapshot.

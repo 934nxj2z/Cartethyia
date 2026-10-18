@@ -1,0 +1,269 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { PACKAGE_ROOT } from "../../src/config/package-paths";
+
+/**
+ * Absolute path of the repository root.
+ *
+ * Operational scripts and the npm runtime share one package-root resolver so
+ * assets and repository config do not depend on the caller's working directory.
+ */
+export const PROJECT_ROOT = PACKAGE_ROOT;
+
+/** Resolve the active `.env`; npm CLI sets a user-owned config directory. */
+export function resolveEnvPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CARTETHYIA_CONFIG_DIR?.trim();
+  return configDir ? resolve(configDir, ".env") : resolve(PROJECT_ROOT, ".env");
+}
+
+/** Absolute path of the active `.env`. */
+export const ENV_PATH = resolveEnvPath();
+
+/**
+ * Reads a dotenv-style file without overriding already-exported variables.
+ */
+export async function readEnvFile(path: string): Promise<Record<string, string>> {
+  if (!existsSync(path)) return {};
+  const content = await readFile(path, "utf8");
+  const values: Record<string, string> = {};
+  for (const line of content.split(/\r?\n/)) {
+    if (line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim();
+    if (key) values[key] = value;
+  }
+  return values;
+}
+/**
+ * Shared utilities for setup and doctor scripts.
+ * These are extracted for testability and code reuse.
+ */
+
+export interface ProbeResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Opens a TCP connection to `host:port` and resolves once it connects, errors,
+ * or the timeout elapses. The socket is always closed so a probe never leaves a
+ * half-open connection behind.
+ */
+export async function probeTcpService(
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<ProbeResult> {
+  const { promise, resolve } = Promise.withResolvers<ProbeResult>();
+
+  const timeoutHandle = setTimeout(() => {
+    resolve({ success: false, error: "timeout" });
+  }, timeoutMs);
+
+  Bun.connect({
+    hostname: host,
+    port: port,
+    socket: {
+      open: () => {
+        clearTimeout(timeoutHandle);
+        resolve({ success: true });
+      },
+      data: () => {},
+      error: (err) => {
+        clearTimeout(timeoutHandle);
+        resolve({ success: false, error: String(err) });
+      },
+    },
+  })
+    .then((socket) => {
+      socket.end();
+    })
+    .catch((err) => {
+      clearTimeout(timeoutHandle);
+      resolve({ success: false, error: String(err) });
+    });
+
+  return promise;
+}
+
+/**
+ * Parses a service URL and requires an explicit host and port.
+ * Returns null if the URL is invalid or incomplete.
+ */
+/** Minimum Bun the repository declares in `package.json` `engines`. */
+export const MINIMUM_BUN_VERSION = "1.4.0";
+
+/**
+ * True when `actual` is at least `minimum`, compared as dotted integers.
+ * A non-numeric segment reads as 0, so a malformed version fails closed
+ * against a real minimum instead of passing.
+ */
+export function bunVersionAtLeast(actual: string, minimum: string): boolean {
+  const left = actual.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = minimum.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    const a = left[i] ?? 0;
+    const b = right[i] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
+
+/**
+ * Local PostgreSQL ports worth probing before asking for a URL. 5432 is the
+ * server default (Laragon, Homebrew, systemd); 5433 is the usual second
+ * instance when 5432 is already taken.
+ */
+export const LOCAL_POSTGRES_CANDIDATES = [
+  { host: "127.0.0.1", port: 5432 },
+  { host: "127.0.0.1", port: 5433 },
+] as const;
+
+/** First local PostgreSQL that accepts a TCP connection, or null. */
+export async function detectLocalPostgres(
+  timeoutMs: number,
+): Promise<{ host: string; port: number } | null> {
+  for (const candidate of LOCAL_POSTGRES_CANDIDATES) {
+    const probe = await probeTcpService(candidate.host, candidate.port, timeoutMs);
+    if (probe.success) return candidate;
+  }
+  return null;
+}
+
+export function parseServiceUrl(url: string): { host: string; port: number } | null {
+  try {
+    const urlObj = new URL(url);
+    if (!urlObj.hostname || !urlObj.port) return null;
+    return { host: urlObj.hostname, port: Number(urlObj.port) };
+  } catch {
+    return null;
+  }
+}
+
+export type LocalPlatform = "windows" | "macos" | "linux" | "unknown";
+
+/** Detects the host platform once so setup/doctor share identical labels. */
+export function getLocalPlatform(): LocalPlatform {
+  if (process.platform === "win32") return "windows";
+  if (process.platform === "darwin") return "macos";
+  if (process.platform === "linux") return "linux";
+  return "unknown";
+}
+
+/**
+ * Returns actionable hints for the configured local/external service.
+ * These are hints only: setup never assumes Docker or silently mutates an
+ * external service. Windows users commonly run PostgreSQL through Laragon;
+ * Redis may be native, WSL-backed, or external.
+ */
+export function getOsHints(service: "postgres" | "redis"): string[] {
+  const platform = getLocalPlatform();
+  if (platform === "windows") {
+    return service === "postgres"
+      ? [
+          "Windows / Laragon:",
+          "  Start Laragon (Start All) and ensure PostgreSQL is enabled.",
+          "  Verify PostgreSQL is listening on the DATABASE_URL host/port (usually 5432).",
+          "  External PostgreSQL is also supported — keep DATABASE_URL unchanged and reachable.",
+        ]
+      : [
+          "Windows / Redis:",
+          "  Start Redis through WSL, a native Redis-compatible service, or an external host.",
+          "  Verify Redis is listening on the REDIS_URL host/port (usually 6379).",
+          "  Or omit REDIS_URL to use the in-memory backend.",
+        ];
+  }
+  if (platform === "macos") {
+    return service === "postgres"
+      ? [
+          "macOS / Homebrew:",
+          "  brew services start postgresql@16 (or the installed PostgreSQL version).",
+          "  External PostgreSQL is also supported — verify DATABASE_URL reachability.",
+        ]
+      : [
+          "macOS / Redis:",
+          "  brew services start redis, or use an external Redis instance.",
+          "  Or omit REDIS_URL to use the in-memory backend.",
+        ];
+  }
+  if (platform === "linux") {
+    return service === "postgres"
+      ? [
+          "Linux / systemd:",
+          "  sudo systemctl start postgresql (or the installed PostgreSQL service).",
+          "  External PostgreSQL is also supported — verify DATABASE_URL reachability.",
+        ]
+      : [
+          "Linux / Redis:",
+          "  sudo systemctl start redis-server (or the installed Redis service).",
+          "  Or omit REDIS_URL to use the in-memory backend.",
+        ];
+  }
+  return [
+    `${service} is not reachable on this platform.`,
+    "Verify the configured service URL or use an external service.",
+  ];
+}
+/**
+ * Checks if a string contains a configured placeholder value.
+ */
+export function hasPlaceholderSecrets(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("replace-with") ||
+    normalized.includes("replace_me") ||
+    normalized.includes("your_")
+  );
+}
+
+/**
+ * Generates a 256-bit hex cartethyia encryption key.
+ *
+ * Hex is preferred over base64 because it never carries padding or `+`/`/`
+ * characters that confuse some dotenv shells, and it round-trips through
+ * every adapter that accepts either encoding. The install/setup helpers call
+ * this when the key is absent or still a placeholder.
+ */
+export function generateCartethyiaEncryptionKey(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i]!.toString(16).padStart(2, "0");
+  return hex;
+}
+
+/**
+ * Returns the mandatory-only `.env` body derived from `.env.example`.
+ *
+ * Mandatory means the key is assigned without a leading `#`. Optional entries
+ * (leading `#`) carry built-in defaults and must not be copied into a fresh
+ * `.env` — they would override the default with a literal `example` value.
+ * The generated body therefore contains only mandatory rows, plus a single
+ * `CARTETHYIA_ENCRYPTION_KEY` replacement when the caller supplies one.
+ */
+export async function mandatoryEnvBody(
+  examplePath: string,
+  overrides: Readonly<Record<string, string>> = {},
+): Promise<string> {
+  const raw = await readFile(examplePath, "utf8");
+  const lines: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const sep = line.indexOf("=");
+    if (sep <= 0) continue;
+    const key = line.slice(0, sep).trim();
+    if (!key) continue;
+    const value = (overrides as Record<string, string>)[key] ?? line.slice(sep + 1).trim();
+    lines.push(`${key}=${value}`);
+  }
+  // Preserve overrides even when the example row was commented out (legacy case).
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!lines.some((l) => l.startsWith(`${key}=`))) lines.push(`${key}=${value}`);
+  }
+  return `${lines.join("\n")}\n`;
+}

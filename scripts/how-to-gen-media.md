@@ -1,0 +1,2 @@
+bun run scripts/media.ts image --prompt "A black cat on a sofa" --credentials "C:\path\to\accounts.json" --account "jhofe9745@gmail.com"
+bun run scripts/media.ts video --prompt "A cat jumping onto a sofa" --credentials "C:\Users\Aria\Desktop\cb-accounts-2026-10-13T01-30-59-796Z.json" --account "jhofe9745@gmail.com"

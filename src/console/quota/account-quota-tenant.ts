@@ -1,0 +1,1096 @@
+import { globalOrOwnedBy } from "../../persistence/tenant-scope";
+import { t } from "elysia";
+import type { Elysia } from "elysia";
+import { and, eq, inArray } from "drizzle-orm";
+import { providerAccounts, providers } from "../../persistence/schema";
+import { providerDisplayName } from "../../providers/provider-metadata";
+import { invalidateCredentialCache } from "../../providers/operations/provider-credential-service";
+import { requireTenantScope } from "../shared/errors";
+import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
+import { readBuddyUsageSnapshots } from "../../providers/integrations/buddy/buddy-usage-store";
+import { GatewayError } from "../../protocol/gateway-error";
+import {
+  GLOBAL_QUOTA_LENS,
+  getCachedQuotaEntries,
+  getCachedQuotaEntry,
+  invalidateQuotaCache,
+} from "./cache";
+import {
+  QUOTA_REFRESH_TIMEOUT_MS,
+  refreshAccountQuota,
+  signalFetch,
+  timeoutSignal,
+  type QuotaRefreshDeps,
+  type QuotaRefreshFailureCode,
+} from "./refresh";
+import { selectAccountTestEgress } from "./account-test-egress";
+import type { ValidatedFetch } from "../../network/outbound-fetch";
+import type { ProviderId } from "../../providers/provider-contracts";
+import {
+  DAILY_CHECKIN_PROVIDER_IDS,
+  checkinAttemptedToday,
+  dailyCheckinEgressForPass,
+  markCheckinAttempted,
+} from "../../workers/daily-checkin";
+import {
+  fetchBuddyActivityReport,
+  fetchDailyCheckin,
+  type BuddyActivityReportResult,
+  type DailyCheckinResult,
+} from "../../providers/integrations/buddy/buddy-checkin";
+import { buddyAccountUid } from "../../providers/integrations/buddy/buddy-oauth-shared";
+import {
+  supportsAccountReset,
+  consumeAccountResetCredit,
+  listAccountResetCredits,
+} from "../../providers/operations/account-reset-service";
+import {
+  pendingQuotaRefreshes,
+  toQuotaAccountHealth,
+  toQuotaView,
+} from "./quota-view";
+import {
+  ACCOUNT_STATUSES,
+  type AccountQuotaRoutesDeps,
+  type AccountStatus,
+} from "./account-quota-shared";
+
+/** Daily check-in only exists on the buddy billing facade; everything else 400s with intent. */
+function supportsAccountCheckin(providerId: string): boolean {
+  return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
+}
+
+/** Providers whose billing meter reports real per-day credit deductions. */
+function isBuddyProvider(providerId: string): boolean {
+  return BUDDY_PROVIDER_IDS.has(providerId);
+}
+
+/**
+ * One account's stored usage, as the console renders it.
+ *
+ * `null` when nothing has been synced yet. Deliberately not an empty list: an
+ * account with no snapshot has *no data*, while an account that spent nothing
+ * has a snapshot saying zero — the page has to tell those apart.
+ */
+function toBuddyUsageView(
+  rows: readonly { readonly day: string; readonly model: string; readonly credit: number }[] | undefined,
+): {
+  readonly totalCredits: number;
+  readonly days: readonly { readonly day: string; readonly credit: number }[];
+  readonly models: readonly { readonly model: string; readonly credit: number }[];
+} | null {
+  if (rows === undefined || rows.length === 0) return null;
+  const byDay = new Map<string, number>();
+  const byModel = new Map<string, number>();
+  let totalCredits = 0;
+  for (const row of rows) {
+    byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.credit);
+    byModel.set(row.model, (byModel.get(row.model) ?? 0) + row.credit);
+    totalCredits += row.credit;
+  }
+  return {
+    totalCredits: Math.round(totalCredits * 100) / 100,
+    days: [...byDay.entries()].map(([day, credit]) => ({ day, credit })),
+    models: [...byModel.entries()]
+      .map(([model, credit]) => ({ model, credit }))
+      // Highest spend first: the operator is looking for what costs the most.
+      .sort((left, right) => right.credit - left.credit),
+  };
+}
+
+/** One account's check-in through the buddy billing facade. */
+async function runAccountCheckin(
+  account: { id: string; providerId: string },
+  credential: string,
+  forceClaim: boolean,
+): Promise<DailyCheckinResult> {
+  return fetchDailyCheckin({
+    providerId: account.providerId,
+    accountId: account.id,
+    credential,
+    fetcher: globalThis.fetch,
+    ...(forceClaim ? { forceClaim } : {}),
+  });
+}
+
+/** Bound on accounts one manual daily-growth batch may cover. */
+const DAILY_GROWTH_MAX_IDS = 100;
+/** Concurrent accounts inside one manual daily-growth batch. */
+const DAILY_GROWTH_CONCURRENCY = 3;
+
+/**
+ * One account's daily growth pass, report first then claim.
+ *
+ * The report goes first because it is the leg that lands on a free plan; the
+ * claim is attempted after it regardless of how the report went. Each leg
+ * reports its own outcome so the operator can see which one failed.
+ *
+ * `rotator` supplies the per-account egress the sweep uses; without one the
+ * request leaves through direct egress, which is what the single-account routes
+ * do.
+ */
+async function runDailyGrowthForAccount(
+  providerId: ProviderId,
+  account: { readonly id: string; readonly tenantId: string | null },
+  refreshDeps: QuotaRefreshDeps,
+  rotator: ((accountId: string, tenantId?: string | null) => Promise<ValidatedFetch>) | undefined,
+): Promise<{
+  readonly report: { readonly ok: boolean; readonly message: string };
+  readonly checkin: { readonly ok: boolean; readonly message: string };
+}> {
+  const fetcher = rotator
+    ? ((await rotator(account.id, account.tenantId)) as unknown as typeof fetch)
+    : globalThis.fetch;
+  let credential: string;
+  try {
+    credential = await refreshDeps.resolveCredential(providerId, account.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to resolve the credential.";
+    return {
+      report: { ok: false, message },
+      checkin: { ok: false, message },
+    };
+  }
+
+  // Report leg: needs a uid, which only a JWT carries, so an opaque API key
+  // fails closed instead of reporting under another account's identity.
+  const userId = buddyAccountUid(credential);
+  let report: { ok: boolean; message: string };
+  if (userId === undefined || userId.length === 0) {
+    report = { ok: false, message: "Report needs an OAuth account (no uid in this credential)" };
+  } else {
+    try {
+      const result = await fetchBuddyActivityReport({
+        providerId,
+        accountId: account.id,
+        credential,
+        userId,
+        fetcher,
+      });
+      report = result.state === "error"
+        ? { ok: false, message: result.error ?? "Activity report failed" }
+        : { ok: true, message: "Report sent — login streak lit for today" };
+    } catch (error) {
+      report = {
+        ok: false,
+        message: error instanceof Error ? error.message : "Activity report failed",
+      };
+    }
+  }
+
+  let checkin: { ok: boolean; message: string };
+  try {
+    const result = await fetchDailyCheckin({
+      providerId,
+      accountId: account.id,
+      credential,
+      forceClaim: true,
+      fetcher,
+    });
+    checkin =
+      result.state === "error"
+        ? { ok: false, message: result.error ?? "Daily check-in failed" }
+        : { ok: true, message: checkinStateMessage(result) };
+    // A manual trigger bypasses the day marker on the way in — the operator
+    // asked for "now", and a marker must not be able to refuse that — but it
+    // still leaves the marker behind, so the sweep does not spend another
+    // claim on the same account later today and the console can answer
+    // "attempted today" for an attempt made outside the sweep.
+    if (result.state !== "error") {
+      await markCheckinAttempted({ db: refreshDeps.db, redis: refreshDeps.redis, accountId: account.id });
+    }
+  } catch (error) {
+    checkin = {
+      ok: false,
+      message: error instanceof Error ? error.message : "Daily check-in failed",
+    };
+  }
+  return { report, checkin };
+}
+
+/**
+ * Reads today's check-in attempt from the ledger.
+ *
+ * Delegates to the module that owns the write: the marker lives in Redis when
+ * Redis is present and in `daily_checkin_ledger` when it is not, and only that
+ * module knows which one its own writes used.
+ */
+async function todayCheckinAttempted(
+  db: AccountQuotaRoutesDeps["db"] | undefined,
+  redis: AccountQuotaRoutesDeps["redis"],
+  accountId: string,
+): Promise<boolean> {
+  return checkinAttemptedToday({ db, redis, accountId });
+}
+
+/**
+ * Operator-facing sentence for one check-in outcome.
+ *
+ * Every non-claimed state says what happens next rather than only that the
+ * attempt happened. `unavailable` in particular is the normal case on a free
+ * plan — the check-in activity simply is not running — and reading as a bare
+ * "unavailable" looked like a failure, when the account had still done its
+ * daily report and will be credited on the next cycle. A claim that did land
+ * states the amount.
+ */
+function checkinStateMessage(result: DailyCheckinResult): string {
+  switch (result.state) {
+    case "claimed":
+      return result.credit !== null
+        ? `credited ${result.credit} credits${result.streakDays !== null ? ` (${result.streakDays}-day streak)` : ""}`
+        : "credited";
+    case "already_claimed":
+      return "already claimed today — credited again tomorrow";
+    case "not_eligible":
+      return "not eligible on this account";
+    case "event_ended":
+      return "event has ended";
+    case "unavailable":
+      return "not open right now — you'll be credited on the next cycle";
+    case "error":
+      return result.error ?? "could not be completed";
+  }
+}
+
+const QUOTA_REFRESH_CONCURRENCY = 5;
+const QUOTA_REFRESH_MAX_IDS = 100;
+
+/**
+ * Registers the tenant-scoped account/quota routes onto `app`. Every route here
+ * authorises through `requireTenantScope`, so the caller only ever touches its
+ * own tenant's accounts.
+ */
+export function registerAccountQuotaTenantRoutes(
+  app: Elysia,
+  deps: AccountQuotaRoutesDeps,
+  refreshDeps: QuotaRefreshDeps,
+): void {
+  const {
+    db,
+    accessResolver,
+    redis,
+    snapshotInvalidator,
+    auditRecorder,
+    providerRegistry,
+    networkBindingFactory,
+  } = deps;
+  app
+    .get("/quota/overview", async ({ request }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select({
+          id: providerAccounts.id,
+          providerId: providerAccounts.providerId,
+          tenantId: providerAccounts.tenantId,
+          label: providerAccounts.label,
+          credentialKind: providerAccounts.credentialKind,
+          status: providerAccounts.status,
+          lastError: providerAccounts.lastError,
+          lastErrorCategory: providerAccounts.lastErrorCategory,
+          lastSuccessAt: providerAccounts.lastSuccessAt,
+          cooldownUntil: providerAccounts.cooldownUntil,
+          modelCooldowns: providerAccounts.modelCooldowns,
+        })
+        .from(providerAccounts)
+        .innerJoin(providers, eq(providerAccounts.providerId, providers.id))
+        .where(
+          and(
+            globalOrOwnedBy(providerAccounts.tenantId, access.tenantId),
+            globalOrOwnedBy(providers.tenantId, access.tenantId),
+          ),
+        );
+
+      // One batch read per lens instead of one round trip per account: the page
+      // renders every account at once, so per-account reads would make opening
+      // it scale with the account count.
+      const ownedIds: string[] = [];
+      const globalIds: string[] = [];
+      for (const row of rows) {
+        if (row.tenantId === null) globalIds.push(row.id);
+        else ownedIds.push(row.id);
+      }
+      const [ownedCache, globalCache] = await Promise.all([
+        getCachedQuotaEntries(access.tenantId, ownedIds, redis),
+        getCachedQuotaEntries(GLOBAL_QUOTA_LENS, globalIds, redis),
+      ]);
+
+      const pending = pendingQuotaRefreshes();
+      const providerIds = [...new Set(rows.map((row) => row.providerId))];
+      // The dropdown is a quota-page control, not a provider directory: only
+      // providers whose registry entry can actually answer a quota fetch
+      // appear, so key-only providers with no quota endpoint never show up.
+      const quotaProviders = providerIds.filter((providerId) =>
+        providerRegistry.hasQuotaCollector(providerId),
+      );
+      const providersSummary = quotaProviders
+        .sort((left, right) => left.localeCompare(right))
+        .map((providerId) => ({
+          id: providerId,
+          name: providerDisplayName(providerId),
+          icon: providerId,
+        }));
+      let refreshing = 0;
+      // The sweep's day markers answer "attempted today" without an upstream
+      // request; only check-in-capable accounts can carry one, so only they
+      // are read.
+      const checkinCandidates = rows.filter((row) => supportsAccountCheckin(row.providerId));
+      const checkinAttempted = new Map<string, boolean>();
+      await Promise.all(
+        checkinCandidates.map(async (row) => {
+          checkinAttempted.set(row.id, await todayCheckinAttempted(db, redis, row.id));
+        }),
+      );
+      // Real credit deductions, read from the stored snapshots rather than from
+      // the upstream: the page renders every account at once, and re-hitting the
+      // billing endpoint per account would make opening it scale with the
+      // account count. One batch read for every buddy row.
+      const usageByAccount = await readBuddyUsageSnapshots(
+        db,
+        rows.filter((row) => isBuddyProvider(row.providerId)).map((row) => row.id),
+      );
+      const accounts = rows.map((row) => {
+        const entry =
+          row.tenantId === null ? globalCache.get(row.id) : ownedCache.get(row.id);
+        // No background refresh is enqueued here. Opening the page used to
+        // enqueue one for every account whose cached value had aged out, so a
+        // single page open hit every provider's quota endpoint at once — and
+        // because the page also polled, the operator saw that fan-out as "the
+        // page refreshes everything when I open it". The periodic sweep owns
+        // freshness; this route renders what is cached.
+        //
+        // `refreshing` still counts accounts with no cached value, so the client
+        // can show them as pending while the sweep fills them.
+        const canRefresh = providerRegistry.hasQuotaCollector(row.providerId);
+        const isRefreshing = canRefresh && (pending.has(row.id) || entry === undefined);
+        if (isRefreshing) refreshing += 1;
+        return {
+          id: row.id,
+          provider: row.providerId,
+          name: row.label || row.id,
+          credentialHint: row.credentialKind,
+          active: row.status === "active",
+          quota: entry
+            ? toQuotaView(entry.quota, row, {
+                fetchedAt: entry.fetchedAt,
+              lastAttemptAt: entry.lastAttemptAt,
+              refreshError: entry.refreshError,
+              ...(isRefreshing ? { status: "refreshing" as const } : {}),
+            })
+            : null,
+          pending: isRefreshing,
+          health: toQuotaAccountHealth(row),
+          providerName: providerDisplayName(row.providerId),
+          providerIcon: row.providerId,
+          // Present only on buddy accounts. `attemptedToday` is the sweep
+          // ledger (no upstream cost); the card combines it with the manual
+          // trigger result to render claimed / already / due / unknown.
+          ...(supportsAccountCheckin(row.providerId)
+            ? { checkin: { attemptedToday: checkinAttempted.get(row.id) ?? false } }
+            : {}),
+          // Real usage: what the billing meter says this account actually spent,
+          // per day and per model. Absent when nothing has been synced yet,
+          // which is a "no data" state rather than a zero.
+          ...(isBuddyProvider(row.providerId)
+            ? { usage: toBuddyUsageView(usageByAccount.get(row.id)) }
+            : {}),
+        };
+      });
+
+      // `refreshing > 0` tells the client to poll quickly; once the worker has
+      // filled everything this drops to 0 and the client falls back to its slow
+      // cadence without a manual reload.
+      return { providers: providersSummary, accounts, refreshing };
+    })
+    .get("/accounts/:id/quota", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const accountId = params.id;
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, accountId), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${accountId} not found`, code: "not_found" };
+      }
+      // No quota collector means no upstream surface to ask: answer the
+      // untracked state directly instead of caching a manufactured error.
+      if (!providerRegistry.hasQuotaCollector(account.providerId)) {
+        return {
+          accountId,
+          quota: null,
+          health: toQuotaAccountHealth(account),
+        };
+      }
+      const cached = await getCachedQuotaEntry(access.tenantId, accountId, redis);
+      if (cached) {
+        return {
+          accountId,
+          quota: toQuotaView(cached.quota, account, {
+            fetchedAt: cached.fetchedAt,
+            lastAttemptAt: cached.lastAttemptAt,
+            refreshError: cached.refreshError,
+          }),
+          health: toQuotaAccountHealth(account),
+        };
+      }
+
+      // Cold read: this is the one path that legitimately waits on upstream, and
+      // it shares the in-flight fetch with any queued background fill so a cold
+      // page open never issues two requests for the same account.
+      const outcome = await refreshAccountQuota(
+        refreshDeps,
+        { accountId, providerId: account.providerId, tenantId: account.tenantId, credentialKind: account.credentialKind },
+        signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+      );
+      const fresh = await getCachedQuotaEntry(access.tenantId, accountId, redis);
+      return {
+        accountId,
+        quota: toQuotaView(fresh?.quota ?? outcome.quota, account, {
+          fetchedAt: fresh?.fetchedAt ?? null,
+          lastAttemptAt: fresh?.lastAttemptAt ?? new Date().toISOString(),
+          lastSuccessAt: fresh?.fetchedAt ?? null,
+          refreshError: fresh?.refreshError ?? null,
+        }),
+        health: toQuotaAccountHealth(account),
+      };
+    })
+    .post("/accounts/:id/quota/refresh", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const accountId = params.id;
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, accountId), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${accountId} not found`, code: "not_found" };
+      }
+      // Manual refresh on a collectorless provider is a no-op by design, not
+      // a 502: there is nothing upstream to probe.
+      if (!providerRegistry.hasQuotaCollector(account.providerId)) {
+        return { ok: true, status: 200, data: { id: accountId, quota: null } };
+      }
+
+      const attemptedAt = new Date().toISOString();
+      if (!deps.poolSelector || !deps.networkBindingFactory) {
+        throw new GatewayError(
+          "proxy_pool_unavailable",
+          503,
+          "Account test cannot select a proxy because proxy routing is not configured.",
+          { reason: "proxy_routing_unconfigured" },
+          "network",
+        );
+      }
+      const egress = await selectAccountTestEgress(
+        {
+          db,
+          poolSelector: deps.poolSelector,
+          networkBindingFactory: deps.networkBindingFactory,
+        },
+        {
+          tenantId: access.tenantId,
+          providerId: account.providerId,
+          signal: timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS),
+        },
+      );
+      let outcome;
+      try {
+        outcome = await refreshAccountQuota(
+          refreshDeps,
+          { accountId, providerId: account.providerId, tenantId: account.tenantId, credentialKind: account.credentialKind },
+          egress.fetch,
+        );
+      } finally {
+        egress.release();
+      }
+      const httpStatus = outcome.quota.error === null ? 200 : 502;
+      set.status = httpStatus;
+      return {
+        ok: outcome.quota.error === null,
+        status: httpStatus,
+        data: {
+          id: accountId,
+          quota: toQuotaView(outcome.quota, account, {
+            fetchedAt: attemptedAt,
+            lastAttemptAt: attemptedAt,
+            lastSuccessAt: outcome.quota.error === null ? attemptedAt : null,
+          }),
+        },
+        message: outcome.quota.error ?? undefined,
+      };
+    })
+    .post(
+      "/quota/refresh",
+      {
+        body: t.Optional(
+          t.Object({
+            accountIds: t.Optional(t.Array(t.String())),
+            ids: t.Optional(t.Array(t.String())),
+          }),
+        ),
+      },
+      async ({ request, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        const ids = body?.accountIds ?? body?.ids ?? [];
+        if (ids.length === 0) {
+          set.status = 400;
+          return { error: "accountIds must be a non-empty array", code: "invalid_request" };
+        }
+        if (ids.length > QUOTA_REFRESH_MAX_IDS) {
+          set.status = 400;
+          return {
+            error: `accountIds exceeds the limit of ${QUOTA_REFRESH_MAX_IDS}`,
+            code: "invalid_request",
+          };
+        }
+        const accounts = await db
+          .select({
+            accountId: providerAccounts.id,
+            providerId: providerAccounts.providerId,
+            tenantId: providerAccounts.tenantId,
+            credentialKind: providerAccounts.credentialKind,
+          })
+          .from(providerAccounts)
+          .where(
+            and(
+              inArray(providerAccounts.id, ids),
+              globalOrOwnedBy(providerAccounts.tenantId, access.tenantId),
+            ),
+          );
+        // Collectorless accounts are done without a fetch: counted as
+        // succeeded with no quota, never as failures.
+        const refreshable = accounts.filter((account) => providerRegistry.hasQuotaCollector(account.providerId));
+
+        const timedFetch = signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS));
+        const failures: Array<{
+          accountId: string;
+          code: QuotaRefreshFailureCode;
+          message: string;
+        }> = [];
+        let succeeded = accounts.length - refreshable.length;
+        let cursor = 0;
+        await Promise.all(
+          Array.from(
+            { length: Math.min(QUOTA_REFRESH_CONCURRENCY, refreshable.length) },
+            async () => {
+              while (cursor < refreshable.length) {
+                const target = refreshable[cursor++]!;
+                const outcome = await refreshAccountQuota(refreshDeps, target, timedFetch);
+                if (outcome.failure !== null) {
+                  failures.push({
+                    accountId: target.accountId,
+                    code: outcome.failure,
+                    message: outcome.quota.error ?? "Failed to refresh quota",
+                  });
+                  continue;
+                }
+                succeeded += 1;
+              }
+            },
+          ),
+        );
+
+        return {
+          ok: failures.length === 0,
+          queued: accounts.length,
+          succeeded,
+          failed: failures.length,
+          failures,
+          accountIds: accounts.map((a) => a.accountId),
+        };
+      },
+    )
+    .patch(
+      "/accounts/:id",
+      {
+        body: t.Object({
+          active: t.Optional(t.Boolean()),
+          status: t.Optional(t.String()),
+        }),
+      },
+      async ({ request, params, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        if (body.status !== undefined && !ACCOUNT_STATUSES.includes(body.status as AccountStatus)) {
+          set.status = 400;
+          return {
+            error: `status must be one of: ${ACCOUNT_STATUSES.join(", ")}`,
+            code: "invalid_status",
+          };
+        }
+        const nextStatus: AccountStatus | undefined =
+          body.active !== undefined
+            ? body.active
+              ? "active"
+              : "disabled"
+            : (body.status as AccountStatus | undefined);
+        if (!nextStatus) {
+          set.status = 400;
+          return { error: "active or status is required", code: "invalid_request" };
+        }
+        const updated = await db
+          .update(providerAccounts)
+          .set({ status: nextStatus })
+          .where(
+            and(
+              eq(providerAccounts.id, params.id),
+              eq(providerAccounts.tenantId, access.tenantId),
+            ),
+          )
+          .returning({ id: providerAccounts.id });
+        if (updated.length === 0) {
+          set.status = 404;
+          return { error: `Account ${params.id} not found`, code: "not_found" };
+        }
+        // A status flip must not drop a good cached quota: the value is an
+        // upstream fact that the flip does not change, and clearing it would
+        // blank the card the user is looking at. Only the route snapshot
+        // (dispatch eligibility) needs to change.
+        await snapshotInvalidator?.invalidate();
+        return { ok: true, status: 200 };
+      },
+    )
+    .patch(
+      "/accounts/batch",
+      {
+        body: t.Object({
+          ids: t.Array(t.String()),
+          active: t.Boolean(),
+        }),
+      },
+      async ({ request, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        if (body.ids.length === 0) return { ok: true, updated: 0 };
+        if (body.ids.length > QUOTA_REFRESH_MAX_IDS) {
+          set.status = 400;
+          return {
+            error: `ids exceeds the limit of ${QUOTA_REFRESH_MAX_IDS}`,
+            code: "invalid_request",
+          };
+        }
+        const status = body.active ? ("active" as const) : ("disabled" as const);
+        const updated = await db
+          .update(providerAccounts)
+          .set({ status })
+          .where(
+            and(
+              inArray(providerAccounts.id, body.ids),
+              eq(providerAccounts.tenantId, access.tenantId),
+            ),
+          )
+          .returning({ id: providerAccounts.id });
+        await snapshotInvalidator?.invalidate();
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            updated: updated.length,
+            ids: updated.map((row) => row.id),
+          },
+        };
+      },
+    )
+    .delete("/accounts/:id", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const accountId = params.id;
+      const deleted = await db
+        .delete(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, accountId), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .returning({ id: providerAccounts.id });
+      if (deleted.length === 0) {
+        set.status = 404;
+        return { error: `Account ${accountId} not found`, code: "not_found" };
+      }
+      invalidateCredentialCache(accountId);
+      // The account is gone, so its cached quota must go with it — unlike a
+      // status flip, nothing can make this value meaningful again.
+      await invalidateQuotaCache(access.tenantId, accountId, redis);
+      await snapshotInvalidator?.invalidate();
+      await auditRecorder?.record({
+        access,
+        action: "provider_account.deleted",
+        target: accountId,
+      });
+      return { success: true };
+    })
+    /**
+     * Runs the daily growth pass over a provider's accounts in one request:
+     * the growth-activity report first, then the check-in claim — the order the
+     * sweep uses — with egress rotated per account the same way the worker
+     * does, so a batch leaves from more than one address.
+     *
+     * A manual trigger is the operator asserting "try now", so it bypasses the
+     * sweep's once-per-day ledger; the upstream stays idempotent either way.
+     * Per-account outcomes are reported individually: a batch is not
+     * all-or-nothing, and one account's closed check-in must not hide the
+     * others' streaks.
+     */
+    .post(
+      "/quota/daily-growth",
+      {
+        body: t.Object({
+          providerId: t.String(),
+          accountIds: t.Optional(t.Array(t.String())),
+        }),
+      },
+      async ({ request, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        const providerId = body.providerId.trim().toLowerCase();
+        if (!supportsAccountCheckin(providerId)) {
+          set.status = 400;
+          return {
+            error: `Daily check-in is not supported for provider ${providerId}`,
+            code: "checkin_unsupported",
+          };
+        }
+        const wanted = body.accountIds?.filter((id) => id.trim().length > 0) ?? [];
+        const rows = await db
+          .select({
+            id: providerAccounts.id,
+            tenantId: providerAccounts.tenantId,
+            label: providerAccounts.label,
+          })
+          .from(providerAccounts)
+          .where(
+            and(
+              eq(providerAccounts.providerId, providerId),
+              globalOrOwnedBy(providerAccounts.tenantId, access.tenantId),
+              ...(wanted.length > 0 ? [inArray(providerAccounts.id, wanted)] : []),
+            ),
+          );
+        const accounts = wanted.length > 0
+          ? rows.filter((row) => wanted.includes(row.id))
+          : rows;
+        if (accounts.length === 0) {
+          set.status = 404;
+          return {
+            error: `No accounts for provider ${providerId} in this tenant`,
+            code: "not_found",
+          };
+        }
+        if (accounts.length > DAILY_GROWTH_MAX_IDS) {
+          set.status = 400;
+          return {
+            error: `accountIds exceeds the limit of ${DAILY_GROWTH_MAX_IDS}`,
+            code: "invalid_request",
+          };
+        }
+        // One egress rotator for the whole request, exactly as the sweep builds
+        // it, so consecutive accounts leave from consecutive pools.
+        const rotator =
+          networkBindingFactory !== undefined
+            ? dailyCheckinEgressForPass({ db, networkBindingFactory })
+            : undefined;
+
+        const results: {
+          readonly accountId: string;
+          readonly label: string;
+          readonly report: { readonly ok: boolean; readonly message: string };
+          readonly checkin: { readonly ok: boolean; readonly message: string };
+        }[] = [];
+
+        for (let offset = 0; offset < accounts.length; offset += DAILY_GROWTH_CONCURRENCY) {
+          const batch = accounts.slice(offset, offset + DAILY_GROWTH_CONCURRENCY);
+          const settled = await Promise.all(
+            batch.map(async (account) => {
+              const outcome = await runDailyGrowthForAccount(
+                providerId as ProviderId,
+                account,
+                refreshDeps,
+                rotator,
+              );
+              return { account, outcome };
+            }),
+          );
+          for (const { account, outcome } of settled) {
+            results.push({
+              accountId: account.id,
+              label: account.label || account.id,
+              report: outcome.report,
+              checkin: outcome.checkin,
+            });
+          }
+        }
+
+        // The ledger is shared with the sweep, so invalidate once at the end
+        // rather than per account — the page re-reads "attempted today" from it.
+        await snapshotInvalidator?.invalidate();
+        const reportsOk = results.filter((entry) => entry.report.ok).length;
+        const claimed = results.filter((entry) => entry.checkin.ok).length;
+        return {
+          ok: true,
+          status: 200,
+          providerId,
+          data: results,
+          message: `${results.length} account${results.length === 1 ? "" : "s"} · report ${reportsOk}/${results.length} · check-in ${claimed}/${results.length}`,
+        };
+      },
+    )
+    .post("/accounts/:id/checkin", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (!supportsAccountCheckin(account.providerId)) {
+        set.status = 400;
+        return {
+          error: `Daily check-in is not supported for provider ${account.providerId}`,
+          code: "checkin_unsupported",
+        };
+      }
+      // A manual trigger is the operator asserting "try now", so it bypasses
+      // the sweep's once-per-day ledger and forces the status probe. The
+      // upstream itself stays idempotent: a duplicate claim answers
+      // `already_claimed`, never a double grant.
+      let result: DailyCheckinResult;
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        result = await runAccountCheckin(account, credential, true);
+      } catch (error) {
+        result = {
+          providerId: account.providerId,
+          accountId: account.id,
+          state: "error",
+          credit: null,
+          streakDays: null,
+          error: error instanceof Error ? error.message : "Daily check-in failed.",
+        };
+      }
+      if (result.state === "error") {
+        set.status = 502;
+        return {
+          ok: false,
+          status: 502,
+          data: { id: account.id, state: result.state },
+          message: result.error ?? "Daily check-in failed",
+          code: "checkin_failed",
+        };
+      }
+      // The trigger bypassed the ledger on the way in; leaving the marker
+      // behind is what stops the sweep spending a second claim on this account
+      // today and lets the console read "attempted today" for an attempt the
+      // sweep did not make.
+      await markCheckinAttempted({ db, redis, accountId: account.id });
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          id: account.id,
+          state: result.state,
+          credit: result.credit,
+          streakDays: result.streakDays,
+        },
+        message: checkinStateMessage(result),
+      };
+    })
+    .post("/accounts/:id/activity-report", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (!supportsAccountCheckin(account.providerId)) {
+        set.status = 400;
+        return {
+          error: `Activity report is not supported for provider ${account.providerId}`,
+          code: "report_unsupported",
+        };
+      }
+      // One report per account per day lights the login streak; more is
+      // rate-limit bait, so the sweep's check-in day marker gates this too.
+      // The marker only proves an attempt happened today — the growth event is
+      // a different upstream call, but sharing the marker keeps the "one
+      // growth action per day" budget honest across both buttons.
+      //
+      // Read through the same helper the console's own overview uses rather
+      // than the Redis key directly: without Redis the marker lives in
+      // `daily_checkin_ledger`, so a Redis-only read answered "not yet" for
+      // every Lite deployment and let the report be re-sent all day.
+      if (await todayCheckinAttempted(db, redis, account.id)) {
+        return {
+          ok: true,
+          status: 200,
+          data: { id: account.id, state: "reported", alreadyToday: true },
+          message: "Report sent — login streak already lit for today",
+        };
+      }
+      let result: BuddyActivityReportResult;
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        // The growth event scores by uid, and only a JWT carries one. An
+        // opaque API key must fail closed here — reporting it under another
+        // account's uid would poison someone else's streak.
+        const userId = buddyAccountUid(credential);
+        if (!userId) {
+          set.status = 400;
+          return {
+            error: "Activity report needs an OAuth account (no uid in this credential)",
+            code: "report_requires_oauth",
+          };
+        }
+        result = await fetchBuddyActivityReport({
+          providerId: account.providerId,
+          accountId: account.id,
+          credential,
+          userId,
+          fetcher: globalThis.fetch,
+        });
+      } catch (error) {
+        result = {
+          providerId: account.providerId,
+          accountId: account.id,
+          state: "error",
+          error: error instanceof Error ? error.message : "Activity report failed.",
+        };
+      }
+      if (result.state === "error") {
+        set.status = 502;
+        return {
+          ok: false,
+          status: 502,
+          data: { id: account.id, state: result.state },
+          message: result.error ?? "Activity report failed",
+          code: "report_failed",
+        };
+      }
+      // Same reasoning as the check-in button: the growth budget is one per
+      // day across both buttons, so a report that landed stamps the marker the
+      // other button reads.
+      await markCheckinAttempted({ db, redis, accountId: account.id });
+      return {
+        ok: true,
+        status: 200,
+        data: { id: account.id, state: result.state, alreadyToday: false },
+        message: "Report sent — login streak lit for today",
+      };
+    })
+    .get("/accounts/:id/resets", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (!supportsAccountReset(account.providerId)) {
+        return { availableCount: 0, credits: [] };
+      }
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const list = await listAccountResetCredits(account.providerId, credential);
+        return list ?? { availableCount: 0, credits: [] };
+      } catch (err) {
+        return { availableCount: 0, credits: [] };
+      }
+    })
+    .post("/accounts/:id/reset", async ({ request, params, set, body }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (!supportsAccountReset(account.providerId)) {
+        set.status = 400;
+        return {
+          error: `Reset is not supported for provider ${account.providerId}`,
+          code: "reset_unsupported",
+        };
+      }
+      const reqBody = (body && typeof body === "object" ? body : {}) as { creditId?: string };
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const outcome = await consumeAccountResetCredit({
+          db,
+          accountId: account.id,
+          providerId: account.providerId,
+          credentialRaw: credential,
+          creditId: reqBody.creditId,
+          snapshotInvalidator,
+        });
+        if (!outcome.ok) {
+          // A business no-op ("nothing_to_reset", "already_redeemed") is not a
+          // client error: the request was well-formed and the provider answered.
+          // Only a provider-side failure (4xx/5xx) carries a failure status.
+          set.status = outcome.status >= 400 ? outcome.status : 200;
+          return {
+            ok: false,
+            code: outcome.code,
+            message: outcome.message ?? `Reset failed: ${outcome.code}`,
+          };
+        }
+        if (auditRecorder) {
+          await auditRecorder.record({
+            access,
+            action: "provider_account.recovered",
+            target: account.id,
+            detail: { reason: "rate_limit_reset_consumed", provider: account.providerId },
+          });
+        }
+        return {
+          ok: true,
+          code: outcome.code,
+          message: outcome.message ?? "Rate limit reset applied successfully",
+          creditId: outcome.creditId,
+        };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          code: "reset_failed",
+          message: err instanceof Error ? err.message : "Reset operation failed",
+        };
+      }
+    });
+}

@@ -1,0 +1,831 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Console document reset. Keep it in Tailwind's base layer so utilities can
+   override default spacing on the public Landing and component surfaces. */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+/*
+ * Everything below is the hand-written component surface. It lives in the
+ * `components` layer so a Tailwind utility in markup can override it, which
+ * is what an inline `style` used to do: unlayered rules outrank every named
+ * layer, so while these sat at the top level no utility could touch a
+ * `.btn`, no matter how specific. Descendant overrides (`.data-table .btn-sm`)
+ * stay inside the same layer, so specificity still decides between them.
+ */
+@layer components {
+/* Scrollbars: the page column hides its bar, while contained regions (the
+   sidebar rail, dialogs, `.scroll-region`) keep a thin overlay style. */
+.app-sidebar nav,
+.dialog-panel .modal-body,
+.drawer-body,
+.scroll-region {
+  scrollbar-width: thin;
+  scrollbar-color: var(--inner-border) transparent;
+}
+
+/* The page scrolls on the document, and it does not draw a bar: the content is
+   the signal, and the rail is always visible for orientation anyway. */
+html {
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar {
+  display: none;
+}
+
+.app-sidebar nav::-webkit-scrollbar,
+.dialog-panel .modal-body::-webkit-scrollbar,
+.drawer-body::-webkit-scrollbar,
+.scroll-region::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.app-sidebar nav::-webkit-scrollbar-thumb,
+.dialog-panel .modal-body::-webkit-scrollbar-thumb,
+.drawer-body::-webkit-scrollbar-thumb,
+.scroll-region::-webkit-scrollbar-thumb {
+  background: var(--inner-border);
+  border-radius: var(--radius-pill);
+}
+
+.app-sidebar nav::-webkit-scrollbar-track,
+.dialog-panel .modal-body::-webkit-scrollbar-track,
+.drawer-body::-webkit-scrollbar-track,
+.scroll-region::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/*
+ * A contained scroll area, styled like the sidebar rail: content moves inside
+ * its own box while the surrounding chrome (headers, toolbars, the page
+ * itself) stays put. Pair it with a height/max-height and `overflow-y: auto`.
+ */
+.scroll-region {
+  overflow-y: auto;
+  /* No `overscroll-behavior: contain`: once this region hits its end the wheel
+   * must keep scrolling the page, not stop dead against the edge. */
+}
+
+html {
+  font-size: 14px;
+  background: var(--page-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  /* The document scrolls, like the share page. A fixed inner scroller is what
+     kept the browser's own pull-to-refresh from ever firing, so neither `html`
+     nor the shell column owns the scroll. `overflow-x` stays `visible`: setting
+     it to `hidden` computes the vertical axis to `auto` as well, and that box
+     becomes the scroll container — which is exactly what breaks
+     `position: sticky` on the topbar and the sidebar. */
+  overflow-x: visible;
+  overflow-y: visible;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  min-height: 100dvh;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background-color: var(--page-bg);
+  background-attachment: fixed;
+}
+
+html[data-ambient-glow="off"] body {
+  background-image: none;
+}
+
+
+/* Branding dropzone & skeleton */
+
+/* Keyboard-operable dropzones: visible focus ring. */
+
+html[data-glass-depth="2"] {
+  --glass-depth: 2;
+}
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--text-primary) 18%, transparent);
+  color: var(--text-primary);
+}
+
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+    border: none;
+    background: none;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+@layer base {
+  h1,
+  h2,
+  h3,
+  .topbar-title,
+  .brand-name,
+  .auth-title {
+    font-family: var(--font-head);
+    letter-spacing: -0.015em;
+    font-weight: 700;
+  }
+
+  pre,
+  code {
+    word-break: break-all;
+  }
+}
+
+/* Shared card surfaces and component header/body frames. */
+/*
+ * Card surfaces own their border, radius, and shadow as utilities in
+ * `ui/card.tsx`. What stays here is the glass treatment: it is driven by
+ * `--card-glass-depth` inside `backdrop-filter: blur(calc(10px + depth*4px))`,
+ * which has no utility equivalent, and the `[data-depth]` ladder that sets it.
+ */
+
+.card-glass,
+html[data-glass-enabled="true"] .card-solid {
+  --card-glass-depth: var(--glass-depth, 1);
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent) !important;
+  backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+  -webkit-backdrop-filter: blur(calc((100 - var(--blur-cards, 30)) * var(--blur-cards-depth, 30) * 0.01px));
+  border: 1px solid var(--inner-border);
+  box-shadow: var(--shadow-card);
+}
+
+/* The card's own contents sit on top of its backdrop-filter, so a solid child
+   hides the blur and only the header looks affected. They follow the same
+   clarity, so the whole card blurs, not just its top edge. */
+html[data-glass-enabled="true"] .card-solid .bg-surface-1,
+html[data-glass-enabled="true"] .card-solid .bg-surface-2,
+html[data-glass-enabled="true"] .card-solid .bg-surface-3,
+html[data-glass-enabled="true"] .card-solid .bg-code-surface,
+html[data-glass-enabled="true"] .card-solid .stat-card,
+html[data-glass-enabled="true"] .card-solid .backup-section-option,
+html[data-glass-enabled="true"] .card-solid .nested-panel {
+  background-color: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent) !important;
+}
+.card-solid .card-solid {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(calc(10px + (var(--card-glass-depth, 1) * 4px)));
+  -webkit-backdrop-filter: blur(calc(10px + (var(--card-glass-depth, 1) * 4px)));
+}
+
+
+/*
+ * Blur styles, chosen per surface on the Customization page and published as
+ * `data-blur-*` on `<html>`. `frosted` is the plain blur this console shipped
+ * with; `vibrancy` adds saturation so colour behind the surface stays alive
+ * (the macOS look); `heavy` is the same treatment with a deeper blur for a
+ * busy background. `none` is opaque on purpose — a transparent surface with no
+ * blur is unreadable copy, not a style.
+ *
+ * Dialogs are deliberately absent. A modal must stay legible no matter what
+ * the page behind it looks like, so `.dialog-panel` keeps its own solid
+ * surface and never picks up these attributes.
+ */
+
+
+.app-sidebar,
+.app-topbar,
+.app-topbar-popover {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-chrome, 30) * 0.55%), transparent) !important;
+  backdrop-filter: blur(calc((100 - var(--blur-chrome, 30)) * var(--blur-chrome-depth, 30) * 0.01px)) !important;
+  -webkit-backdrop-filter: blur(calc((100 - var(--blur-chrome, 30)) * var(--blur-chrome-depth, 30) * 0.01px)) !important;
+}
+
+html[data-blur-cards-on="false"] .card-solid,
+html[data-blur-cards-on="false"] .card-glass {
+  background: var(--surface-1) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-blur-chrome-on="false"] .app-sidebar,
+html[data-blur-chrome-on="false"] .app-topbar,
+html[data-blur-chrome-on="false"] .app-topbar-popover,
+html[data-blur-cards-on="false"] .user-card-content,
+html[data-blur-cards-on="false"] .composer-glass {
+
+  background: var(--surface-1) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+
+.card-solid[data-depth="1"],
+.card-glass[data-depth="1"],
+.card-muted[data-depth="1"] {
+  --card-glass-depth: 1;
+}
+
+.card-solid[data-depth="2"],
+.card-glass[data-depth="2"],
+.card-muted[data-depth="2"] {
+  --card-glass-depth: 2;
+}
+
+.card-solid[data-depth="3"],
+.card-glass[data-depth="3"],
+.card-muted[data-depth="3"] {
+  --card-glass-depth: 3;
+}
+
+.card-compact {
+  line-height: 1.35;
+}
+
+.card-compact .card-body-content {
+  padding: 10px 14px;
+}
+
+.card-compact .card-header-bar {
+  padding: 8px 14px;
+}
+/* Panel & Card Frames */
+.card-header-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--inner-border);
+}
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Window-style controls at the far left; a tighter gap than the icon/title pair
+   keeps them visually separate from the card's identity. */
+.card-header-leading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.card-header-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  flex-shrink: 1;
+  flex-wrap: wrap;
+}
+
+.card-header-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+/* One glyph size for every header well, whatever the caller passed. */
+.card-header-icon svg {
+  width: 15px;
+  height: 15px;
+}
+/* A header well defaults to the accent. A tone is the exception, for a card
+   whose subject has its own color (memory, proxy). */
+.card-header-icon[data-tone="purple"] {
+  background: var(--purple-soft);
+  color: var(--purple);
+}
+.card-header-icon[data-tone="orange"] {
+  background: var(--orange-soft);
+  color: var(--orange);
+}
+
+.card-header-titles {
+  min-width: 0;
+}
+
+.card-header-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.card-header-subtitle {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+.card-header-subtitle-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 1px;
+  min-width: 0;
+}
+
+.card-header-subtitle-row .card-header-subtitle {
+  margin: 0;
+}
+.card-body-content {
+  padding: 12px 14px;
+}
+
+/* Shared controls: buttons, forms, inputs, switches, tables, and badges. */
+/*
+ * Button surfaces, tones, and sizes are emitted as utilities by
+ * `ui/button.tsx`. The two rules below are the ones a utility cannot express:
+ * `.btn-label` is a descendant of the button, so the component cannot class it
+ * without leaking `twMerge` semantics into the caller's tree, and the collapse
+ * is a container query on the *caller's* container (`.proxy-table-scroll`, which
+ * declares `container-name: rule-row` below), which no utility can express.
+ */
+
+.btn-labeled .btn-label {
+  white-space: nowrap;
+}
+
+@container rule-row (max-width: 820px) {
+  .btn-labeled {
+    width: 30px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+  }
+
+  .btn-labeled .btn-label {
+    display: none;
+  }
+}
+
+/* Badges are emitted as utilities by `ui/badge.tsx`; the tone pairs and the
+ * base chip live there so callers can override them through `cn()`. */
+
+/* Model catalog cards */
+.model-card {
+  transition: border-color 120ms ease;
+}
+
+.model-card:hover {
+  border-color: var(--border-strong);
+}
+
+.model-card-delete:hover {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+/* Forms & Inputs */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.form-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.form-error {
+  font-size: 11.5px;
+  color: var(--red);
+  margin-top: 4px;
+}
+
+/* `.form-input` / `.form-textarea` are emitted as utilities by `ui/input.tsx`
+ * (the shared `FIELD` string); the tokens stay for descendant overrides such
+ * as `.data-table .form-input`. */
+
+/* Switches */
+.switch-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-container.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.switch-track {
+  width: 42px;
+  height: 24px;
+  border-radius: var(--radius-control);
+  padding: 2px;
+  transition:
+    background-color 160ms var(--ease-spring),
+    border-color 160ms var(--ease-spring);
+  background-color: var(--track);
+  border: 1px solid var(--inner-border);
+  position: relative;
+  display: flex;
+  align-items: center;
+  cursor: inherit;
+}
+
+.switch-track.is-checked {
+  background-color: var(--accent);
+}
+
+.switch-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background-color: var(--surface-1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  transform: translateX(0px);
+  transition:
+    transform 180ms var(--ease-spring),
+    background-color 180ms var(--ease-spring);
+  display: block;
+}
+
+.switch-track.is-checked .switch-thumb {
+  background-color: var(--accent-foreground);
+  transform: translateX(18px);
+}
+
+.usage-floor-switch .switch-track {
+  border-radius: var(--radius-tiny);
+}
+
+.usage-floor-switch .switch-thumb {
+  border-radius: var(--radius-tiny);
+}
+
+.switch-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* Data Tables */
+.data-table-container {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.data-table {
+  /* `width: 100%` alone loses to the automatic table layout once the table sits
+     in a flex column: it stayed at its content width and the columns crushed
+     into the left half of the card. */
+  width: 100%;
+  min-width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.data-table th {
+  padding: 7px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--inner-border);
+  white-space: nowrap;
+}
+
+/* Sticky header: this container must be the scroller (pass `maxHeight`) or
+ * the header scrolls away with the rows. An ancestor that also scrolls wins
+ * instead, which is why the pages hand `maxHeight` here rather than wrapping
+ * the table in their own overflow box. */
+.data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  box-shadow: inset 0 -1px 0 var(--inner-border);
+}
+
+.proxy-table-scroll {
+  /* Named container: the labeled action buttons above collapse to square icon
+   * buttons against this width, so a narrow row degrades gracefully instead of
+   * overflowing the Actions column.
+   *
+   * Deliberately NOT a scroller — the table's own container scrolls (via
+   * `maxHeight`), which is what keeps the header row pinned while rows move. */
+  container-type: inline-size;
+  container-name: rule-row;
+  margin-top: 14px;
+  overflow: hidden;
+}
+.proxy-table-scroll .data-table thead th:first-child {
+  border-top-left-radius: var(--radius-card);
+}
+.proxy-table-scroll .data-table thead th:last-child {
+  border-top-right-radius: var(--radius-card);
+}
+.proxy-table-scroll .data-table thead th {
+  padding-top: 16px;
+  padding-bottom: 12px;
+}
+.proxy-table-scroll .data-table th:last-child,
+.proxy-table-scroll .data-table td:last-child {
+  padding-left: 72px;
+}
+
+.data-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--inner-border);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Action buttons inside a data table are icon-only; the default `btn-sm`
+   padding is sized for a text label and makes dense rows twice as wide. */
+.data-table .btn-sm {
+  height: 26px;
+  padding: 0 6px;
+}
+
+/* Shared empty, loading, error, authentication, and API-key states. */
+
+/* The centering host emits utilities from `ui/state.tsx`
+ * (`flex-1 min-h-[220px] flex items-center justify-center w-full`). What stays
+ * is every value derived from the viewport or from an ancestor relationship,
+ * which no utility can express. */
+
+/* A route-level state is the page's whole body, so it centers in the visible
+   content area rather than in its own content height.
+
+   It cannot simply grow: the shell's column is exactly as tall as its children
+   (its gaps and bottom padding consume every pixel), so there is no free space
+   for `main` to expand into and a growing box would only push a scrollbar onto
+   a page that has nothing to scroll. A viewport-relative floor is what actually
+   puts the card in the middle of what the operator is looking at; the constant
+   is the shell chrome above and below (topbar + footer clock + gaps + padding),
+   so the box always fits without overflowing at any window height.
+
+   Scoped to a direct child of `main` so a state nested inside a card keeps its
+   compact height. */
+main > .state-viewport {
+  min-height: clamp(220px, calc(100dvh - 270px), 1000px);
+}
+
+/* A short dashboard page still reaches the shell footer; the shell's
+   min-height carries the shell, this floor carries the page column. */
+.dashboard-page:only-child {
+  min-height: clamp(240px, calc(100dvh - 200px), 1200px);
+}
+
+/* The compact floor and the compact `.state-box` / `.state-box-icon` sizing
+ * emit utilities from `ui/state.tsx` (via `[&_.state-box]` variants). The
+ * `.state-box*` rules below stay: the component renders those elements as bare
+ * children, so it cannot class them without reaching into the caller's tree. */
+
+/* A state that is the whole card body fills it, instead of reading as a short
+ * message floating at the top of an otherwise empty panel. An ancestor
+ * combinator, so it stays in CSS. */
+.card-body-content > .state-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.state-box {
+  padding: 32px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.state-box-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  display: grid;
+  place-items: center;
+  background: var(--hover);
+  color: var(--text-tertiary);
+}
+
+.state-box-icon-danger {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+}
+
+.state-box h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.state-box p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 360px;
+}
+
+.state-box-label {
+  font-weight: 500;
+}
+
+/* Auth View (Login & Setup) */
+.auth-viewport {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  /* The login and setup screens carry their own key art. The veil sits over
+     the image so the card stays readable; it is the only thing that changes
+     between themes. */
+  --auth-backdrop-veil: 0.35;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--page-bg) calc(var(--auth-backdrop-veil) * 100%), transparent),
+      color-mix(in srgb, var(--page-bg) calc(var(--auth-backdrop-veil) * 100%), transparent)
+    ),
+    url("/assets/brand/login_register.jpg");
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
+  background-size: cover, cover;
+  background-attachment: fixed, fixed;
+}
+
+/* The error boundary renders inside the console, so it must not carry the
+   login key art. The shell already has its own background behind it. */
+.app-shell-root .auth-viewport {
+  background: none;
+}
+
+[data-theme="dark"] .auth-viewport {
+  --auth-backdrop-veil: 0.5;
+}
+
+.auth-window {
+  width: min(100%, 420px);
+  border-radius: var(--radius-card);
+  padding: 36px 32px;
+  /* The key art shows through the card. A flat shadow only — the shared card
+     shadow carries a colored glow that reads as a halo over the art. */
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 18px 40px -20px rgba(0, 0, 0, 0.5);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.auth-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-control);
+  background: var(--accent) center / cover no-repeat url("/assets/brand/favicon.jpg");
+  color: var(--accent-foreground);
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  font-weight: 800;
+  margin: 0 auto 14px;
+}
+
+.auth-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.auth-desc {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* GitHub repo link with live star/fork badges. Shared by the landing page and
+   the public share page, which load different stylesheets, so it lives here.
+   The chip is neutral: each host surface overrides its colors for its theme. */
+.github-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--inner-border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: border-color 160ms ease, color 160ms ease;
+}
+
+.github-badge:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.github-badge:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The counts are SVG images from the badge host; the chip keeps them legible
+   without stretching them, and the link is the accessible name. */
+.github-badge-metric {
+  display: block;
+  height: 20px;
+  width: auto;
+}
+
+/* Native checkboxes render at ~13px, which reads as a speck next to the 32px
+   controls that usually sit beside them. One size everywhere, and the accent
+   colour so a checked box matches the theme. Plain CSS (not @layer) so it
+   overrides the base layer regardless of import order. */
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Sonner's description color needs to beat the library's inline tone. */
+.toast-surface {
+  background: var(--glass-bg-2) !important;
+  border-color: var(--glass-border-2) !important;
+  color: var(--text-primary) !important;
+}
+
+.toast-surface [data-content],
+.toast-surface [data-description] {
+  color: var(--text-primary) !important;
+}
+}

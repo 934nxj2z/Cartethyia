@@ -1,0 +1,58 @@
+{
+  "src/apps/landing/page.tsx": {
+    "staticInline": 0,
+    "arbitrary": 6
+  },
+  "src/apps/share/page.tsx": {
+    "staticInline": 0,
+    "arbitrary": 13
+  },
+  "src/apps/share/stats.tsx": {
+    "staticInline": 0,
+    "arbitrary": 4
+  },
+  "src/components/ModelPicker.tsx": {
+    "staticInline": 0,
+    "arbitrary": 2
+  },
+  "src/components/ShareManagementDialog.tsx": {
+    "staticInline": 0,
+    "arbitrary": 1
+  },
+  "src/components/ui/button.tsx": {
+    "staticInline": 0,
+    "arbitrary": 1
+  },
+  "src/components/ui/card.tsx": {
+    "staticInline": 0,
+    "arbitrary": 1
+  },
+  "src/components/ui/drawer.tsx": {
+    "staticInline": 0,
+    "arbitrary": 1
+  },
+  "src/components/ui/layout.tsx": {
+    "staticInline": 0,
+    "arbitrary": 3
+  },
+  "src/features/provider-detail/sections/Models.tsx": {
+    "staticInline": 0,
+    "arbitrary": 4
+  },
+  "src/features/providers/ProvidersPage.tsx": {
+    "staticInline": 0,
+    "arbitrary": 7
+  },
+  "src/features/proxy/ProxyPage.tsx": {
+    "staticInline": 0,
+    "arbitrary": 2
+  },
+  "src/features/quota/QuotaPage.tsx": {
+    "staticInline": 0,
+    "arbitrary": 1
+  },
+  "src/features/usage/UsagePage.tsx": {
+    "staticInline": 0,
+    "arbitrary": 6
+  }
+}

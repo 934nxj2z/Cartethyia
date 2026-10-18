@@ -1,0 +1,17 @@
+-- Adds `provider_accounts.model_block_hits` (jsonb, nullable).
+--
+-- An upstream that answers "this model is not served" (buddy family business
+-- code `11102`, or a `service info not found` / `model ... not supported`
+-- message) is a verdict on one (account, model) pair, and it is a durable one:
+-- the pair is re-dialled on the next request and answers the same thing. The
+-- cooldown therefore escalates per hit — 6h, 12h, 24h, capped at 24h — which
+-- needs somewhere to count the hits.
+--
+-- A separate column rather than a wider `model_cooldowns`: that one is
+-- `{ [modelId]: deadline }` and is parsed by routing (`route-catalog.ts`) and by
+-- the console, so changing its shape would have meant changing two readers for a
+-- counter only one writer needs.
+--
+-- `ADD COLUMN IF NOT EXISTS` keeps the file idempotent: a database built from a
+-- newer baseline that already carries the column must not fail startup.
+ALTER TABLE "provider_accounts" ADD COLUMN IF NOT EXISTS "model_block_hits" jsonb;

@@ -1,0 +1,226 @@
+/**
+ * Empty-stream replay + pre-start failover.
+ *
+ * When a provider returns HTTP 200 but the response body decodes to zero
+ * meaningful events, the request is replayed byte-identical (same headers,
+ * same body) up to `maxEmptyReplays` times with exponential backoff. If all
+ * replays on one endpoint fail, the helper advances to the next endpoint in
+ * the caller-supplied ordered list.
+ *
+ * The helper is transport-layer: it owns fetch, watchdog, backoff, and
+ * endpoint rotation. The caller owns SSE decoding via the `DrainStream`
+ * callback and supplies materialized headers + serialized body so replays
+ * are byte-identical.
+ *
+ * Design: the replay count, backoff, and the ordered endpoint list are the
+ * caller's contract; this helper owns fetch, watchdog, and rotation so a
+ * provider that answers 200 with no events is retried on the next endpoint
+ * rather than surfacing an empty body to the client.
+ */
+import { GatewayError } from "../../protocol/gateway-error";
+
+// ─── Public types ──────────────────────────────────────────────────────────
+
+/** What the caller's drain observed. Counts only dispatched data events:
+ *  comments/keepalives, `[DONE]`, and whitespace-only data are excluded. */
+export interface StreamTally {
+  readonly dataEvents: number;
+  readonly meaningful: boolean;
+  readonly thoughtOnly: boolean;
+}
+
+/** Drain one response body to a tally. Provider-supplied; uses decodeSseEvents. */
+export type DrainStream = (response: Response, signal: AbortSignal) => Promise<StreamTally>;
+
+/** Bound fetch for one endpoint. Receives materialized headers + serialized body. */
+export type EmptyStreamFetch = (
+  url: string,
+  init: { headers: Record<string, string>; body: string; signal: AbortSignal },
+) => Promise<Response>;
+
+export interface EmptyStreamPolicy {
+  readonly maxEmptyReplays?: number;
+  readonly baseDelayMs?: number;
+  readonly firstEventTimeoutMs?: number;
+  readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+export interface EmptyStreamResult {
+  readonly response: Response;
+  readonly tally: StreamTally;
+  readonly endpoint: string;
+  readonly replaysUsed: number;
+}
+
+// ─── Defaults ──────────────────────────────────────────────────────────────
+
+const DEFAULT_MAX_REPLAYS = 2;
+const DEFAULT_BASE_DELAY_MS = 500;
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 200_000; // 200s, matches CARTETHYIA_STREAM_FIRST_CHUNK_TIMEOUT_MS default
+const MIN_RETRY_BUDGET_MS = 15_000; // attempt-loop floor
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+/** Pure predicate: zero data events, or data events with nothing meaningful. */
+export function isEmptyStream(tally: StreamTally): boolean {
+  return tally.dataEvents === 0 || (!tally.meaningful && !tally.thoughtOnly);
+}
+
+function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new GatewayError("transport_closed", 499, "Aborted"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new GatewayError("transport_closed", 499, "Aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function backoffMs(attempt: number, base: number): number {
+  return base * 2 ** attempt;
+}
+
+// ─── Main function ─────────────────────────────────────────────────────────
+
+/**
+ * Replays the byte-identical request while responses drain empty,
+ * failing over across ordered endpoints pre-start.
+ *
+ * Throws GatewayError (platform_unavailable, 502, upstream) on exhaustion,
+ * GatewayError (transport_closed, 499) on abort.
+ */
+export async function fetchWithEmptyStreamRecovery(
+  endpoints: readonly string[],
+  request: { headers: Record<string, string>; body: string },
+  deps: {
+    fetch: EmptyStreamFetch;
+    drain: DrainStream;
+    signal: AbortSignal;
+    deadlineMs: number;
+    policy?: EmptyStreamPolicy;
+  },
+): Promise<EmptyStreamResult> {
+  const maxReplays = deps.policy?.maxEmptyReplays ?? DEFAULT_MAX_REPLAYS;
+  const baseDelay = deps.policy?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const firstEventTimeout = deps.policy?.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS;
+  const sleep = deps.policy?.sleep ?? defaultSleep;
+
+  if (endpoints.length === 0) {
+    throw new GatewayError("platform_unavailable", 502, "No endpoints available", {}, "upstream");
+  }
+
+  for (let endpointIndex = 0; endpointIndex < endpoints.length; endpointIndex++) {
+    const endpoint = endpoints[endpointIndex]!;
+    const isLastEndpoint = endpointIndex === endpoints.length - 1;
+    const replaysAllowed = isLastEndpoint ? maxReplays : maxReplays;
+
+    for (let replay = 0; replay <= replaysAllowed; replay++) {
+      // Check abort before each fetch
+      if (deps.signal.aborted) {
+        throw new GatewayError("transport_closed", 499, "Aborted");
+      }
+
+      // Check deadline floor
+      const now = Date.now();
+      const remaining = deps.deadlineMs - now;
+      if (remaining < MIN_RETRY_BUDGET_MS) {
+        throw new GatewayError(
+          "platform_unavailable",
+          502,
+          "Deadline exhausted before empty-stream replay",
+          {},
+          "upstream",
+        );
+      }
+
+      const fetchTimeout = Math.min(firstEventTimeout, remaining);
+
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(deps.fetch, endpoint, request, deps.signal, fetchTimeout);
+      } catch (error) {
+        if (error instanceof GatewayError) throw error;
+        break; // advance to next endpoint
+      }
+
+      // Drain the response
+      let tally: StreamTally;
+      try {
+        tally = await deps.drain(response, deps.signal);
+      } catch (error) {
+        if (error instanceof GatewayError) throw error;
+        break; // advance to next endpoint
+      }
+
+      // Check if empty
+      if (!isEmptyStream(tally)) {
+        // Success — return the response and tally
+        return {
+          response,
+          tally,
+          endpoint,
+          replaysUsed: replay,
+        };
+      }
+
+      // Empty — replay if we haven't exhausted this endpoint's budget
+      if (replay < replaysAllowed) {
+        const delay = backoffMs(replay, baseDelay);
+        try {
+          await sleep(delay, deps.signal);
+        } catch (error) {
+          if (error instanceof GatewayError) throw error;
+          throw error;
+        }
+      }
+    }
+  }
+
+  // All endpoints exhausted
+  throw new GatewayError(
+    "platform_unavailable",
+    502,
+    "All endpoints returned empty streams",
+    {},
+    "upstream",
+  );
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────
+
+async function fetchWithTimeout(
+  fetch: EmptyStreamFetch,
+  url: string,
+  request: { headers: Record<string, string>; body: string },
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<Response> {
+  // Race the fetch against a first-event timeout
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new GatewayError("transport_closed", 499, "First event timeout", {}, "upstream"));
+    }, timeoutMs);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new GatewayError("transport_closed", 499, "Aborted"));
+    }, { once: true });
+  });
+
+  try {
+    return await Promise.race([
+      fetch(url, { headers: request.headers, body: request.body, signal }),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    if (error instanceof GatewayError) throw error;
+    throw error;
+  }
+}

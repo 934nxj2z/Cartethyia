@@ -1,0 +1,738 @@
+// Routing snapshot: builds the RouteSnapshot from the persisted model catalog.
+
+import { asc, eq, ne } from "drizzle-orm";
+import type { CartethyiaDatabase } from "../../persistence/db-handle";
+import {
+  models,
+  modelAliases,
+  modelCombos,
+  networkPools,
+  poolRoutingSettings,
+  providerAccounts,
+  providerRoutingSettings,
+  providers,
+  tenantDisabledModels,
+  cliToolMappings,
+  cliToolSettings,
+} from "../../persistence/schema";
+import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../persistence/schema";
+import "../../providers/integrations/claude/claude-oauth";
+import "../../providers/integrations/codex/codex-oauth";
+import { resolveTenantOverride } from "../../persistence/tenant-scope";
+import {
+  type RouteCandidate,
+  type ComboDefinition,
+  type PoolRoutingSetting,
+  type ProviderRoutingMap,
+  type RouteSnapshot,
+  type SnapshotBuilder,
+} from "./route-model";
+import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../providers/provider-metadata";
+import { buildClaudeCliUserAgent } from "../../providers/operations/custom-cli-headers";
+import { isBundledProviderId } from "../../providers/provider-contracts";
+import type { ServiceKind, WireFamily } from "../../protocol/canonical-model";
+import { providerHasAdapterUserAgent, providerUsesBespokeWire } from "../../providers/provider-metadata";
+
+const CLAUDE_MODEL_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable", "mythos"]);
+
+export function cliMappingSourceKeys(toolId: string, sourceModel: string): readonly string[] {
+  if (toolId !== "claude") return [sourceModel];
+  const normalized = sourceModel.trim().toLowerCase();
+  const family =
+    CLAUDE_MODEL_FAMILIES.has(normalized)
+      ? normalized
+      : /^claude-(opus|sonnet|haiku|fable|mythos)(?:-|$)/.exec(normalized)?.[1];
+  if (normalized.includes("/") || family === undefined) return [sourceModel];
+  return [...new Set([
+    sourceModel,
+    family,
+    `claude-${family}-5`,
+    `claude-${family}-5-1`,
+    `claude-${family}-5-5`,
+    `claude-${family}-4-6`,
+    `claude-${family}-4-5`,
+  ])];
+}
+/**
+ * Builds the routing `RouteSnapshot` from the persisted catalog
+ * (`providers`, `models`, `provider_accounts`). Consumed by
+ * `InMemoryRouteSnapshotService` as its `SnapshotBuilder`.
+ *
+ * Built-in definitions are materialized before snapshots are read. The
+ * `models` DB table is authoritative for routing; compiled definitions are
+ * only startup seed data. Custom/BYOK and live-discovered models are stored
+ * in the same table.
+ *
+ * Tenant-aware: a provider with `providers.tenant_id = NULL` is global
+ * (every built-in, plus any pool-wide custom provider) and its candidates
+ * carry `tenant_id: null`, matching every request regardless of tenant. A
+ * provider with `providers.tenant_id` set (BYOK) only pairs with accounts
+ * owned by that exact same tenant, and its candidates carry that tenant id
+ * — `RoutingEngine.plan()` filters candidates by the requesting tenant.
+ */
+
+type RouteCandidateWithHealth = RouteCandidate & {
+  health_status?: "cooldown" | "model_cooldown" | "disabled";
+  cooldown_kind?: "hard" | "soft";
+  /**
+   * Epoch milliseconds at which this candidate's cooling window ends, when one
+   * is in force. Routing-internal: it is what lets `plan()` report a real reset
+   * on the all-accounts-cooling answer, and it never reaches a client verbatim —
+   * only the derived `retry-after` does.
+   */
+  cooldown_until?: number;
+};
+
+const HARD_COOLDOWN_CATEGORIES: Readonly<Record<string, true>> = {
+  quota_exhausted: true,
+  policy_blocked: true,
+  auth_invalidated: true,
+};
+
+function hardCooldownCategory(category: string | null): boolean {
+  return category !== null && HARD_COOLDOWN_CATEGORIES[category] === true;
+}
+
+/**
+ * Projects one model row's metadata into the capability gates the router
+ * filters candidates by. Exported so the projection contract is unit-testable
+ * without a database.
+ */
+export function buildCapabilityProfile(row: {
+  modalities: unknown;
+  reasoning: boolean;
+  toolCall: boolean;
+  providerId: string;
+}): Record<string, boolean> {
+  const mods =
+    row.modalities != null && typeof row.modalities === "object"
+      ? (row.modalities as { input?: unknown[]; output?: unknown[] })
+      : {};
+  const inputMods = Array.isArray(mods.input) ? mods.input : [];
+  const outputMods = Array.isArray(mods.output) ? mods.output : [];
+  // The canonical chat and responses codecs encode `image`, `document`/`file`,
+  // and `audio` parts; the messages codec encodes the first two but has no
+  // audio block (see `AUDIO_CAPABLE_WIRE_FAMILIES`). A bespoke adapter (Cursor)
+  // frames its own protocol and has no generic rich-content path.
+  // Treating the codec routes as capable by default keeps pass-through behavior
+  // instead of degrading a caller's attachment to text on the strength of a
+  // metadata guess. An explicit modality still wins, so a catalog can declare
+  // support for a bespoke adapter too. Whether a given upstream model accepts
+  // the part is the upstream's call — a capability declared here only decides
+  // whether the router strips the part before it ever sees it, and the audio
+  // grant is narrowed per wire family at projection time.
+  const codecEncodesRichContent = !providerUsesBespokeWire(row.providerId);
+  // Reasoning and tools are never stripped here. A `false` flag — whether a
+  // discovered row recorded it for lack of metadata, or a catalog row set it
+  // explicitly — must not become a silent rewrite of a request the caller
+  // asked for. The upstream decides whether it can serve them and returns its
+  // own error if it cannot.
+  return {
+    // The route is not served by a canonical codec. Carried in the profile
+    // because the capability predicates downstream see only this snapshot, not
+    // the provider registry.
+    bespokeWire: !codecEncodesRichContent,
+    image: inputMods.includes("image") || codecEncodesRichContent,
+    document: inputMods.includes("document") || codecEncodesRichContent,
+    audio: inputMods.includes("audio") || codecEncodesRichContent,
+    mediaGeneration: outputMods.includes("image"),
+    tools: true,
+    parallelToolCalls: true,
+    reasoning: true,
+    reasoningEncryptedContent: true,
+    // Search is its own route: a `websearch` row answers `POST /v1/search`.
+    // A chat row never claims it; a hosted declaration rides through `tools`.
+    webSearch: false,
+    responseJsonObject: true,
+    responseJsonSchema: true,
+    promptCaching: true,
+  };
+}
+
+/** Resolves route identity only for bundled adapters without a native User-Agent builder. */
+export function resolveRouteUserAgent(
+  providerId: string,
+  tenantUserAgent: string | undefined,
+  globalUserAgent: string | undefined,
+): string | undefined {
+  if (!isBundledProviderId(providerId) || providerHasAdapterUserAgent(providerId)) return undefined;
+  // A provider whose operator set no identity of their own gets the Claude Code
+  // CLI identity, resolved live so the stamped version tracks discovery. This
+  // used to be a frozen `codex_cli_rs` literal, which named a different vendor's
+  // client on requests that mostly reached neither.
+  const selected = resolveTenantOverride(
+    tenantUserAgent,
+    globalUserAgent,
+    buildClaudeCliUserAgent(),
+  );
+  return selected.trim() === "" ? undefined : selected;
+}
+
+/** One persisted model row ready for candidate construction. */
+interface MergedModelRow {
+  providerId: string;
+  modelId: string;
+  wireFamily: WireFamily;
+  serviceKind: ServiceKind;
+  endpointPath: string;
+  modalities: unknown;
+  outputLimit: number | null;
+  reasoning: boolean;
+  toolCall: boolean;
+  enabled: boolean;
+}
+/**
+ * Converts persisted model rows into candidate input. Seed materialization is
+ * performed before this function runs, so no static-vs-DB merge is needed.
+ */
+function mergeModelCatalog(
+  dbRows: readonly ModelRouteRow[],
+): MergedModelRow[] {
+  return dbRows
+    .filter((row) => row.enabled)
+    .map((row) => ({
+      providerId: row.providerId,
+      modelId: row.modelId,
+      wireFamily: row.wireFamily as WireFamily,
+      serviceKind: row.serviceKind as ServiceKind,
+      endpointPath: row.endpointPath,
+      modalities: row.modalities,
+      outputLimit: row.outputLimit,
+      reasoning: row.reasoning,
+      toolCall: row.toolCall,
+      enabled: row.enabled,
+    }));
+}
+
+/**
+ * Column projections for the snapshot read.
+ *
+ * The builder reads a handful of fields from each table, but the read used to
+ * be a bare `select()` — every column of all ten tables, including
+ * `provider_accounts.credential_ciphertext` and `network_pools.
+ * endpoint_config`, which the snapshot never touches. That ciphertext is the
+ * largest thing the gateway stores per account, and the snapshot is rebuilt on
+ * every catalog change, so the bytes were transferred and then discarded on
+ * every rebuild. The projection keeps the query count at ten and drops the
+ * payload to what is actually read.
+ *
+ * Each object doubles as the row type (`ModelRouteRow` and friends are derived
+ * from it), so a column added here is automatically typed, and a column the
+ * builder starts reading but is missing here fails to compile rather than
+ * silently reading `undefined`.
+ */
+const PROVIDER_COLUMNS = {
+  id: providers.id,
+  tenantId: providers.tenantId,
+  requiresAccount: providers.requiresAccount,
+} as const;
+
+const MODEL_COLUMNS = {
+  providerId: models.providerId,
+  modelId: models.modelId,
+  wireFamily: models.wireFamily,
+  serviceKind: models.serviceKind,
+  endpointPath: models.endpointPath,
+  modalities: models.modalities,
+  outputLimit: models.outputLimit,
+  reasoning: models.reasoning,
+  toolCall: models.toolCall,
+  enabled: models.enabled,
+} as const;
+const ACCOUNT_COLUMNS = {
+  id: providerAccounts.id,
+  providerId: providerAccounts.providerId,
+  tenantId: providerAccounts.tenantId,
+  label: providerAccounts.label,
+  status: providerAccounts.status,
+  cooldownUntil: providerAccounts.cooldownUntil,
+  modelCooldowns: providerAccounts.modelCooldowns,
+  lastErrorCategory: providerAccounts.lastErrorCategory,
+} as const;
+
+const ALIAS_COLUMNS = {
+  tenantId: modelAliases.tenantId,
+  alias: modelAliases.alias,
+  targetModel: modelAliases.targetModel,
+} as const;
+
+const COMBO_COLUMNS = {
+  tenantId: modelCombos.tenantId,
+  name: modelCombos.name,
+  members: modelCombos.members,
+  strategy: modelCombos.strategy,
+} as const;
+
+const ROUTING_COLUMNS = {
+  providerId: providerRoutingSettings.providerId,
+  tenantId: providerRoutingSettings.tenantId,
+  strategy: providerRoutingSettings.strategy,
+  rotateCount: providerRoutingSettings.rotateCount,
+  maxInflight: providerRoutingSettings.maxInflight,
+  maxInflightPerProxy: providerRoutingSettings.maxInflightPerProxy,
+  usageFloor: providerRoutingSettings.usageFloor,
+  usageFloorUnit: providerRoutingSettings.usageFloorUnit,
+  enabled: providerRoutingSettings.enabled,
+  skipProxy: providerRoutingSettings.skipProxy,
+  userAgent: providerRoutingSettings.userAgent,
+} as const;
+
+const POOL_COLUMNS = {
+  id: networkPools.id,
+  tenantId: networkPools.tenantId,
+  status: networkPools.status,
+  maxInflight: networkPools.maxInflight,
+  weight: networkPools.weight,
+} as const;
+
+const DISABLED_MODEL_COLUMNS = {
+  tenantId: tenantDisabledModels.tenantId,
+  providerId: tenantDisabledModels.providerId,
+  modelId: tenantDisabledModels.modelId,
+  endpointPath: tenantDisabledModels.endpointPath,
+} as const;
+
+const CLI_MAPPING_COLUMNS = {
+  tenantId: cliToolMappings.tenantId,
+  apiKeyId: cliToolMappings.apiKeyId,
+  toolId: cliToolMappings.toolId,
+  sourceModel: cliToolMappings.sourceModel,
+  targetModel: cliToolMappings.targetModel,
+  enabled: cliToolMappings.enabled,
+} as const;
+
+/** The per-(tenant, tool, key) Remote Routing switch. A mapping row only
+ * routes when its bucket's settings row has `mappings_enabled` set. */
+const CLI_MAPPING_SETTING_COLUMNS = {
+  tenantId: cliToolSettings.tenantId,
+  apiKeyId: cliToolSettings.apiKeyId,
+  toolId: cliToolSettings.toolId,
+  mappingsEnabled: cliToolSettings.mappingsEnabled,
+} as const;
+
+const POOL_SETTING_COLUMNS = {
+  tenantId: poolRoutingSettings.tenantId,
+  strategy: poolRoutingSettings.strategy,
+  rotateCount: poolRoutingSettings.rotateCount,
+} as const;
+
+/** A row of `models` as this module reads it. */
+type ModelRouteRow = { [K in keyof typeof MODEL_COLUMNS]: (typeof models.$inferSelect)[K] };
+
+/** Snapshot load result from the 10-table catalog read. */
+type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number };
+
+/** Repository abstracting database queries for the route catalog snapshot. */
+class RouteCatalogRepository {
+  constructor(private readonly db: CartethyiaDatabase) {}
+
+  async loadRouteCatalogSnapshot(tenantId?: string): Promise<RouteCatalogSnapshotResult> {
+    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows] =
+      await Promise.all([
+        this.db.select(PROVIDER_COLUMNS).from(providers).where(eq(providers.enabled, true)),
+        this.db.select(MODEL_COLUMNS).from(models),
+        this.db
+          .select(ACCOUNT_COLUMNS)
+          .from(providerAccounts)
+          .where(ne(providerAccounts.status, "disabled"))
+          .orderBy(asc(providerAccounts.status), asc(providerAccounts.createdAt), asc(providerAccounts.id)),
+        this.db.select(ALIAS_COLUMNS).from(modelAliases),
+        this.db.select(COMBO_COLUMNS).from(modelCombos),
+        this.db.select(ROUTING_COLUMNS).from(providerRoutingSettings),
+        this.db.select(POOL_COLUMNS).from(networkPools),
+        this.db.select(DISABLED_MODEL_COLUMNS).from(tenantDisabledModels),
+        this.db.select(CLI_MAPPING_COLUMNS).from(cliToolMappings),
+        this.db.select(CLI_MAPPING_SETTING_COLUMNS).from(cliToolSettings),
+        this.db.select(POOL_SETTING_COLUMNS).from(poolRoutingSettings),
+      ]);
+    const mergedModelRows = mergeModelCatalog(modelRows);
+
+    // Compile tenant-scoped disables into a lookup keyed by the same
+    // composite identity the `models` table uses. A disabled key suppresses
+    // the candidate whose account belongs to that tenant.
+    const disabledModelKeys = new Set<string>(
+      disabledModelRows.map(
+        (row) => `${row.tenantId}:${row.providerId}:${row.modelId}:${row.endpointPath}`,
+      ),
+    );
+
+    const providerTenantById = new Map<string, string | null>(
+      providerRows.map((p) => [p.id, p.tenantId]),
+    );
+    const requiresAccountById = new Map<string, boolean>(
+      providerRows.map((p) => [p.id, p.requiresAccount]),
+    );
+
+    // Every active (non-disabled) pool a tenant owns, available for
+    // automatic per-request selection — see `resolveNetworkPools` below.
+    const activePoolsByTenant = new Map<
+      string,
+      Array<{ id: string; maxInflight: number; weight: number }>
+    >();
+    const configuredPoolTenants = new Set<string>();
+    for (const pool of poolRows) {
+      configuredPoolTenants.add(pool.tenantId);
+      if (pool.status !== "active") continue;
+      if (!pool.tenantId) continue;
+      const list = activePoolsByTenant.get(pool.tenantId) ?? [];
+      list.push({ id: pool.id, maxInflight: pool.maxInflight ?? 10, weight: pool.weight ?? 100 });
+      activePoolsByTenant.set(pool.tenantId, list);
+    }
+
+    // Per-tenant pool selection strategy; an absent row reads as the
+    // `least_loaded` default at selection time.
+    const poolRouting: Record<string, PoolRoutingSetting> = {};
+    for (const row of poolSettingRows) {
+      if (tenantId === undefined || row.tenantId === tenantId) {
+        poolRouting[row.tenantId] = { strategy: row.strategy, rotateCount: row.rotateCount };
+      }
+    }
+
+    // Build per-tenant per-provider routing preferences before the
+    // candidates loop below, since skipProxy has to be known while
+    // deciding each candidate's network pool set. Global settings
+    // (tenant_id IS NULL) are stored under sentinel "__global__".
+    const providerRouting: Record<string, Record<string, ProviderRoutingMap[string][string]>> = {};
+    for (const row of routingRows) {
+      const tenantKey = row.tenantId ?? "__global__";
+      const bucket = (providerRouting[tenantKey] ??= {});
+      bucket[row.providerId] = {
+        strategy: row.strategy as ProviderRoutingMap[string][string]["strategy"],
+        rotateCount: row.rotateCount ?? 1,
+        maxInflight: row.maxInflight,
+        maxInflightPerProxy: row.maxInflightPerProxy,
+        usageFloor: row.usageFloor,
+        usageFloorUnit: row.usageFloorUnit === "credit" ? "credit" : "percent",
+        enabled: row.enabled,
+        skipProxy: row.skipProxy,
+        userAgent: row.userAgent,
+      };
+    }
+    /** Tenant-specific setting wins over global; an unconfigured provider
+     * falls back to `DEFAULT_PROXY_SKIP_PROVIDER_IDS`, mirroring the same
+     * default `DrizzleProviderDetailStore.getRouting` reports to the API —
+     * so the dashboard's displayed default and the real dispatch decision
+     * never disagree. */
+    function resolveSkipProxy(providerId: string, rowTenantId: string | null): boolean {
+      const effectiveTenantId = rowTenantId;
+      const tenantSetting = effectiveTenantId ? providerRouting[effectiveTenantId]?.[providerId] : undefined;
+      const globalSetting = providerRouting.__global__?.[providerId];
+      return resolveTenantOverride(
+        tenantSetting?.skipProxy,
+        globalSetting?.skipProxy,
+        DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId),
+      );
+    }
+    function resolveUserAgent(providerId: string, rowTenantId: string | null): string | undefined {
+      const tenantSetting = rowTenantId ? providerRouting[rowTenantId]?.[providerId]?.userAgent : undefined;
+      const globalSetting = providerRouting.__global__?.[providerId]?.userAgent;
+      return resolveRouteUserAgent(providerId, tenantSetting, globalSetting);
+    }
+
+    /** Provider-wide concurrency ceiling shared by every account of the provider.
+     * Tenant setting wins over global, mirroring skipProxy. A stored `null`
+     * is the explicit unlimited choice; so is the default — a provider with no
+     * routing row at all is unlimited too, because an operator who never
+     * configured a ceiling asked for none. */
+    function resolveMaxInflight(
+      providerId: string,
+      rowTenantId: string | null,
+    ): number | undefined {
+      const tenantSetting = rowTenantId
+        ? providerRouting[rowTenantId]?.[providerId]?.maxInflight
+        : undefined;
+      const globalSetting = providerRouting.__global__?.[providerId]?.maxInflight;
+      const resolved = tenantSetting ?? globalSetting;
+      if (resolved === null) return undefined;
+      return resolved ?? DEFAULT_PROVIDER_MAX_INFLIGHT ?? undefined;
+    }
+
+    /**
+     * This provider's per-pool inflight ceiling, from Routing Strategy.
+     * `undefined` means unlimited — the default, and the state of every
+     * provider nobody has configured. A stored `null` is the same choice made
+     * explicitly; the two are deliberately indistinguishable downstream so the
+     * hot path never branches on which one it read.
+     */
+    function resolveMaxInflightPerProxy(
+      providerId: string,
+      rowTenantId: string | null,
+    ): number | undefined {
+      const tenantSetting = rowTenantId
+        ? providerRouting[rowTenantId]?.[providerId]?.maxInflightPerProxy
+        : undefined;
+      const globalSetting = providerRouting.__global__?.[providerId]?.maxInflightPerProxy;
+      return tenantSetting ?? globalSetting ?? undefined;
+    }
+
+    /** Every active pool the account's tenant owns — dispatch picks the
+     * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
+     * never an admin-pinned single pool. */
+    function resolveNetworkPools(
+      providerId: string,
+      rowTenantId: string | null,
+    ):
+      | {
+          ids: readonly string[];
+          limits: Record<string, number>;
+          weights: Record<string, number>;
+          routing?: PoolRoutingSetting & { tenantId: string };
+        }
+      | undefined {
+      if (!rowTenantId || resolveSkipProxy(providerId, rowTenantId)) return undefined;
+      if (!configuredPoolTenants.has(rowTenantId)) return undefined;
+      const pools = activePoolsByTenant.get(rowTenantId) ?? [];
+      const limits: Record<string, number> = {};
+      const weights: Record<string, number> = {};
+      for (const pool of pools) {
+        limits[pool.id] = pool.maxInflight;
+        weights[pool.id] = pool.weight;
+      }
+      const routing = poolRouting[rowTenantId];
+      return {
+        ids: pools.map((pool) => pool.id),
+        limits,
+        weights,
+        ...(routing ? { routing: { tenantId: rowTenantId, ...routing } } : {}),
+      };
+    }
+
+    /** The candidate fragment for a provider ceiling, empty when unlimited —
+     * so an unconfigured provider's candidate is byte-for-byte what it was. */
+    function providerLimitFor(
+      providerId: string,
+      rowTenantId: string | null,
+    ): { network_pool_provider_limit?: number } {
+      const limit = resolveMaxInflightPerProxy(providerId, rowTenantId);
+      return limit === undefined ? {} : { network_pool_provider_limit: limit };
+    }
+
+    // Group usable accounts per provider (not per provider-tenant). Built-in
+    // providers are `tenant_id IS NULL` but their accounts are per-tenant, so
+    // grouping by `providerTenantId` would make every global model look
+    // disabled. Instead keep all accounts for a provider together and fan out
+    // candidates per account tenant below — e.g. `opencodeze/muse-spark`
+    // hits with `model: "opencodeze/muse-spark"` must resolve to the tenant's
+    // own account even though the provider row is global.
+    const accountsByProvider = new Map<string, typeof accountRows>();
+    for (const account of accountRows) {
+      if (account.status === "disabled") continue;
+      const list = accountsByProvider.get(account.providerId) ?? [];
+      list.push(account);
+      accountsByProvider.set(account.providerId, list);
+    }
+
+    const candidates: RouteCandidateWithHealth[] = [];
+    for (const model of mergedModelRows) {
+      const providerTenantId = providerTenantById.get(model.providerId);
+      if (providerTenantId === undefined) continue;
+      const accounts = accountsByProvider.get(model.providerId) ?? [];
+      const capabilityProfile = buildCapabilityProfile(model);
+      if (accounts.length === 0) {
+        const providerRequiresAccount = requiresAccountById.get(model.providerId) ?? true;
+        if (!providerRequiresAccount) {
+          // Public models inherit active pools for each tenant that has active pools
+          for (const tId of configuredPoolTenants) {
+            const tenantPools = resolveNetworkPools(model.providerId, tId);
+            if (tenantPools) {
+              const tenantCandidate: RouteCandidateWithHealth = {
+                provider_id: model.providerId,
+                model_id: model.modelId,
+                wire_family: model.wireFamily as WireFamily,
+                service_kind: model.serviceKind,
+                endpoint: model.endpointPath,
+                ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
+                capability_profile: capabilityProfile,
+                tenant_id: tId,
+                requires_account: false as const,
+                network_pool_ids: tenantPools.ids,
+                network_pool_required: true,
+                network_pool_limits: tenantPools.limits,
+                network_pool_weights: tenantPools.weights,
+                ...(tenantPools.routing ? { network_pool_routing: tenantPools.routing } : {}),
+                ...providerLimitFor(model.providerId, tId),
+              };
+              if (tenantId === undefined || tenantId === tId) {
+                candidates.push(tenantCandidate);
+              }
+            }
+          }
+        }
+        const networkPools = providerRequiresAccount
+          ? undefined
+          : resolveNetworkPools(model.providerId, providerTenantId);
+        const candidate: RouteCandidateWithHealth = {
+          provider_id: model.providerId,
+          model_id: model.modelId,
+          wire_family: model.wireFamily as WireFamily,
+          service_kind: model.serviceKind,
+          endpoint: model.endpointPath,
+          ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
+          capability_profile: capabilityProfile,
+          tenant_id: providerTenantId,
+          ...(providerRequiresAccount
+            ? { health_status: "disabled" as const }
+            : { requires_account: false as const }),
+          ...(networkPools
+            ? {
+                network_pool_ids: networkPools.ids,
+                network_pool_required: true,
+                network_pool_limits: networkPools.limits,
+                network_pool_weights: networkPools.weights,
+                ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
+                ...providerLimitFor(model.providerId, providerTenantId),
+              }
+            : {}),
+        };
+        if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
+          candidates.push(candidate);
+        }
+        continue;
+      }
+      for (const account of accounts) {
+        const rowTenantId = account.tenantId ?? providerTenantId;
+        if (
+          rowTenantId !== null &&
+          disabledModelKeys.has(
+            `${rowTenantId}:${model.providerId}:${model.modelId}:${model.endpointPath}`,
+          )
+        ) {
+          continue;
+        }
+        const networkPools = resolveNetworkPools(model.providerId, rowTenantId);
+        const routeUserAgent = resolveUserAgent(model.providerId, rowTenantId);
+        const candidate: RouteCandidateWithHealth = {
+          provider_id: model.providerId,
+          model_id: model.modelId,
+          wire_family: model.wireFamily as WireFamily,
+          service_kind: model.serviceKind,
+          endpoint: model.endpointPath,
+          ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
+          capability_profile: capabilityProfile,
+          ...(routeUserAgent === undefined ? {} : { user_agent: routeUserAgent }),
+          tenant_id: rowTenantId,
+          provider_account_id: account.id,
+          // Provider-wide concurrency ceiling from Routing Strategy; legacy
+          // account overrides are never read here.
+          ...(() => {
+            const resolved = resolveMaxInflight(model.providerId, rowTenantId);
+            return resolved === undefined ? {} : { max_inflight: resolved };
+          })(),
+          ...(networkPools
+            ? {
+                network_pool_required: true,
+                network_pool_ids: networkPools.ids,
+                network_pool_limits: networkPools.limits,
+                network_pool_weights: networkPools.weights,
+                ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
+                ...providerLimitFor(model.providerId, rowTenantId),
+              }
+            : {}),
+        };
+        if (account.status === "cooldown") {
+          // Expired cooldowns read as healthy here without a fire-and-forget
+          // write: AccountHealthSweeper materializes the recovery every 30s,
+          // so the builder stays a pure read (no UPDATE racing the request).
+          if (account.cooldownUntil && account.cooldownUntil.getTime() > Date.now()) {
+            candidate.health_status = "cooldown";
+            candidate.cooldown_kind = hardCooldownCategory(account.lastErrorCategory)
+              ? "hard"
+              : "soft";
+            // The deadline rides with the exclusion it explains. `plan()` reads
+            // it to answer the all-cooling case with the real reset instead of
+            // a bare 429, so a client backs off for the window that is actually
+            // open rather than inventing one.
+            candidate.cooldown_until = account.cooldownUntil.getTime();
+          }
+        }
+
+        // Per-model cooldown: an account may be healthy globally but cooling down
+        // for a specific model. A non-expired entry for the model THIS candidate
+        // serves is a hard exclusion, not a deprioritization: the upstream said
+        // this exact (account, model) pair is exhausted until a stated reset
+        // ("Daily free limit reached … Try again in 11h"), so dialing it can only
+        // reproduce the same refusal. Deprioritizing instead made failover spend
+        // a full round trip on it after every healthy sibling had failed, and
+        // recorded another `active → cooldown` row each time — the operator's
+        // report of one account churning while ten siblings sat healthy.
+        //
+        // `model_cooldown` (distinct from `cooldown`) is what carries that
+        // distinction to the evaluator: an account-wide `cooldown` stays
+        // deprioritized so a single-account deployment still routes, while a
+        // model-scoped one is dropped for this model only and the account keeps
+        // serving every other model it holds.
+        const modelCooldowns = account.modelCooldowns as Record<string, string> | null;
+        const modelCooldownUntil = modelCooldowns?.[model.modelId];
+        if (modelCooldownUntil && new Date(modelCooldownUntil).getTime() > Date.now()) {
+          candidate.health_status = "model_cooldown";
+          candidate.cooldown_until = new Date(modelCooldownUntil).getTime();
+        }
+        if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
+          candidates.push(candidate);
+        }
+      }
+    }
+
+    const aliases: Record<string, Record<string, string>> = {};
+    const cliAliases: Record<string, Record<string, string>> = {};
+    for (const row of aliasRows) {
+      if (tenantId === undefined || row.tenantId === tenantId) {
+        (aliases[row.tenantId] ??= {})[row.alias] = row.targetModel;
+      }
+    }
+    // CLI-tool mappings are per-(tenant, key): each API key can route the same
+    // CLI slot to a different target. The snapshot keys the alias bucket by
+    // `${tenantId}:${apiKeyId}` so the preparer can look up the exact key's
+    // routes without merging across keys.
+    // Remote Routing is opt-in per (tenant, tool, key): a mapping row routes
+    // only when its bucket's settings row explicitly enabled it. The CLI tool
+    // page and the API-key edit form both write that one flag, so either place
+    // can turn the routes on or off.
+    const enabledMappingBuckets = new Set<string>();
+    for (const row of cliMappingSettingRows) {
+      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
+    }
+    for (const row of cliMappingRows) {
+      if (!row.enabled) continue;
+      if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
+      if (tenantId === undefined || row.tenantId === tenantId) {
+        const bucketKey = `${row.tenantId}:${row.apiKeyId}`;
+        const aliasBucket = (cliAliases[bucketKey] ??= {});
+        for (const sourceKey of cliMappingSourceKeys(row.toolId, row.sourceModel)) {
+          aliasBucket[sourceKey] = row.targetModel;
+        }
+      }
+    }
+    const combos: Record<string, Record<string, ComboDefinition>> = {};
+    for (const row of comboRows) {
+      if (tenantId === undefined || row.tenantId === tenantId) {
+        (combos[row.tenantId] ??= {})[row.name] = { members: row.members, strategy: row.strategy };
+      }
+    }
+
+    const routingMap: ProviderRoutingMap | undefined =
+      Object.keys(providerRouting).length > 0 ? (providerRouting as ProviderRoutingMap) : undefined;
+
+    return {
+      candidates,
+      aliases,
+      cli_aliases: cliAliases,
+      combos,
+      ...(routingMap ? { providerRouting: routingMap } : {}),
+      ...(Object.keys(poolRouting).length > 0 ? { poolRouting } : {}),
+    };
+  }
+}
+
+/** Builds a `SnapshotBuilder` reading the live catalog from `db`. */
+export function createDatabaseSnapshotBuilder(
+  db: CartethyiaDatabase,
+  refreshActiveCatalogs?: () => Promise<void>,
+): SnapshotBuilder {
+  const repository = new RouteCatalogRepository(db);
+  return async () => {
+    await refreshActiveCatalogs?.();
+    return repository.loadRouteCatalogSnapshot(undefined);
+  };
+}
+
