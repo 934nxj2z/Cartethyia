@@ -113,9 +113,24 @@ export function checkinSlotAvailable(
  * An account is re-announced only when its outcome actually changes.
  *
  * Module scope, not per-call: suppression must survive across passes, and one
- * `quotaRefreshSweep` call is one pass.
+ * `quotaRefreshSweep` call is one pass. Bounded because it is keyed by account
+ * id and was never pruned, so accounts deleted years ago still held an entry;
+ * the oldest keys are the ones least likely to be announced again.
  */
+const LAST_SWEEP_LINE_MAX = 512;
 const lastSweepLine = new Map<string, string>();
+
+/** Drops the oldest entries once the suppression map reaches its cap. */
+function trimLastSweepLine(): void {
+  if (lastSweepLine.size <= LAST_SWEEP_LINE_MAX) return;
+  const excess = lastSweepLine.size - LAST_SWEEP_LINE_MAX;
+  let dropped = 0;
+  for (const key of lastSweepLine.keys()) {
+    if (dropped >= excess) break;
+    lastSweepLine.delete(key);
+    dropped += 1;
+  }
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -201,6 +216,7 @@ function logSweepAccounts(
 
     if (lastSweepLine.get(target.accountId) === line) continue;
     lastSweepLine.set(target.accountId, line);
+    trimLastSweepLine();
 
     // A failed quota fetch or a failed check-in is operator-actionable.
     if (outcome.failure !== null || result?.state === "error") {
@@ -219,7 +235,16 @@ function logSweepAccounts(
   }
 }
 
-const DEFAULT_MIN_AGE_MS = 4 * 60_000;
+/**
+ * How stale a cached quota reading must be before it is refreshed again.
+ *
+ * Half the cache TTL. The sweep runs every 60 s, so at the old 4 min every
+ * account was refreshed roughly three times per 15 min TTL window — two of
+ * those three passes hit the provider and learned nothing the cache did not
+ * already know. 8 min is still comfortably inside the TTL, so a reading never
+ * goes stale while it waits.
+ */
+const DEFAULT_MIN_AGE_MS = 8 * 60_000;
 const DEFAULT_MAX_PER_PASS = 40;
 const DEFAULT_PASS_BUDGET_MS = 90_000;
 

@@ -14,7 +14,7 @@
  */
 import { appendFile, mkdir, rm } from "node:fs/promises";
 import { afterAll, describe, expect, test } from "bun:test";
-import { createShareStatsPort } from "../../src/console/share/share-stats";
+import { createShareStatsPort, SHARE_STATS_CACHE_TTL_SECONDS } from "../../src/console/share/share-stats";
 import { TELEMETRY_EVENT_DIR } from "../../src/observability/event-log";
 
 const FIXTURE_FILE = `${TELEMETRY_EVENT_DIR}/share-stats-cache-test.jsonl`;
@@ -78,6 +78,15 @@ afterAll(async () => {
   await rm(FIXTURE_FILE, { force: true });
 });
 
+/**
+ * The body keys alone. The cache writes a `:etag` sibling next to every body,
+ * so counting raw keys would count each entry twice and stop measuring what
+ * these tests are about — how many entries were read or written.
+ */
+function bodyKeys(keys: readonly string[]): string[] {
+  return keys.filter((key) => !key.endsWith(":etag"));
+}
+
 describe("createShareStatsPort — the Redis tier", () => {
   test("a second tick inside the TTL reuses the first computation", async () => {
     const tenantId = crypto.randomUUID();
@@ -99,10 +108,14 @@ describe("createShareStatsPort — the Redis tier", () => {
     expect(first.totals.requests).toBe(1);
     expect(first.recipients).toEqual(RECIPIENTS);
     // One miss wrote one entry; the second call read it back rather than
-    // computing again (compute is only reachable on a miss).
-    expect(recorded.reads).toHaveLength(2);
-    expect(recorded.writes).toHaveLength(1);
-    expect(recorded.writes[0]?.ttl).toBe(2);
+    // computing again (compute is only reachable on a miss). Each body write
+    // is paired with its validator, so the body keys are counted alone.
+    expect(bodyKeys(recorded.reads)).toHaveLength(2);
+    expect(bodyKeys(recorded.writes.map((write) => write.key))).toHaveLength(1);
+    // Pinned to the constant rather than a literal, so raising the TTL does
+    // not read as a regression here — it is the thing the test is checking
+    // shape against.
+    expect(recorded.writes[0]?.ttl).toBe(SHARE_STATS_CACHE_TTL_SECONDS);
   });
 
   test("recipients are reattached per call, not frozen into the cached value", async () => {
@@ -122,7 +135,7 @@ describe("createShareStatsPort — the Redis tier", () => {
     expect(first.recipients).toEqual({ total: 1, active: 1 });
     expect(second.recipients).toEqual({ total: 9, active: 4 });
     // Still one computation: only the recipient count changed.
-    expect(recorded.writes).toHaveLength(1);
+    expect(bodyKeys(recorded.writes.map((write) => write.key))).toHaveLength(1);
     // The cached payload carries no `recipients` key at all.
     expect(recorded.writes[0]?.value).not.toContain("recipients");
   });
@@ -194,7 +207,7 @@ describe("createShareStatsPort — the Redis tier", () => {
     await port.getFamilyStats(tenantId, [a, b], RECIPIENTS);
     await port.getFamilyStats(tenantId, [b, a], RECIPIENTS);
 
-    const keys = new Set(recorded.reads);
+    const keys = new Set(bodyKeys(recorded.reads));
     expect(keys.size).toBe(4);
     for (const key of keys) expect(key.startsWith(`share:v1:stats:${tenantId}:`)).toBe(true);
   });

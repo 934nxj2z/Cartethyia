@@ -7,6 +7,7 @@ import type { RedisClient } from "../persistence/redis";
 import {
   bundledModelCatalog,
   liveProviderUpstreamHosts,
+  markCatalogSeeded,
   refreshActiveProviderCatalogs,
   registerByokProviders,
   retireUnbundledProviders,
@@ -130,7 +131,9 @@ const OAUTH_REFRESH_INTER_ITEM_DELAY_MS = 1_500;
  * Client identities are refreshed out of band so provider dispatch never waits
  * on npm/provider version endpoints. Resolver TTLs deduplicate the sources.
  */
-const CLIENT_VERSION_MONITOR_INTERVAL_MS = 15 * 60_000;
+// Matched to the resolver's own 30 min cache TTL: at 15 min every second pass
+// was a pure cache read that could not discover anything new.
+const CLIENT_VERSION_MONITOR_INTERVAL_MS = 30 * 60_000;
 const CLIENT_VERSION_INITIAL_DELAY_MS = 10_000;
 
 export async function buildProductionDeps(): Promise<ProductionDeps> {
@@ -166,6 +169,9 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   await measureStartupPhase("bundled-model-seed", () =>
     seedBundledModels(db, bundledCatalog.modelsByProvider),
   );
+  // The boot seed above is unconditional, so record it: the snapshot builder's
+  // first rebuild would otherwise re-seed an identical catalog.
+  markCatalogSeeded();
   const snapshotService = new InMemoryRouteSnapshotService(
     createDatabaseSnapshotBuilder(db, () => refreshActiveProviderCatalogs(db, registry)),
   );
@@ -280,7 +286,11 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   });
   scheduledTasks.register({
     name: "console-session-sweep",
-    intervalMs: 60 * 60_000,
+    // Sessions live 48 h, so an hourly sweep deleted nothing 47 times out of
+    // 48 — each pass a full scan of the session table for rows that cannot yet
+    // be expired. Half the session lifetime is the point where a pass can
+    // actually find work, and still leaves a full grace period after it.
+    intervalMs: 12 * 60 * 60_000,
     run: () => deleteExpiredSessions(db),
   });
   scheduledTasks.register({
@@ -322,7 +332,11 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   });
   scheduledTasks.register({
     name: "pool-agent-sweep",
-    intervalMs: 60_000,
+    // `resolveAgent` already self-sweeps every 30 s, so a 1 min timer added a
+    // second pass that almost always found nothing to release. 5 min is well
+    // inside the idle timeout this exists to enforce, and outside the path
+    // that already runs.
+    intervalMs: 5 * 60_000,
     run: () => poolAgentResolver.sweepIdleAgents(),
   });
   const oauthRefreshService = new OAuthRefreshService(db);
@@ -338,7 +352,12 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // credential — no upstream call — so it runs often and cheaply.
   scheduledTasks.register({
     name: "account-enrichment-sweep",
-    intervalMs: 30_000,
+    // Converges via `identity_checked_at`: once every stored credential has
+    // been parsed, the listing query returns nothing — and a 30 s timer kept
+    // running that empty query forever, two million times a year. 10 min is
+    // still instant for the case that matters (a batch import, where the label
+    // and email show up on the next tick) and costs nothing when idle.
+    intervalMs: 10 * 60_000,
     run: () => accountIdentitySweep({ db }),
   });
   scheduledTasks.register({

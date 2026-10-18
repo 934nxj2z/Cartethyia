@@ -21,6 +21,12 @@ export interface UnenrichedAccount {
   readonly id: string;
   readonly providerId: string;
   readonly label: string;
+  /**
+   * The stored credential, carried from the listing query. It is what the
+   * sweep exists to parse, so fetching it a second time per account was a
+   * redundant read of the row's widest column.
+   */
+  readonly credentialCiphertext: Buffer | Uint8Array | null;
 }
 
 export interface AccountIdentityEnrichmentSweepDeps {
@@ -76,11 +82,17 @@ export async function accountIdentitySweep(
   await runSweep<UnenrichedAccount>({
     name: "account-enrichment",
     list: async () => {
+      // `credentialCiphertext` is selected here, not re-read per account: the
+      // sweep ran one listing query and then a second SELECT for every account
+      // in it, to fetch the one column the listing had already matched on. The
+      // credential is the widest column on the row, so this is also the row
+      // that most needed to be fetched once.
       const rows = await deps.db
         .select({
           id: providerAccounts.id,
           providerId: providerAccounts.providerId,
           label: providerAccounts.label,
+          credentialCiphertext: providerAccounts.credentialCiphertext,
         })
         .from(providerAccounts)
         .where(
@@ -94,22 +106,12 @@ export async function accountIdentitySweep(
       return rows;
     },
     run: async (account) => {
-      const rows = await deps.db
-        .select({
-          credentialCiphertext: providerAccounts.credentialCiphertext,
-        })
-        .from(providerAccounts)
-        .where(eq(providerAccounts.id, account.id))
-        .limit(1);
-      const row = rows[0];
-      if (row === undefined) return;
-
       let secret: string | undefined;
       try {
         secret =
-          row.credentialCiphertext === null || row.credentialCiphertext === undefined
+          account.credentialCiphertext === null || account.credentialCiphertext === undefined
             ? undefined
-            : decryptCredentialToString(row.credentialCiphertext);
+            : decryptCredentialToString(account.credentialCiphertext);
       } catch (error) {
         // An undecryptable credential is a real problem, but not one this sweep
         // can fix. Stamp it so the pass stops retrying and the account's own

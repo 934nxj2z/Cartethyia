@@ -227,12 +227,19 @@ const TOP_IPS_LIMIT = 50;
 const HOURS_WINDOW = 24;
 
 /**
- * Cache lifetime for one family's rollup. Equal to the share page's 2 s SSE
- * tick: a viewer cannot observe staleness longer than the refresh it already
- * accepts, while every viewer of one link shares a single computation. Declared
- * here rather than imported from the router so this port does not depend on it.
+ * Cache lifetime for one family's rollup.
+ *
+ * Matched to the share page's SSE tick, which was the point of the old 2 s
+ * value — but at 2 s the cache expired on every tick, so every single push was
+ * a full parse of the retained telemetry window. A share page's numbers move
+ * when a request does, not every 2 s; 10 s still reads as live, and cuts the
+ * parse rate by five.
+ *
+ * Declared here rather than imported from the router so this port does not
+ * depend on it. `SHARE_STATS_STREAM_INTERVAL_MS` must be raised with it, or
+ * the two drift apart and the cache expires between ticks for no reason.
  */
-export const SHARE_STATS_CACHE_TTL_SECONDS = 2;
+export const SHARE_STATS_CACHE_TTL_SECONDS = 10;
 
 /**
  * Cache key for one family's rollup. Both inputs change the payload — `keyIds`
