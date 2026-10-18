@@ -168,6 +168,14 @@ export const providers = pgTable(
     // see `src/transport/routing/route-catalog.ts`.
     requiresAccount: boolean("requires_account").notNull().default(true),
   },
+  (table) => [
+    // `globalOrOwnedBy(providers.tenantId, …)` is the predicate behind
+    // `listModelsForTenant` and `/quota/overview`, and it is a bare
+    // `tenant_id IS NULL OR tenant_id = ?` — which no other index here can
+    // serve, so both reads scanned the whole provider list. Cheap to keep:
+    // providers are few and written rarely.
+    index("providers_tenant_id_idx").on(table.tenantId),
+  ],
 );
 
 // Upstream account credentials plus the full health state machine.
@@ -262,6 +270,12 @@ export const providerAccounts = pgTable("provider_accounts", {
     ),
     index("provider_accounts_status_cooldown_idx").on(table.status, table.cooldownUntil),
     index("provider_accounts_provider_tenant_idx").on(table.providerId, table.tenantId),
+    // The bare `tenant_id IS NULL OR tenant_id = ?` that `listAllAccounts`
+    // uses is served by neither index above: `(status, cooldown_until)` leads
+    // with the wrong column, and `(provider_id, tenant_id)` cannot serve a
+    // predicate that does not constrain `provider_id`. This one matches the
+    // hot listing path.
+    index("provider_accounts_tenant_id_idx").on(table.tenantId),
   ],
 );
 

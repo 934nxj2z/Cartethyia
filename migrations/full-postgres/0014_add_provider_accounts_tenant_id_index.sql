@@ -1,0 +1,21 @@
+-- Indexes `provider_accounts.tenant_id` on its own.
+--
+-- The table already carried `(status, cooldown_until)` and
+-- `(provider_id, tenant_id)`, and neither serves `listAllAccounts`, which
+-- filters on a bare `tenant_id IS NULL OR tenant_id = ?`:
+--
+--   * `(status, cooldown_until)` does not lead with `tenant_id`, so the
+--     planner can only use it as a filter after reading the whole table.
+--   * `(provider_id, tenant_id)` cannot be used at all by a predicate that
+--     constrains no `provider_id` — a composite index is only usable from its
+--     leftmost column forward.
+--
+-- That left the account listing — the console's largest and most-polled read —
+-- seq-scanning the account table.
+--
+-- `CREATE INDEX IF NOT EXISTS` keeps the file idempotent: a database built
+-- from a newer baseline that already carries the index must not fail startup.
+-- Plain rather than `CONCURRENTLY`: the migration runner applies each file
+-- inside `BEGIN`/`COMMIT` (`db-pg.ts`), and `CONCURRENTLY` cannot run in a
+-- transaction.
+CREATE INDEX IF NOT EXISTS "provider_accounts_tenant_id_idx" ON "provider_accounts" USING btree ("tenant_id");

@@ -1,0 +1,22 @@
+-- Indexes `providers.tenant_id` on its own.
+--
+-- `providers` had no index beyond its primary key, yet two hot reads filter it
+-- by tenant with `globalOrOwnedBy(providers.tenantId, …)` — a bare
+-- `tenant_id IS NULL OR tenant_id = ?` that no other index can serve:
+--
+--   * `listModelsForTenant` (`providers/catalog/store.ts`), which the model
+--     list and the catalog snapshot walk per request.
+--   * `/quota/overview` (`quota/account-quota-tenant.ts`), which joins
+--     `provider_accounts` to `providers` on the same predicate.
+--
+-- The table is small, so this is not a dramatic win on its own — it is the
+-- scan count that matters: the predicate runs on a route the dashboard polls,
+-- and a seq scan there competes with the dispatch pool for the same buffer.
+--
+-- `CREATE INDEX IF NOT EXISTS` keeps the file idempotent: a database built
+-- from a newer baseline that already carries the index must not fail startup.
+-- Plain rather than `CONCURRENTLY`: the migration runner applies each file
+-- inside `BEGIN`/`COMMIT` (`db-pg.ts`), and `CONCURRENTLY` cannot run in a
+-- transaction. The table is small enough that the write lock is not the cost
+-- being optimised here.
+CREATE INDEX IF NOT EXISTS "providers_tenant_id_idx" ON "providers" USING btree ("tenant_id");
