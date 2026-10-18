@@ -8,6 +8,26 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.3] — 2026-10-18
+
+### Added
+
+- `cartethyia stop` stops a gateway left running by the menu's **Hide to
+  background**. That process is not a child of the stopping shell, so it
+  cannot be signalled directly: the drain token is written to `runtime.json`
+  in the config directory (mode `0600`, outside `.env` because it authorises a
+  shutdown) when the menu detaches, and `stop` posts it to the loopback
+  `/admin/drain` endpoint. The file is removed once the drain is accepted, so
+  a stale token never outlives its gateway. Without it `stop` reports that no
+  background gateway was found instead of guessing at a process.
+
+### Fixed
+
+- "Hide to background" no longer prints a command that did not exist. It
+  previously told the operator to run `cartethyia stop`, which was never
+  implemented — the only way to stop a hidden gateway was to find the process
+  by hand.
+
 ## [2.3.2] — 2026-10-18
 
 ### Added

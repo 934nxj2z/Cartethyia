@@ -19,7 +19,7 @@ Usage:
   cartethyia setup [--non-interactive]
   cartethyia start
   cartethyia menu
-  cartethyia tray
+  cartethyia stop           stop a gateway left running in the background
   cartethyia update
 
 carte starts the gateway and opens a menu driven by the arrow keys and Enter:
@@ -47,6 +47,54 @@ async function loadUserConfig(): Promise<void> {
     if (!process.env[key]) process.env[key] = value;
   }
 }
+
+/**
+ * Runtime state for a gateway left running by "Hide to background".
+ *
+ * Kept out of `.env` on purpose: the drain token authorises a shutdown, so it
+ * belongs in a machine-written file the operator never hand-edits and never
+ * commits. It is written when the menu detaches and removed when the gateway
+ * is drained, so a stale file never outlives the process it refers to.
+ */
+const RUNTIME_STATE_FILE = "runtime.json";
+
+function writePersistedDrainToken(token: string): void {
+  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
+  if (!configDir) return;
+  try {
+    writeFileSync(join(configDir, RUNTIME_STATE_FILE), JSON.stringify({ drainToken: token }), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch {
+    // A read-only config directory costs only the `stop` command, not startup.
+  }
+}
+
+function readPersistedDrainToken(): string | null {
+  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
+  if (!configDir) return null;
+  const statePath = join(configDir, RUNTIME_STATE_FILE);
+  if (!existsSync(statePath)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"));
+    if (isRecord(parsed) && typeof parsed["drainToken"] === "string") return parsed["drainToken"];
+  } catch {
+    // A corrupt or stale state file reads as "no background gateway".
+  }
+  return null;
+}
+
+function clearPersistedDrainToken(): void {
+  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
+  if (!configDir) return;
+  try {
+    unlinkSync(join(configDir, RUNTIME_STATE_FILE));
+  } catch {
+    // Best effort: the drain request already succeeded.
+  }
+}
+
 
 type TrayStartupSignal =
   | { readonly status: "ready"; readonly url: string }
@@ -402,9 +450,13 @@ async function startMenu(): Promise<void> {
       continue;
     }
     if (choice === 2) {
-      // The gateway is already a detached child, so returning here leaves it
-      // running while this process lets go of the terminal.
-      console.log(`Cartethyia keeps running at ${dashboardUrl}. Stop it with: cartethyia stop`);
+      // The gateway is a detached child, so returning here leaves it running
+      // while this process lets go of the terminal. Persist the drain token
+      // now, because `cartethyia stop` runs in a later shell and has no other
+      // way to reach this process.
+      writePersistedDrainToken(drainToken);
+      console.log(`Cartethyia keeps running at ${dashboardUrl}.`);
+      console.log("Stop it later with: cartethyia stop");
       return;
     }
     if (choice === 3) {
@@ -412,8 +464,43 @@ async function startMenu(): Promise<void> {
       console.log(code === 0 ? "Update finished." : "Update failed.");
     }
   }
+  clearPersistedDrainToken();
   await shutDown();
 }
+
+/**
+ * Stops a gateway left running by "Hide to background". That process is not a
+ * child of this one, so it cannot be signalled directly — the only handle is
+ * the loopback drain endpoint, which needs the drain token the start wrote.
+ */
+async function stopRunningGateway(): Promise<number> {
+  const port = resolvePort();
+  const token = readPersistedDrainToken();
+  if (token === null) {
+    console.error(
+      "No background Cartethyia gateway was found for this install. Start one with `carte`, or stop a foreground run with Ctrl-C.",
+    );
+    return 1;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
+      method: "POST",
+      headers: { "x-drain-token": token },
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (response.status !== 202) {
+      console.error(`The gateway refused the drain request (HTTP ${response.status}).`);
+      return 1;
+    }
+  } catch {
+    console.error("No gateway is listening on the configured port. It may already be stopped.");
+    return 1;
+  }
+  clearPersistedDrainToken();
+  console.log("Cartethyia is draining and will stop once in-flight requests finish.");
+  return 0;
+}
+
 
 async function startTray(): Promise<void> {
   const port = resolvePort();
@@ -660,7 +747,7 @@ async function startTray(): Promise<void> {
 async function main(): Promise<void> {
   assertBunVersion();
   const [command] = process.argv.slice(2);
-  if (command === "setup" || command === "start" || command === "tray" || command === "menu") {
+  if (command === "setup" || command === "start" || command === "tray" || command === "menu" || command === "stop") {
     await loadUserConfig();
   }
 
@@ -678,6 +765,9 @@ async function main(): Promise<void> {
       return;
     case "tray":
       await startTray();
+      return;
+    case "stop":
+      process.exitCode = await stopRunningGateway();
       return;
     case "update": {
       const code = await npmUpdate();
