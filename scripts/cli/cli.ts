@@ -303,6 +303,31 @@ async function stopTray(tray: SysTray, ready: boolean, exited: boolean): Promise
  * and is never seen. `carte --tray` opts into the icon instead.
  */
 async function startMenu(): Promise<void> {
+  // A fresh install has no config file yet, and the gateway refuses to boot
+  // without CARTETHYIA_DB_MODE — which surfaced as a stack trace about a
+  // missing database mode rather than "you have not set this up". Run setup
+  // first, the way `carte` is expected to behave on a new install.
+  const { ENV_PATH, readEnvFile } = await import("../shared/env");
+  const configured = existsSync(ENV_PATH) && (await readEnvFile(ENV_PATH)).CARTETHYIA_DB_MODE;
+  if (!configured) {
+    console.log(
+      existsSync(ENV_PATH)
+        ? "Cartethyia is missing its database mode. Starting setup.\n"
+        : "Cartethyia is not set up yet. Starting setup.\n",
+    );
+    const { setup } = await import("./setup");
+    await setup();
+    const after = existsSync(ENV_PATH) ? (await readEnvFile(ENV_PATH)).CARTETHYIA_DB_MODE : undefined;
+    if (!after) {
+      console.error(
+        `Setup did not record CARTETHYIA_DB_MODE in ${ENV_PATH}; run \`cartethyia setup\` and try again.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    process.env.CARTETHYIA_DB_MODE = after;
+  }
+
   const port = resolvePort();
   const drainToken = ensureDrainToken();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;

@@ -8,6 +8,18 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.1] — 2026-10-18
+
+### Fixed
+
+- **`carte` on a fresh install runs setup instead of crashing.** With no config
+  file, the menu booted the gateway immediately and the operator got a stack
+  trace about `CARTETHYIA_DB_MODE` being required — naming an environment
+  variable, not "you have not set this up". It now detects a missing config (or
+  a config with no database mode) and runs setup first, then starts.
+  `cartethyia start` still requires setup to have run, because it is the
+  foreground server command, not the entry point.
+
 ## [2.4.0] — 2026-10-18
 
 ### Added
