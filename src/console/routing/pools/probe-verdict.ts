@@ -58,3 +58,75 @@ export function classifyProviderProbeAnswer(httpStatus: number, body: string): P
     reason: `Reachable; upstream answered ${httpStatus} for the probe body`,
   };
 }
+
+/**
+ * Error codes that mean "this attempt never reached the upstream", not "the
+ * upstream refused this address".
+ *
+ * Every one of them is worth a second attempt, and the reason is the same in
+ * each case: the failure is a property of one socket, not of the egress. A
+ * proxy that has just been dialled for the first time has to resolve, open a
+ * tunnel, and complete a TLS handshake, and any of those steps can be refused
+ * or reset by a middlebox that accepts the very next attempt — which is exactly
+ * the "fails once, works on retry" report. Retiring the pool on the first one
+ * blames the address for a cold-start race.
+ */
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "ECONNECT_TIMEOUT",
+]);
+/** How many `cause` links to follow; wraps are shallow in practice. */
+const PROBE_ERROR_CAUSE_DEPTH = 5;
+
+/**
+ * Whether one probe error should be retried before it becomes a verdict.
+ *
+ * Deliberately narrow: an abort is *our* deadline firing, so retrying it would
+ * spend the whole probe budget on a slow egress, and an unknown error is left
+ * alone rather than guessed at. Only transport codes that describe a single
+ * dead connection qualify.
+ */
+export function isRetryableProbeError(error: unknown): boolean {
+
+  // Walk the `cause` chain: a transport failure is routinely wrapped — the
+  // proxy layer raises `ProxyConnectHandshakeError` whose *message* carries the
+  // real code, with nothing on `code`. Checking only the top error would miss
+  // exactly the failure this exists for.
+  let current: unknown = error;
+  for (let depth = 0; depth < PROBE_ERROR_CAUSE_DEPTH && current !== undefined && current !== null; depth += 1) {
+    if (!(current instanceof Error)) break;
+    if (current.name === "AbortError" || current.name === "TimeoutError") return false;
+    // `code` is not on the base `Error`; narrow before reading it rather than
+    // asserting a shape the runtime may not have.
+    const code: string | undefined =
+      "code" in current && typeof current.code === "string" ? current.code : undefined;
+    if (code !== undefined && RETRYABLE_TRANSPORT_CODES.has(code.toUpperCase())) return true;
+    const message = String(current.message ?? "");
+    // The wrapped code is often only in the message, so match it there too.
+    for (const candidate of RETRYABLE_TRANSPORT_CODES) {
+      if (message.includes(candidate)) return true;
+    }
+    if (
+      message.includes("fetch failed") ||
+      message.includes("socket connection was closed unexpectedly") ||
+      message.includes("other side closed") ||
+      message.startsWith("terminated") ||
+      /connection (?:was|is) closed/i.test(message)
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+

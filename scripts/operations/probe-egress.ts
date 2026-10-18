@@ -45,7 +45,11 @@
 import { createHttpProxyAgent } from "../../src/network/pool/agent";
 import { createValidatedFetch } from "../../src/network/outbound-fetch";
 import { buildProviderProbeRequest, isProbeableProvider } from "../../src/providers/provider-probe";
-import { classifyProviderProbeAnswer, type ProbeVerdict } from "../../src/console/routing/pools/probe-verdict";
+import {
+  classifyProviderProbeAnswer,
+  isRetryableProbeError,
+  type ProbeVerdict,
+} from "../../src/console/routing/pools/probe-verdict";
 import { BUNDLED_PROVIDER_METADATA } from "../../src/providers/provider-metadata";
 
 /** One egress under test, plus how to build its dial. */
@@ -66,6 +70,17 @@ interface ProbeOutcome {
 
 const DEFAULT_CONCURRENCY = 4;
 const PROBE_TIMEOUT_MS = 30_000;
+/**
+ * Attempts per egress for a transport-level failure.
+ *
+ * Three, not two: the first failure is usually the cold dial, and a second
+ * failure that is also transport-shaped is real evidence the egress is down
+ * rather than a second coincidence. A genuine refusal never reaches this loop,
+ * because a 403 is an answer rather than a failure.
+ */
+const PROBE_TRANSPORT_ATTEMPTS = 3;
+/** Linear backoff between attempts; long enough for a reset to settle. */
+const PROBE_RETRY_DELAY_MS = 400;
 
 interface Options {
   readonly providerId: string;
@@ -233,36 +248,51 @@ async function probeOne(
   timeoutMs: number,
 ): Promise<ProbeOutcome> {
   const started = performance.now();
-  try {
-    const agent = target.proxy === undefined ? undefined : createHttpProxyAgent(target.proxy);
-    const dial = createValidatedFetch(agent === undefined ? {} : { agent });
-    const response = await dial(spec.url, {
-      method: "POST",
-      headers: spec.headers,
-      body: JSON.stringify(spec.body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const body = await response.text().catch(() => "");
-    const answer = classifyProviderProbeAnswer(response.status, body);
-    return {
-      label: target.label,
-      verdict: answer.status,
-      httpStatus: response.status,
-      latencyMs: Math.round(performance.now() - started),
-      ...(answer.reason === undefined ? {} : { detail: answer.reason }),
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const timedOut =
-      (error instanceof Error && error.name === "AbortError") ||
-      /timed out|timeout|ETIMEDOUT/i.test(message);
-    return {
-      label: target.label,
-      verdict: "unreachable",
-      latencyMs: Math.round(performance.now() - started),
-      detail: timedOut ? "probe timed out" : message.split("\n")[0]!.slice(0, 120),
-    };
+  let lastError: unknown;
+  // A cold dial is the failed-first-attempt case: the first attempt must build
+  // DNS, the proxy tunnel, and the TLS handshake, and any of those can be
+  // refused or reset once by a middlebox that accepts the next one. Retrying
+  // only transport errors keeps the verdict honest — a real refusal (403
+  // FreeTierError) is an answer, not a failure, and is never retried.
+  for (let attempt = 1; attempt <= PROBE_TRANSPORT_ATTEMPTS; attempt += 1) {
+    try {
+      // A fresh agent per attempt is deliberate: reusing the one that just had
+      // its connection refused would re-enter a socket pool whose state is
+      // exactly what failed.
+      const agent = target.proxy === undefined ? undefined : createHttpProxyAgent(target.proxy);
+      const dial = createValidatedFetch(agent === undefined ? {} : { agent });
+      const response = await dial(spec.url, {
+        method: "POST",
+        headers: spec.headers,
+        body: JSON.stringify(spec.body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const body = await response.text().catch(() => "");
+      const answer = classifyProviderProbeAnswer(response.status, body);
+      return {
+        label: target.label,
+        verdict: answer.status,
+        httpStatus: response.status,
+        latencyMs: Math.round(performance.now() - started),
+        ...(answer.reason === undefined ? {} : { detail: answer.reason }),
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableProbeError(error) || attempt === PROBE_TRANSPORT_ATTEMPTS) break;
+      await new Promise((resolve) => setTimeout(resolve, PROBE_RETRY_DELAY_MS * attempt));
+    }
   }
+  const error = lastError;
+  const message = error instanceof Error ? error.message : String(error);
+  const timedOut =
+    (error instanceof Error && error.name === "AbortError") ||
+    /timed out|timeout|ETIMEDOUT/i.test(message);
+  return {
+    label: target.label,
+    verdict: "unreachable",
+    latencyMs: Math.round(performance.now() - started),
+    detail: timedOut ? "probe timed out" : message.split("\n")[0]!.slice(0, 120),
+  };
 }
 
 const VERDICT_GLYPH: Record<ProbeVerdict, string> = {
