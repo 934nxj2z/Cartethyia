@@ -249,7 +249,13 @@ export function captureProviderExchange(
       method: init?.method ?? "GET",
       url,
       ...(headers === undefined ? {} : { headers }),
-      ...(rawBody === null ? {} : { body: parseCapturedBody(rawBody) }),
+      // Capped the same way the response is. A capture is a diagnostic, and an
+      // unbounded translated request body per attempt — up to `maxAttempts` of
+      // them, all alive until the loop returns — costs more than it can tell
+      // an operator.
+      ...(rawBody === null
+        ? {}
+        : { body: parseCapturedBody(rawBody.slice(0, PROVIDER_CAPTURE_MAX_BYTES)) }),
     };
     const response = await inner(input, init);
     sink.response =

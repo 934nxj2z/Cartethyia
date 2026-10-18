@@ -24,6 +24,12 @@ export interface RuntimeMetricSources {
   readonly ipAbuseKeys: () => number;
   /** Tracked keys in the in-process quota cache tier (0 when Redis-only paths are idle). */
   readonly quotaCacheEntries: () => number;
+
+  /**
+   * Entries in the per-provider model-catalog cache. Bounded, but a count that
+   * sits at the cap means every rebuild is evicting something it needs.
+   */
+  readonly modelCatalogEntries: () => number;
   /**
    * Live in-flight request count. Zero means the gateway is idle, so a
    * synchronous full collection is safe (no request to stall).
@@ -129,6 +135,7 @@ export class RuntimeMetricsSampler {
     metrics.cartethyia_routing_roundrobin_entries.set(roundRobin.provider, { scope: "provider" });
     metrics.cartethyia_ip_abuse_keys.set(this.sources.ipAbuseKeys());
     metrics.cartethyia_quota_cache_entries.set(this.sources.quotaCacheEntries());
+    metrics.cartethyia_model_catalog_entries.set(this.sources.modelCatalogEntries());
 
     this.checkPressure(memory.rss);
     this.checkIdleReclaim(memory.rss);

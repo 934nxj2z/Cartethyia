@@ -14,10 +14,14 @@ import { cachedRead } from "../../console/shared/read-through-cache";
 
 /**
  * Provider entries retained before the least-recently-used catalog is evicted.
- * One entry per provider is tiny, but an unbounded cache would pin every
- * catalog for the process lifetime.
+ *
+ * Must clear the bundled provider count — there are **73** of them — because a
+ * cap below it thrashes: a catalog rebuild evicts a provider it is about to
+ * need again, so `bundledModelCatalog()` re-imports a module it already had.
+ * Sized above that count with room for BYOK rows. One entry is a model list, so
+ * the bound still matters; it just has to be the right one.
  */
-export const MODEL_CATALOG_CACHE_MAX_ENTRIES = 64;
+export const MODEL_CATALOG_CACHE_MAX_ENTRIES = 128;
 
 /**
  * Cross-instance tier lifetime. Static provider catalogs change only on a
@@ -81,4 +85,15 @@ export function getCachedModels(
 /** Drops all cached catalogs. Test-only: keeps isolated tests from sharing state. */
 export function resetModelCatalogCacheForTesting(): void {
   catalogCache.clear();
+}
+
+/**
+ * Live entry count, for the `/metrics` gauge.
+ *
+ * Exported so a rebuild that saturates the cap is visible from outside the
+ * process: before this, every in-process cache except the quota tier was
+ * invisible, and growth could only be found with a heap dump.
+ */
+export function modelCatalogCacheSize(): number {
+  return catalogCache.size;
 }

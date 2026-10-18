@@ -62,6 +62,7 @@ import {
 } from "../workers/buddy-growth-tasks";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { quotaCacheSize } from "../console/quota/cache";
+import { modelCatalogCacheSize } from "../providers/operations/model-catalog-cache";
 import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
@@ -319,6 +320,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     routingRoundRobinEntries: () => routingEngine.roundRobinEntries(),
     ipAbuseKeys: () => (ipStore instanceof InMemoryIpAbuseStore ? ipStore.keyCount() : 0),
     quotaCacheEntries: () => quotaCacheSize(),
+    modelCatalogEntries: () => modelCatalogCacheSize(),
     // Late-bound via bindInFlight once the request state store exists.
     inFlight: () => 0,
   });

@@ -166,6 +166,16 @@ const decoder = new TextDecoder();
 
 const FLAG_REASONING = 1;
 const FLAG_TOOL_CALL = 2;
+
+/**
+ * Ceiling on {@link PackedCatalog}'s row-metadata cache.
+ *
+ * Sized well under the catalog's 8941 rows: a gateway resolves a working set of
+ * models, not the whole catalog, and every entry is rebuilt from the blob in a
+ * few typed-array reads. Holding more than this trades RAM for reads measured
+ * in nanoseconds.
+ */
+export const METADATA_CACHE_MAX_ENTRIES = 2048;
 const SLASH = 0x2f;
 
 /** Lowercases and trims an ASCII id into the exact bytes the blob stores. */
@@ -182,6 +192,12 @@ export function lowerAscii(value: string): Uint8Array {
  * Holds typed-array views (zero-copy) and nothing else. Metadata objects are
  * created only for rows a caller actually resolves, and cached, so a long-lived
  * process pays for the handful of ids it queried rather than for all 8090.
+ *
+ * That cache is **bounded**: an entry is rebuilt from the blob in a few
+ * typed-array reads, so holding one at the cost of another is never worth it,
+ * and an unbounded memo over 8941 rows is memory the operator pays for at idle
+ * whether or not those rows are ever queried again. Bounded LRU, oldest
+ * insertion evicted first — the same shape the rest of the codebase uses.
  */
 export class PackedCatalog {
   private readonly bytes: Uint8Array;
@@ -399,6 +415,10 @@ export class PackedCatalog {
       reasoning: (flags & FLAG_REASONING) !== 0,
       toolCall: (flags & FLAG_TOOL_CALL) !== 0,
     };
+    if (this.metadataCache.size >= METADATA_CACHE_MAX_ENTRIES) {
+      const oldest = this.metadataCache.keys().next().value;
+      if (oldest !== undefined) this.metadataCache.delete(oldest);
+    }
     this.metadataCache.set(index, metadata);
     return metadata;
   }

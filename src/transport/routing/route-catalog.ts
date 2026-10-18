@@ -149,6 +149,42 @@ export function buildCapabilityProfile(row: {
   };
 }
 
+/**
+ * The capability profile for one model row, memoized across rebuilds.
+ *
+ * Bounded LRU keyed by `providerId/modelId`: the value is a pure function of
+ * the row's metadata, so two rebuilds that see the same row get the same object
+ * instead of two identical ones. The bound keeps a long-lived process from
+ * pinning one profile per row it has ever seen — a model deleted from the
+ * catalog must not leave its profile behind forever.
+ */
+const CAPABILITY_PROFILE_CACHE_MAX_ENTRIES = 4096;
+const capabilityProfileCache = new Map<string, Record<string, boolean>>();
+
+function capabilityProfileFor(row: {
+  modalities: unknown;
+  reasoning: boolean;
+  toolCall: boolean;
+  providerId: string;
+  modelId: string;
+}): Record<string, boolean> {
+  const key = `${row.providerId}/${row.modelId}`;
+  const cached = capabilityProfileCache.get(key);
+  if (cached !== undefined) return cached;
+  const profile = buildCapabilityProfile(row);
+  if (capabilityProfileCache.size >= CAPABILITY_PROFILE_CACHE_MAX_ENTRIES) {
+    const oldest = capabilityProfileCache.keys().next().value;
+    if (oldest !== undefined) capabilityProfileCache.delete(oldest);
+  }
+  capabilityProfileCache.set(key, profile);
+  return profile;
+}
+
+/** Live memo size, for tests and the metrics gauge. */
+export function capabilityProfileCacheSize(): number {
+  return capabilityProfileCache.size;
+}
+
 /** Resolves route identity only for bundled adapters without a native User-Agent builder. */
 export function resolveRouteUserAgent(
   providerId: string,
@@ -527,7 +563,12 @@ class RouteCatalogRepository {
       const providerTenantId = providerTenantById.get(model.providerId);
       if (providerTenantId === undefined) continue;
       const accounts = accountsByProvider.get(model.providerId) ?? [];
-      const capabilityProfile = buildCapabilityProfile(model);
+      // One profile per model row, memoized across snapshot rebuilds. The
+      // profile is derived purely from the row's metadata, is never mutated
+      // (grep finds no write to `capability_profile`), and is shared by every
+      // candidate this row fans out to — so a rebuild no longer constructs a
+      // fresh object per model on top of the fan-out it already had.
+      const capabilityProfile = capabilityProfileFor(model);
       if (accounts.length === 0) {
         const providerRequiresAccount = requiresAccountById.get(model.providerId) ?? true;
         if (!providerRequiresAccount) {
