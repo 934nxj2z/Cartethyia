@@ -36,7 +36,12 @@ afterEach(() => {
 test("chooseFromMenu returns -1 when stdin is not a TTY", () => {
   // Under `bun test` stdin is not a TTY, so this is the real non-interactive
   // path rather than a mock: the menu must not block waiting for a keypress.
-  expect(chooseFromMenu("title", ["a", "b"])).resolves.toBe(-1);
+  expect(
+    chooseFromMenu("title", [
+      { kind: "action", label: "a" },
+      { kind: "action", label: "b" },
+    ]),
+  ).resolves.toBe(-1);
 });
 
 test("the drain token round-trips through the runtime state file", () => {

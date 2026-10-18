@@ -8,13 +8,14 @@ import { isNewerRelease } from "../../src/console/updates/version-compare";
 import { PACKAGE_ROOT, resolvePackagePath, resolveUserConfigDir } from "../../src/config/package-paths";
 import { resolvePort } from "../../src/config/runtime";
 import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
-import { chooseFromMenu } from "./menu";
+import { chooseFromMenu, confirmByTyping, confirmStep } from "./menu";
 import {
   clearPersistedDrainToken,
   readPersistedDrainToken,
   writePersistedDrainToken,
 } from "./runtime-state";
 import { npmUpdate, readInstalledVersion, readLatestPublishedVersion } from "./version";
+import { renderWordmark } from "./wordmark";
 
 process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
 
@@ -154,9 +155,16 @@ async function startGateway(port: number, drainToken: string): Promise<Bun.Subpr
       // rendered but never received Enter.
       stdin: "ignore",
       stdout: logFd ?? "ignore",
-      stderr: "inherit",
+      // stderr goes to the same file: "inherit" ties the gateway to the
+      // terminal, so closing that terminal took the gateway down with it and
+      // "Hide to tray" left nothing running.
+      stderr: logFd ?? "ignore",
+      // Detached so the gateway outlives the process that started it. Without
+      // this, exiting the menu kills the gateway even though it was unref'd.
+      detached: true,
     },
   );
+  child.unref();
   const startupController = new AbortController();
   const ready = (async (): Promise<void> => {
     const deadline = Date.now() + 30_000;
@@ -311,10 +319,6 @@ async function startMenu(): Promise<void> {
 
   while (running) {
     const upToDate = latestVersion === null || !isNewerRelease(currentVersion, latestVersion);
-    const latestLabel =
-      latestVersion === null
-        ? "Latest published version: unavailable"
-        : `Latest published version: ${latestVersion}`;
     const updateLabel =
       latestVersion === null
         ? "Check for updates"
@@ -324,7 +328,31 @@ async function startMenu(): Promise<void> {
 
     const actions: readonly (() => Promise<void>)[] = [
       async () => openUrl(dashboardUrl),
-      async () => openUrl(settingsUrl),
+      async () => {
+        // Deleting the console account is the only real password recovery:
+        // /change-password needs the current password, and first-boot setup
+        // only runs when no user exists. Removing the user puts the wizard
+        // back. Providers, keys, and routing are untouched.
+        console.log("");
+        console.log("This deletes every console account and its sessions.");
+        console.log("The next visit to /console asks you to create a new one.");
+        console.log("Providers, API keys, and routing are not touched.");
+        console.log("");
+        if (!(await confirmStep("Continue with the reset?"))) {
+          console.log("Cancelled.");
+          return;
+        }
+        if (!(await confirmByTyping("RESET", "Confirm deleting the console account"))) {
+          console.log("Cancelled.");
+          return;
+        }
+        const status = await resetConsoleAccount(port, drainToken);
+        console.log(
+          status === 0
+            ? `Console account removed. Open ${dashboardUrl} to create a new one.`
+            : "Reset failed; see the gateway log.",
+        );
+      },
       async () => openUrl(settingsUrl),
       async () => openUrl(repositoryUrl),
       async () => {
@@ -334,9 +362,10 @@ async function startMenu(): Promise<void> {
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
-        // Hand the running gateway over to the tray instead of stopping it:
-        // the token stays persisted so `cartethyia stop` still reaches it, and
-        // `detached` keeps the tray alive after this process exits.
+        // Hand the gateway to a detached tray, then let this process go. The
+        // tray adopts the running gateway (CARTETHYIA_TRAY_ADOPT_RUNNING) so it
+        // does not start a second one on the same port; the drain token stays
+        // persisted so `cartethyia stop` still reaches it.
         running = false;
         stopping = true;
         const tray = spawn(
@@ -351,7 +380,8 @@ async function startMenu(): Promise<void> {
           },
         );
         tray.unref();
-        console.log(`Cartethyia keeps running at ${dashboardUrl} — the tray icon now owns it.`);
+        console.log(`Cartethyia keeps running at ${dashboardUrl}.`);
+        console.log("The tray icon now owns it. Stop it with: cartethyia stop");
       },
       async () => {
         running = false;
@@ -359,15 +389,16 @@ async function startMenu(): Promise<void> {
     ];
 
     const choice = await chooseFromMenu(
-      [`Cartethyia ${currentVersion} \u2014 running at ${dashboardUrl}`, latestLabel],
+      [...renderWordmark(), `Cartethyia ${currentVersion} \u00b7 ${dashboardUrl}`],
       [
-        `Open Console \u00b7 ${dashboardUrl}`,
-        "Reset password",
-        "Backup & Restore",
-        "Visit repository",
-        updateLabel,
-        "Hide to tray",
-        "Exit",
+        { kind: "action", label: "Open Console", hint: `browser \u00b7 ${dashboardUrl}` },
+        { kind: "action", label: "Reset console password", hint: "deletes the account" },
+        { kind: "action", label: "Backup & Restore", hint: "export or import" },
+        { kind: "action", label: "Visit repository", hint: "github.com/risunCode/cartethyia" },
+        { kind: "action", label: updateLabel, hint: upToDate ? "no update available" : "installs now" },
+        { kind: "action", label: "Hide to tray", hint: "keep the gateway running" },
+        { kind: "rule" },
+        { kind: "action", label: "Exit", hint: "stop the gateway" },
       ],
     );
     if (choice === -1) break;
@@ -378,9 +409,36 @@ async function startMenu(): Promise<void> {
 }
 
 /**
- * Stops a gateway left running by "Hide to background". That process is not a
- * child of this one, so it cannot be signalled directly — the only handle is
- * the loopback drain endpoint, which needs the drain token the start wrote.
+ * Posts the console-account reset to the running gateway.
+ *
+ * The reset has to go through the gateway, not the database file, because the
+ * gateway holds the connection and the schema is dialect-dependent. Returns 0
+ * on success and 1 on any failure so the caller can print one line either way.
+ */
+async function resetConsoleAccount(port: number, token: string): Promise<number> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/admin/reset-console-account`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-drain-token": token },
+      body: JSON.stringify({ confirm: "RESET" }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.error(`The gateway refused the reset (HTTP ${response.status}). ${detail}`.trim());
+      return 1;
+    }
+    return 0;
+  } catch {
+    console.error("Could not reach the gateway. Is it still running?");
+    return 1;
+  }
+}
+
+/**
+ * Stops a gateway left running by "Hide to tray". That process is not a child
+ * of this one, so it cannot be signalled directly — the only handle is the
+ * loopback drain endpoint, which needs the drain token the start wrote.
  */
 async function stopRunningGateway(): Promise<number> {
   const port = resolvePort();
