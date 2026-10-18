@@ -10,7 +10,7 @@
  * Deliberately not a request-path store: this is written by a maintenance pass
  * and read by the console. Nothing here can fail a dispatch.
  */
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { buddyUsageSnapshots } from "../../../persistence/schema";
 import type { BuddyUsageRow } from "./buddy-usage-shared";
@@ -22,6 +22,11 @@ export interface BuddyUsageSnapshotRow extends BuddyUsageRow {
 
 /** Days of usage retained. The upstream's own window is 30. */
 const RETENTION_DAYS = 30;
+
+/** Oldest day a stored bucket can hold, as the `YYYY-MM-DD` key the table uses. */
+function retentionCutoff(now: Date = new Date()): string {
+  return new Date(now.getTime() - RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+}
 
 /**
  * Upserts one account's usage buckets.
@@ -72,7 +77,31 @@ export async function saveBuddyUsageSnapshots(
 }
 
 /**
- * Reads one account's stored usage, newest day first.
+ * Most (day, model) buckets one day can hold, used only to bound the read.
+ *
+ * The renderer keeps {@link DEFAULT_LIMIT_PER_ACCOUNT} entries per account plus
+ * every bucket of the newest day, so this is a ceiling on a pathological table
+ * rather than a number the page depends on. Set well above any real model count
+ * so the cap can only ever trigger on a table that grew without pruning.
+ */
+const MODELS_PER_DAY_CEILING = 64;
+
+/** Buckets per account the console renders. */
+const DEFAULT_LIMIT_PER_ACCOUNT = 30;
+
+/**
+ * Reads each account's stored usage, newest day first.
+ *
+ * Bounded on both axes, because it used to be bounded on neither: with no day
+ * filter and no `LIMIT`, an account fetched every bucket it had ever stored
+ * (~1500 rows for a 30-day window) to render 30 of them, on the route the
+ * dashboard polls.
+ *
+ * - The day window is semantic, not a truncation: {@link pruneBuddyUsageSnapshots}
+ *   already drops everything older, so no row it excludes could have been
+ *   rendered anyway.
+ * - The row ceiling is the backstop. It is sized per account, so one large
+ *   account cannot starve the others in a shared `LIMIT`.
  *
  * `numeric` comes back from the driver as a string, so the credit is parsed
  * rather than trusted; an unparseable row is reported as 0 instead of being
@@ -81,7 +110,7 @@ export async function saveBuddyUsageSnapshots(
 export async function readBuddyUsageSnapshots(
   db: CartethyiaDatabase,
   accountIds: readonly string[],
-  limitPerAccount = 30,
+  limitPerAccount = DEFAULT_LIMIT_PER_ACCOUNT,
 ): Promise<Map<string, readonly BuddyUsageSnapshotRow[]>> {
   const result = new Map<string, BuddyUsageSnapshotRow[]>();
   if (accountIds.length === 0) return result;
@@ -102,8 +131,14 @@ export async function readBuddyUsageSnapshots(
         syncedAt: buddyUsageSnapshots.syncedAt,
       })
       .from(buddyUsageSnapshots)
-      .where(inArray(buddyUsageSnapshots.accountId, [...accountIds]))
-      .orderBy(desc(buddyUsageSnapshots.dayKey));
+      .where(
+        and(
+          inArray(buddyUsageSnapshots.accountId, [...accountIds]),
+          gte(buddyUsageSnapshots.dayKey, retentionCutoff()),
+        ),
+      )
+      .orderBy(desc(buddyUsageSnapshots.dayKey))
+      .limit(accountIds.length * limitPerAccount * MODELS_PER_DAY_CEILING);
   } catch {
     return result;
   }

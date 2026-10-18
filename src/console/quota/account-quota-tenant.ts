@@ -29,6 +29,7 @@ import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
   checkinAttemptedToday,
+  checkinAttemptedTodayBatch,
   dailyCheckinEgressForPass,
   markCheckinAttempted,
 } from "../../workers/daily-checkin";
@@ -334,12 +335,14 @@ export function registerAccountQuotaTenantRoutes(
       // request; only check-in-capable accounts can carry one, so only they
       // are read.
       const checkinCandidates = rows.filter((row) => supportsAccountCheckin(row.providerId));
-      const checkinAttempted = new Map<string, boolean>();
-      await Promise.all(
-        checkinCandidates.map(async (row) => {
-          checkinAttempted.set(row.id, await todayCheckinAttempted(db, redis, row.id));
-        }),
-      );
+      // One batched read for the whole page. Per-account reads made opening
+      // this route scale with the account count — a round trip each, on the
+      // route the dashboard polls — for a marker that is one key per account.
+      const checkinAttempted = await checkinAttemptedTodayBatch({
+        db,
+        redis,
+        accountIds: checkinCandidates.map((row) => row.id),
+      });
       // Real credit deductions, read from the stored snapshots rather than from
       // the upstream: the page renders every account at once, and re-hitting the
       // billing endpoint per account would make opening it scale with the

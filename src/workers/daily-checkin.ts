@@ -252,6 +252,68 @@ export async function markCheckinAttempted(args: {
  * Absent or unreadable means unknown, never "not claimed": the sweep may
  * simply not have reached the account yet.
  */
+/**
+ * The same question as {@link checkinAttemptedToday}, asked once for many
+ * accounts.
+ *
+ * The console answers it for every account on the page, and doing that one
+ * account at a time cost a round trip per account — one `GET` to Redis, or one
+ * `SELECT` to Postgres — on the route the dashboard polls. This is one `MGET`
+ * when Redis is present, or one `SELECT ... WHERE day_key = ? AND account_id
+ * IN (...)` when it is not, which is the same shape the release path already
+ * uses.
+ *
+ * An account absent from the result was not attempted, matching the single
+ * read's "absent means unknown, never claimed".
+ */
+export async function checkinAttemptedTodayBatch(args: {
+  readonly db: CartethyiaDatabase | undefined;
+  readonly redis: RedisClient | undefined;
+  readonly accountIds: readonly string[];
+  readonly now?: () => Date;
+}): Promise<Map<string, boolean>> {
+  const attempted = new Map<string, boolean>();
+  if (args.accountIds.length === 0) return attempted;
+  const dayKey = checkinDayKey(args.now?.() ?? new Date());
+  // A client without MGET (the memory backend) takes the DB path below, or
+  // reports unknown when there is no DB either.
+  if (args.redis !== undefined && typeof args.redis.mget === "function") {
+    try {
+      // One command for every account: one key per account is small, and a
+      // single `MGET` keeps the cost flat instead of linear in the count.
+      const values = (await args.redis.mget(
+        ...args.accountIds.map((id) => ledgerKey(dayKey, id)),
+      )) as Array<string | null>;
+      args.accountIds.forEach((accountId, index) => {
+        attempted.set(accountId, values[index] != null);
+      });
+      return attempted;
+    } catch {
+      // Fall through: an unreadable ledger means unknown, and the DB path is
+      // the only other place the marker could be.
+    }
+  }
+  if (args.db === undefined) return attempted;
+  try {
+    const rows = await args.db
+      .select({ accountId: dailyCheckinLedger.accountId })
+      .from(dailyCheckinLedger)
+      .where(
+        and(
+          eq(dailyCheckinLedger.dayKey, dayKey),
+          inArray(dailyCheckinLedger.accountId, [...args.accountIds]),
+        ),
+      );
+    const present = new Set(rows.map((row) => row.accountId));
+    for (const accountId of args.accountIds) {
+      attempted.set(accountId, present.has(accountId));
+    }
+  } catch {
+    // Unknown, per account, as above.
+  }
+  return attempted;
+}
+
 export async function checkinAttemptedToday(args: {
   readonly db: CartethyiaDatabase | undefined;
   readonly redis: RedisClient | undefined;
