@@ -29,10 +29,12 @@ Usage:
   cartethyia stop           stop a gateway left running in the background
   cartethyia update
 
-carte starts the gateway and opens a menu driven by the arrow keys and Enter:
-open the console, open settings, hide to the background, check for updates, or
-exit. It needs no desktop environment, so it works over SSH and headless.
+carte starts the gateway in the background and leaves only the console menu on
+your terminal — Open Console, Reset password, Backup & Restore, Visit
+repository, Update, Exit. Arrow keys and Enter; no desktop environment needed,
+so it works over SSH and headless. Exiting the menu drains the gateway.
 carte --tray uses a system-tray icon instead, which needs a graphical session.
+Stop a gateway whose terminal is gone with "cartethyia stop".
 Setup explains Lite (embedded SQLite) and Full (external PostgreSQL), then saves
 configuration under the current user's Cartethyia config directory.
 `;
@@ -271,63 +273,74 @@ async function startMenu(): Promise<void> {
   const drainToken = randomBytes(32).toString("hex");
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
   const settingsUrl = `${dashboardUrl}/settings`;
+  const repositoryUrl = "https://github.com/risunCode/cartethyia";
   const currentVersion = await readInstalledVersion();
 
+  // The gateway is detached and holds no stdio, so this process owns the
+  // terminal outright: nothing else can consume the keys the menu needs. The
+  // drain token is persisted before the menu opens because `cartethyia stop`
+  // runs in a later shell and has no other handle on this process.
   const gateway = await startGateway(port, drainToken);
+  gateway.unref();
+  writePersistedDrainToken(drainToken);
+
   let stopping = false;
   const shutDown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     await stopGateway(gateway, port, drainToken);
+    clearPersistedDrainToken();
   };
   process.once("SIGINT", () => void shutDown());
   process.once("SIGTERM", () => void shutDown());
 
-  const latest = await readLatestPublishedVersion();
-  const updateLabel =
-    latest !== null && isNewerRelease(currentVersion, latest)
-      ? `Update to ${latest}`
-      : "Check for updates";
+  let latestVersion = await readLatestPublishedVersion();
+  let running = true;
 
-  const options = [
-    `Open Console \u00b7 ${dashboardUrl}`,
-    "Settings \u00b7 backup & restore, reset password",
-    "Hide to background and keep running",
-    updateLabel,
-    "Exit",
-  ] as const;
+  while (running) {
+    const upToDate = latestVersion === null || !isNewerRelease(currentVersion, latestVersion);
+    const latestLabel =
+      latestVersion === null
+        ? "Latest published version: unavailable"
+        : `Latest published version: ${latestVersion}`;
+    const updateLabel =
+      latestVersion === null
+        ? "Check for updates"
+        : upToDate
+          ? `Up to date (${currentVersion})`
+          : `Update to ${latestVersion}`;
 
-  console.log(`Cartethyia ${currentVersion} is running at ${dashboardUrl}`);
-  for (;;) {
+    const actions: readonly (() => Promise<void>)[] = [
+      async () => openUrl(dashboardUrl),
+      async () => openUrl(settingsUrl),
+      async () => openUrl(settingsUrl),
+      async () => openUrl(repositoryUrl),
+      async () => {
+        if (upToDate) return;
+        const code = await npmUpdate();
+        console.log(code === 0 ? "Update finished." : "Update failed.");
+        latestVersion = await readLatestPublishedVersion();
+      },
+      async () => {
+        running = false;
+      },
+    ];
+
     const choice = await chooseFromMenu(
-      `Cartethyia ${currentVersion} \u2014 running at ${dashboardUrl}`,
-      options,
+      [`Cartethyia ${currentVersion} \u2014 running at ${dashboardUrl}`, latestLabel],
+      [
+        `Open Console \u00b7 ${dashboardUrl}`,
+        "Reset password",
+        "Backup & Restore",
+        "Visit repository",
+        updateLabel,
+        "Exit",
+      ],
     );
-    if (choice === -1 || choice === 4) break;
-    if (choice === 0) {
-      await openUrl(dashboardUrl);
-      continue;
-    }
-    if (choice === 1) {
-      await openUrl(settingsUrl);
-      continue;
-    }
-    if (choice === 2) {
-      // The gateway is a detached child, so returning here leaves it running
-      // while this process lets go of the terminal. Persist the drain token
-      // now, because `cartethyia stop` runs in a later shell and has no other
-      // way to reach this process.
-      writePersistedDrainToken(drainToken);
-      console.log(`Cartethyia keeps running at ${dashboardUrl}.`);
-      console.log("Stop it later with: cartethyia stop");
-      return;
-    }
-    if (choice === 3) {
-      const code = await npmUpdate();
-      console.log(code === 0 ? "Update finished." : "Update failed.");
-    }
+    if (choice === -1) break;
+    const action = actions[choice];
+    if (action) await action();
   }
-  clearPersistedDrainToken();
   await shutDown();
 }
 

@@ -1,19 +1,29 @@
 /**
  * A single-select menu driven by the arrow keys and Enter, built on stdin raw
  * mode so no menu dependency is added. It only reads keys and returns an
- * index; the caller keeps owning the gateway process.
+ * index; the caller keeps owning whatever the menu acts on.
+ *
+ * `header` is rendered above the list — the caller passes lines such as the
+ * running version and the URL, so the menu never has to know what it is
+ * driving. It accepts one string or several.
  *
  * Returns -1 when stdin is not a TTY (piped, CI, or a non-interactive run) so
  * callers can fall back without blocking on input that will never arrive.
  */
-export function chooseFromMenu(title: string, options: readonly string[]): Promise<number> {
+export function chooseFromMenu(
+  header: string | readonly string[],
+  options: readonly string[],
+): Promise<number> {
   const stdin = process.stdin;
   if (!stdin.isTTY) return Promise.resolve(-1);
   const { promise, resolve } = Promise.withResolvers<number>();
+  const headerLines = typeof header === "string" ? [header] : header;
   let index = 0;
 
   const render = (): void => {
-    process.stdout.write(`\u001b[2J\u001b[H${title}\n\n`);
+    process.stdout.write("\u001b[2J\u001b[H");
+    for (const line of headerLines) process.stdout.write(`${line}\n`);
+    process.stdout.write("\n");
     options.forEach((option, position) => {
       const marker = position === index ? "\u2192" : " ";
       process.stdout.write(`  ${marker} ${option}\n`);

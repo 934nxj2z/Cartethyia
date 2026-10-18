@@ -416,11 +416,16 @@ export async function setup(): Promise<void> {
   if (process.env.CARTETHYIA_CONFIG_DIR) {
     console.log("Next — start Cartethyia:");
     console.log("");
-    console.log("  cartethyia tray");
-    console.log("    Runs the gateway with a system-tray menu (Open Dashboard, Update, Visit Repository, Exit).");
+    console.log("  carte");
+    console.log("    Starts the gateway in the background and opens the console menu");
+    console.log("    (Open Console, Reset password, Backup & Restore, Visit repository,");
+    console.log("    Update, Exit). Arrow keys and Enter; no desktop environment needed.");
     console.log("");
     console.log("  cartethyia start");
-    console.log("    Runs the gateway in this terminal without the tray.");
+    console.log("    Runs the gateway in this terminal, logs in the foreground.");
+    console.log("");
+    console.log("  cartethyia tray");
+    console.log("    Same gateway, but with a system-tray icon instead of the menu.");
   } else {
     console.log("Next — pick one:");
     console.log("");

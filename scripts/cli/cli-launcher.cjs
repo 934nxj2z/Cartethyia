@@ -72,7 +72,18 @@ if (trayMode) {
       fs.unlinkSync(startupSignalPath);
     } catch {}
     if (error) {
-      console.error(`Cartethyia failed to start: ${error.message}`);
+      // `error.message` can be an empty string when the failure came from a
+      // signal rather than a thrown message, which printed as a bare
+      // "Cartethyia failed to start:" with no cause. Fall back to the code and
+      // name what usually causes it.
+      const detail =
+        error.message && error.message.trim() !== ""
+          ? error.message
+          : `the process exited without a message (code ${child.exitCode ?? "unknown"})`;
+      console.error(`Cartethyia failed to start: ${detail}`);
+      console.error(
+        "If another Cartethyia is already running on this port, stop it with `cartethyia stop` first.",
+      );
       process.exitCode = 1;
       if (child.exitCode === null) child.kill();
       return;
