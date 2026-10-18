@@ -8,6 +8,30 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.4] — 2026-10-18
+
+### Fixed
+
+- The **menu now receives Enter.** `carte` rendered its menu but never got a
+  second keypress: the gateway was spawned with `stdin: "inherit"`, so it held
+  the descriptor and swallowed everything after the first key. The gateway
+  does not read stdin and the menu is the only consumer, so it now spawns
+  with `stdin: "ignore"`. Arrow keys move the selection and Enter chooses.
+
+### Changed
+
+- `scripts/cli/cli.ts` (794 lines) is split by responsibility: `menu.ts`
+  owns key capture, `runtime-state.ts` owns the `runtime.json` drain token,
+  and `version.ts` owns the installed/published version and `npm update`.
+  No command or flag changes.
+- `scripts/media.ts` moves to `scripts/operations/media.ts`, beside the other
+  provider-facing operations. Run it as `bun run scripts/operations/media.ts`.
+- `scripts/how-to-gen-media.md` is deleted; nothing referenced it.
+- `bun run test --scope scripts` is a new scope covering `test/scripts/`. It
+  pins the three CLI behaviours that regressed in 2.3.x: the non-interactive
+  menu guard, the drain-token round-trip, and a corrupt state file reading as
+  "no background gateway".
+
 ## [2.3.3] — 2026-10-18
 
 ### Added
