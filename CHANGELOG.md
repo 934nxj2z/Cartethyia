@@ -8,6 +8,105 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Console JSON responses carry a strong `ETag` and answer `304`.** A dashboard
+  poll for an unchanged window now costs a conditional request instead of the
+  whole payload — roughly 200 bytes instead of 8.8 KiB to 150 KiB per poll. The
+  cached usage endpoints (summary, chart, by-dimension, cache, requests) and
+  `/console/api/system/health` all participate. Health is now cached on the same
+  10-second Redis read-through as its siblings; it previously re-parsed 24
+  hourly telemetry files on every page load.
+
+- **Dashboard assets are precompressed at build time.** `dashboard/vite.config.ts`
+  emits a `.gz` beside every built text asset (gzip level 9, paid once per
+  deploy) and writes `dist/dashboard/precompressed-assets.json`. The gateway
+  serves the `.gz` when the client offered gzip, with `vary: accept-encoding`
+  and the same immutable cache header; a build without them still serves the
+  plain file.
+
+- **Two indexes** for the tenant-scoped provider reads:
+  `providers_tenant_id_idx` (migration `0013`) and
+  `provider_accounts_tenant_id_idx` (migration `0014`), in both dialects.
+  Neither table had an index serving the bare `tenant_id IS NULL OR tenant_id
+  = ?` that the provider list and the account listing use.
+
+### Changed
+
+- **gzip now applies only where it said it did.** The compression wrapper is
+  scoped by a path allowlist (`/console/api/` and `/metrics`) inside
+  `gzipResponse`. Elysia merges a child instance's `hoc` into the root app, so
+  the wrapper was running for every route in the process — `/v1/models` was
+  being compressed as a side effect, contradicting the module's own docstring.
+  `/v1/*` is now left alone. Responses with no body, and bodies over a new
+  1 MiB ceiling, are also passed through: the ceiling bounds the synchronous
+  `gzipSync` stall on a multi-megabyte backup export.
+
+- **Background work is less frequent.** Measured on an idle gateway with no
+  traffic, PostgreSQL transactions per 5 minutes fell from **138 to 56** (about
+  28/min to 11/min). Six buddy growth tasks move from hourly
+  to daily (each is a once-per-day claim, already ledger-guarded, so 23 of 24
+  passes found nothing); `buddy-trial` 6 h → 24 h; `account-enrichment-sweep`
+  30 s → 10 min; `console-session-sweep` 1 h → 12 h (sessions live 48 h);
+  `client-version-monitor` 15 min → 30 min, matching its own resolver cache
+  TTL; `pool-agent-sweep` 1 min → 5 min. `quota-refresh-sweep` refreshes
+  entries at least 8 minutes old instead of 4 — half the 15-minute cache TTL,
+  so an account is refreshed about twice per window rather than three times.
+
+- **The share stats rollup is cached for 10 s, not 2 s**, and the share SSE tick
+  moves to 10 s to match. At 2 s the cache expired on every tick, so every push
+  re-parsed the retained telemetry window.
+
+- **The catalog re-seed is gated on a revision signal.** Every snapshot rebuild
+  used to re-run the bundled catalog seed — a `DELETE` per provider plus a full
+  upsert — and `account-health-sweep` invalidates the snapshot on any cooldown
+  recovery, so a 30-second timer could push that onto the next proxy request.
+  The re-seed now runs only when a provider was registered, edited, or retired.
+
+- **The dashboard reuses cached data more aggressively.** The default
+  `staleTime` rises from 10 s to 60 s, and to 5 minutes for the CLI tool
+  registry and runtime settings. Hover prefetch now targets what each
+  destination renders (settings and keys, providers, pools) rather than
+  `system.health`, which none of those pages display.
+
+- **The dashboard persists a narrow slice of its cache** to IndexedDB: session,
+  provider catalog, per-provider models, CLI tool registry, and runtime
+  settings. Account, credential, key, share, audit, quota, and payload reads are
+  never persisted, so the snapshot holds no unmasked values at rest. Logout and
+  401/403 clear the persisted snapshot alongside the in-memory cache.
+
+### Fixed
+
+- **`GET /console/api/backup/export?compressed=1` is no longer double-encoded.**
+  The route declares an opt-out instead of `content-encoding: gzip`: the bytes
+  are base64 of a gzip stream, and a client told "this is gzip" tried to inflate
+  the base64 text and failed. The compressed download works again.
+- `/console/api/system/usage/requests` now honours `limit` on every page, not
+  only the first: a cursor page used to fetch the whole retention window.
+- Single-event detail reads no longer parse the retention window to find one row.
+- The per-account check-in marker is read in one batch (`MGET`, or one
+  `WHERE account_id IN (...)`) instead of one round trip per account.
+- Provider deletion bumps the catalog revision, so the next snapshot rebuild
+  prunes the deleted provider's models.
+- **Two streaming-contract tests no longer hang.** They waited for the provider
+  generator to advance before issuing the read that would let it advance: the
+  stream is demand-driven, so the generator parks after each chunk until the
+  next pull. Both now keep a second read outstanding — still never cancelled,
+  which is the property under test — and each passes in about a second instead
+  of timing out at 15 s. No production code changed; the deadlock was in the
+  test.
+- **Built assets are now recognised as hashed, so they cache correctly.** The
+  filename check only matched the old `app.a1b2c3d4.js` spelling and never the
+  hyphenated `app-BCnqn3N3.js` that Vite actually emits — measured against a
+  real build it matched **0 of 288 files**. Every bundle was therefore served
+  with a one-hour revalidating header instead of `immutable`, so the browser
+  re-downloaded the whole dashboard after every deploy, and no asset was served
+  from its precompressed sibling. Both separators are now matched, with a
+  generated-looking check so plain words like `console-backgrounds.jpg` are
+  still excluded.
+
 ## [2.4.6] — 2026-10-18
 
 ### Changed
