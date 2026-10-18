@@ -59,12 +59,3 @@ cartethyia-backup-*.json
 # Visual regression baseline captured by scripts/dev/visual-baseline.ts.
 # A measurement artifact, not a source of truth — regenerate, do not review.
 dashboard/visual/
-
-# Memory inspection notes: local working material for a proposal under review,
-# not a committed finding. Kept out of the public mirror deliberately — the
-# proposal enumerates unfixed resource bounds.
-documentation/research/memory-inspection-2026-10-19.md
-documentation/research/memory-proposal-2026-10-19.md
-documentation/research/memory-probe.ts
-documentation/research/memory-load.ts
-documentation/research/memory-snapshot-size.ts
