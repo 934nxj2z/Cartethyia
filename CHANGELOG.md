@@ -51,6 +51,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The gateway dies with the menu.** Ctrl-C used to leave it running, so the
+  next `carte` reported "already running on port 12800". The gateway was
+  spawned detached and unref'd, and `kill()` from an exit handler does not stop
+  a detached child on Windows — measured: the call ran and the gateway kept
+  serving. It is now a child in this process group, so Ctrl-C reaches it
+  directly and `process.on("exit")` covers a closed terminal or a crash.
+  "Hide to tray" still hands it over untouched.
 - **An adopted tray's Exit stops the gateway.** "Hide to tray" hands the
   running gateway to a tray that adopts it, so the tray holds no child process
   and Exit only closed the icon, leaving the gateway listening. It now drains

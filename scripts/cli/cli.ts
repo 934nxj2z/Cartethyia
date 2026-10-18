@@ -127,7 +127,11 @@ function launchUpdatedTray(signalPath: string): ChildProcess {
   return child;
 }
 
-async function startGateway(port: number, drainToken: string): Promise<Bun.Subprocess> {
+async function startGateway(
+  port: number,
+  drainToken: string,
+  options: { readonly detached?: boolean } = {},
+): Promise<Bun.Subprocess> {
   // Starting a second gateway on the same port used to fail with "stopped
   // before becoming ready (exit code 1)", which says nothing about the real
   // cause. Probe the port first and say what is actually there.
@@ -166,14 +170,13 @@ async function startGateway(port: number, drainToken: string): Promise<Bun.Subpr
       // terminal, so closing that terminal took the gateway down with it and
       // "Hide to tray" left nothing running.
       stderr: logFd ?? "ignore",
-      // NOT detached. A detached child cannot be killed from an `exit`
+      // Attached by default. A detached child cannot be killed from an `exit`
       // handler on Windows (measured: kill() runs, the gateway keeps serving),
       // and a terminal's Ctrl-C only reaches children in the same process
       // group. Staying attached means Ctrl-C and the `exit` backstop both stop
-      // the gateway, at the cost of the gateway dying with the terminal —
-      // which is the behaviour wanted here, since a gateway nobody can see
-      // should not outlive the menu.
-      detached: false,
+      // the gateway. "Hide to tray" passes detached: true because that gateway
+      // must outlive this process.
+      detached: options.detached === true,
     },
   );
   const startupController = new AbortController();
@@ -409,13 +412,18 @@ async function startMenu(): Promise<void> {
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
-        // Hand the gateway to a tray that adopts it (CARTETHYIA_TRAY_ADOPT_RUNNING),
-        // so no second gateway is started on the same port and the drain token
-        // stays usable by `cartethyia stop`. `handedOff` keeps the exit backstop
-        // from killing a gateway the tray now owns.
+        // Hand the gateway to a tray. This process's gateway is attached, so it
+        // would die with the menu; the handoff therefore drains it and starts a
+        // detached one that the tray adopts. The port is briefly empty between
+        // the two, which is the cost of having Ctrl-C reliably stop a gateway
+        // while a hidden one still outlives the terminal.
         running = false;
         stopping = true;
         handedOff = true;
+        console.log("Handing the gateway to the tray…");
+        await shutDown();
+        const replacement = await startGateway(port, drainToken, { detached: true });
+        replacement.unref();
         const tray = spawn(
           process.execPath,
           ["run", resolvePackagePath("scripts", "cli", "cli.ts"), "tray"],
@@ -451,6 +459,10 @@ async function startMenu(): Promise<void> {
     const action = actions[choice];
     if (action) await action();
   }
+  // "Hide to tray" has already given the gateway to the tray. Draining here
+  // would stop the very process the tray just adopted, which is why the menu
+  // appeared to hand over a gateway that was not listening.
+  if (handedOff) return;
   await shutDown();
 }
 
@@ -869,9 +881,14 @@ async function main(): Promise<void> {
       await setup();
       return;
     }
-    case "start":
+    case "start": {
+      // A foreground run still needs a drain token on disk: `cartethyia stop`
+      // in another shell has no other handle on it, and without the token the
+      // gateway has no /admin/drain route at all.
+      process.env.CARTETHYIA_DRAIN_TOKEN ??= ensureDrainToken();
       await import("../../src/main");
       return;
+    }
     case "menu":
       await startMenu();
       return;
