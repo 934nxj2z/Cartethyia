@@ -8,6 +8,30 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.3] — 2026-10-18
+
+### Fixed
+
+- **The tray no longer leaves an empty console window.** On Windows the tray
+  was a Node process holding a `systray2` helper, and Windows Terminal kept a
+  tab open for it for the tray's whole lifetime. That window belongs to the
+  terminal, not to the process — `MainWindowHandle` reads 0, so it cannot be
+  found and hidden from inside, and neither `windowsHide` nor
+  `detached: true` removes it.
+
+  The tray is now platform-specific (`scripts/cli/tray.ts`): on Windows it is a
+  PowerShell `NotifyIcon` (`scripts/cli/tray.ps1`) driven over JSON lines on
+  stdin/stdout, started with `-WindowStyle Hidden` so it owns no console at
+  all. macOS and Linux keep `systray2`, which attaches no console there. This
+  is the arrangement 9router uses.
+
+### Changed
+
+- `scripts/cli/cli.ts` drops the `systray2` dependency from its tray path, and
+  the tray helpers that existed only to launch and stop a Node tray process
+  (`waitForTrayStartupSignal`, `launchUpdatedTray`, `waitForTray`, `stopTray`)
+  are gone.
+
 ## [2.4.2] — 2026-10-18
 
 ### Fixed

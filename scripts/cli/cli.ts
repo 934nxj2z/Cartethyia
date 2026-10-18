@@ -1,15 +1,14 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import SysTray from "systray2";
 import { isNewerRelease } from "../../src/console/updates/version-compare";
 import { PACKAGE_ROOT, resolvePackagePath, resolveUserConfigDir } from "../../src/config/package-paths";
 import { resolvePort } from "../../src/config/runtime";
 import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
 import { chooseFromMenu, confirmByTyping, confirmStep } from "./menu";
 import { ensureDrainToken, readPersistedDrainToken } from "./runtime-state";
+import { createTray } from "./tray";
 import { npmUpdate, readInstalledVersion, readLatestPublishedVersion } from "./version";
 import { renderWordmark } from "./wordmark";
 
@@ -69,36 +68,6 @@ function reportTrayStartup(signal: TrayStartupSignal): void {
   }
 }
 
-async function waitForTrayStartupSignal(
-  signalPath: string,
-  child: ChildProcess,
-  timeoutMs: number,
-): Promise<string> {
-  let spawnError: Error | undefined;
-  child.once("error", (error) => {
-    spawnError = error;
-  });
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(signalPath)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(signalPath, "utf8"));
-        if (parsed !== null && typeof parsed === "object" && "status" in parsed) {
-          if (parsed.status === "ready" && "url" in parsed && typeof parsed.url === "string") return parsed.url;
-          if (parsed.status === "failed" && "message" in parsed && typeof parsed.message === "string") {
-            throw new Error(parsed.message);
-          }
-        }
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-    }
-    if (spawnError) throw spawnError;
-    if (child.exitCode !== null) throw new Error(`updated Cartethyia exited during startup (exit code ${child.exitCode})`);
-    await Bun.sleep(150);
-  }
-  throw new Error("Cartethyia did not finish tray and gateway startup within 45 seconds");
-}
 
 
 function openUrl(url: string): Promise<void> {
@@ -116,16 +85,6 @@ function openUrl(url: string): Promise<void> {
 }
 
 
-function launchUpdatedTray(signalPath: string): ChildProcess {
-  const env = { ...process.env, CARTETHYIA_TRAY_STARTUP_SIGNAL: signalPath };
-  const child = spawn(
-    process.execPath,
-    ["run", resolvePackagePath("scripts", "cli", "cli.ts"), "tray"],
-    { cwd: tmpdir(), detached: true, stdio: "ignore", windowsHide: true, env },
-  );
-  child.unref();
-  return child;
-}
 
 async function startGateway(
   port: number,
@@ -259,42 +218,7 @@ async function stopGateway(
   }
 }
 
-async function waitForTray(tray: SysTray): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      tray.ready(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("System tray startup timed out")), 15_000);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
 
-async function stopTray(tray: SysTray, ready: boolean, exited: boolean): Promise<void> {
-  if (exited) return;
-  if (!ready) {
-    tray.process.kill();
-    return;
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      tray.kill(false),
-      new Promise<void>((resolveExit) => {
-        timer = setTimeout(() => resolveExit(), 5_000);
-      }),
-    ]);
-  } catch {
-    // Fall through to a direct child termination below.
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-  if (!tray.killed) tray.process.kill();
-}
 
 /**
  * The default `carte` experience: start the gateway, then offer an arrow-key
@@ -620,243 +544,130 @@ async function stopRunningGateway(): Promise<number> {
 }
 
 
+/**
+ * Runs the gateway with a tray icon. The tray is platform-specific (`tray.ts`):
+ * on Windows it is a PowerShell NotifyIcon, because a Node tray library leaves
+ * an empty console tab open for the tray's whole lifetime, and that window is
+ * owned by Windows Terminal — not by this process, so it cannot be found and
+ * hidden from inside.
+ */
 async function startTray(): Promise<void> {
   const port = resolvePort();
   const drainToken = ensureDrainToken();
-  const currentVersion = await readInstalledVersion();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
-  const icon = resolvePackagePath(
-    "tray-assets",
-    process.platform === "win32" ? "cartethyia.ico" : "cartethyia.png",
-  );
-  const repository = {
-    title: "Repository: risunCode/cartethyia",
-    tooltip: "Open the Cartethyia GitHub repository",
-    enabled: true,
-  };
-  const update = {
-    title: "Checking for updates…",
-    tooltip: "Update Cartethyia and restart the tray process",
-    enabled: false,
-  };
-  const openConsole = {
-    title: `Open Console · ${dashboardUrl}`,
-    tooltip: `Open the local Console at ${dashboardUrl}`,
-    enabled: true,
-  };
-  const resetPassword = {
-    title: "Reset console password",
-    tooltip: "Delete the console account so /console asks for a new one",
-    enabled: true,
-  };
-  const backupRestore = {
-    title: "Backup",
-    tooltip: "Write a gzipped config backup to your download directory",
-    enabled: true,
-  };
-  const exit = {
-    title: "Exit",
-    tooltip: "Stop Cartethyia gracefully and close the tray",
-    enabled: true,
-  };
-  const tray = new SysTray({
-    menu: {
-      icon,
-      title: "Cartethyia",
-      tooltip: "Cartethyia AI gateway",
-      items: [
-        repository,
-        update,
-        SysTray.separator,
-        openConsole,
-        resetPassword,
-        backupRestore,
-        SysTray.separator,
-        exit,
-      ],
-    },
-    copyDir: true,
-  });
+  const repositoryUrl = "https://github.com/risunCode/cartethyia";
+  const currentVersion = await readInstalledVersion();
 
-  let gateway: ReturnType<typeof Bun.spawn> | null = null;
-  let trayReady = false;
-  let trayExited = false;
+  let gateway: Bun.Subprocess | null = null;
   let closing = false;
   let busy = false;
   let resetArmed = false;
-  let latestVersion: string | null = null;
   let closePromise: Promise<void> | undefined;
+
+  const tray = createTray({
+    iconPath: resolvePackagePath(
+      "tray-assets",
+      process.platform === "win32" ? "cartethyia.ico" : "cartethyia.png",
+    ),
+    tooltip: `Cartethyia ${currentVersion}`,
+    items: [
+      { kind: "action", id: "repository", title: "Visit repository" },
+      { kind: "action", id: "update", title: `Cartethyia ${currentVersion} \u00b7 checking\u2026`, enabled: false },
+      { kind: "separator" },
+      { kind: "action", id: "console", title: `Open Console \u00b7 ${dashboardUrl}` },
+      { kind: "action", id: "reset", title: "Reset console password" },
+      { kind: "action", id: "backup", title: "Backup" },
+      { kind: "separator" },
+      { kind: "action", id: "exit", title: "Exit" },
+    ],
+    onSelect: (id: string) => void handleSelect(id),
+    onExit: () => void close(1),
+  });
 
   const close = (exitCode = 0): Promise<void> => {
     if (closePromise) return closePromise;
     closing = true;
     closePromise = (async () => {
-      const current: ReturnType<typeof Bun.spawn> | null = gateway;
+      const current: Bun.Subprocess | null = gateway;
       gateway = null;
       if (current) await stopGateway(current, port, drainToken);
-      await stopTray(tray, trayReady, trayExited);
+      await tray.close();
       process.exitCode = exitCode;
     })();
     return closePromise;
   };
 
   const refreshVersion = async (): Promise<void> => {
-    const fetchedVersion = await readLatestPublishedVersion();
+    const fetched = await readLatestPublishedVersion();
     if (closing) return;
-    latestVersion = fetchedVersion;
-    if (fetchedVersion === null) {
-      update.title = `Cartethyia ${currentVersion} · check for updates`;
-      update.enabled = true;
-    } else {
-      if (isNewerRelease(currentVersion, fetchedVersion)) {
-        update.title = `Cartethyia ${currentVersion} · update to ${fetchedVersion}`;
-        update.enabled = true;
-      } else {
-        update.title = `Cartethyia ${currentVersion} · up to date`;
-        update.enabled = false;
-      }
+    if (fetched === null) {
+      tray.update("update", `Cartethyia ${currentVersion} \u00b7 check for updates`, true);
+      return;
     }
-    try {
-      await tray.sendAction({ type: "update-item", item: update });
-    } catch {
-      // The tray may be closing while the background version check completes.
-    }
+    const newer = isNewerRelease(currentVersion, fetched);
+    tray.update(
+      "update",
+      newer
+        ? `Cartethyia ${currentVersion} \u00b7 update to ${fetched}`
+        : `Cartethyia ${currentVersion} \u00b7 up to date`,
+      newer,
+    );
   };
 
-  const handleClick = async (title: string): Promise<void> => {
+  const runUpdate = async (): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    tray.update("update", "Updating Cartethyia\u2026", false);
+    const code = await npmUpdate();
+    busy = false;
+    tray.update(
+      "update",
+      code === 0 ? "Updated \u2014 restart Cartethyia" : "Update failed \u2014 retry",
+      code !== 0,
+    );
+  };
+
+  async function handleSelect(id: string): Promise<void> {
     if (closing) return;
-    if (title === "Exit") {
-      await close();
-      return;
-    }
-    if (title === openConsole.title) {
-      await openUrl(dashboardUrl);
-      return;
-    }
-    if (title === resetPassword.title) {
-      // Same recovery the menu offers: /change-password needs the current
-      // password, so deleting the account is the only way back in. A tray click
-      // cannot ask for a typed confirmation, so the first click arms the action
-      // and the second one runs it.
-      if (!resetArmed) {
-        resetArmed = true;
-        console.log(
-          "Click \"Reset console password\" again to delete the console account. This removes every operator login; providers, API keys, and routing are kept.",
-        );
-        return;
-      }
-      resetArmed = false;
-      const removed = await resetConsoleAccount(port, drainToken);
-      if (removed === 0) {
-        console.log(`Console account removed. Open ${dashboardUrl} to create a new one.`);
-        await openUrl(dashboardUrl);
-      }
-      return;
-    }
-    if (title === backupRestore.title) {
-      // Export straight to disk, like the menu does. Restore stays in the
-      // console, where an operator picks the file and confirms the overwrite.
+    if (id === "exit") return void (await close());
+    if (id === "console") return void (await openUrl(dashboardUrl));
+    if (id === "repository") return void (await openUrl(repositoryUrl));
+    if (id === "backup") {
       const result = await exportBackup(port, drainToken);
-      if (result !== null)
+      if (result !== null) {
         console.log(
           `Backup written to ${result.path} (${(result.bytes / 1024).toFixed(1)} KiB). Telemetry is not included.`,
         );
+      }
       return;
     }
-    if (title === repository.title) {
-      await openUrl("https://github.com/risunCode/cartethyia");
-      return;
-    }
-    if (title === "Check for updates" && !busy) {
-      await refreshVersion();
-      return;
-    }
-    if (title !== update.title || !update.enabled || busy) return;
-    if (latestVersion === null || !isNewerRelease(currentVersion, latestVersion)) {
-      await refreshVersion();
-      return;
-    }
-
-    busy = true;
-    update.title = "Updating Cartethyia…";
-    update.enabled = false;
-    try {
-      await tray.sendAction({ type: "update-item", item: update });
-      const current = gateway;
-      if (!current) throw new Error("Cartethyia gateway is not running");
-      gateway = null;
-      await stopGateway(current, port, drainToken);
-      if (closing) return;
-
-      console.log("Updating Cartethyia through npm...");
-      const code = await npmUpdate();
-      if (closing) return;
-      if (code !== 0) {
-        console.error(`npm update failed with exit code ${code}; restarting the current installation.`);
-        gateway = await startGateway(port, drainToken);
-        await refreshVersion();
+    if (id === "reset") {
+      // A tray click cannot ask for the typed confirmation the menu uses, so
+      // the first click arms the action and the second one runs it.
+      if (!resetArmed) {
+        resetArmed = true;
+        tray.update("reset", "Reset console password \u00b7 click again to delete", true);
         return;
       }
-
-      const signalPath = join(tmpdir(), `cartethyia-tray-update-${randomBytes(16).toString("hex")}.json`);
-      try {
-        const updatedProcess = launchUpdatedTray(signalPath);
-        const updatedUrl = await waitForTrayStartupSignal(signalPath, updatedProcess, 60_000);
-        console.log(`Cartethyia updated to ${await readInstalledVersion()} and restarted at ${updatedUrl}`);
-        await close();
-      } finally {
-        if (existsSync(signalPath)) unlinkSync(signalPath);
-      }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "unknown error";
-      console.error(`Cartethyia update or restart failed: ${reason}`);
-      if (!closing && gateway === null) {
-        try {
-          gateway = await startGateway(port, drainToken);
-        } catch {
-          await close(1);
-        }
-      }
-      if (!closing) {
-        update.title = "Update failed — retry";
-        update.enabled = true;
-        try {
-          await tray.sendAction({ type: "update-item", item: update });
-        } catch {
-          // The tray may have failed while the update was being recovered.
-        }
-      }
-    } finally {
-      busy = false;
+      resetArmed = false;
+      tray.update("reset", "Reset console password", true);
+      await resetConsoleAccount(port, drainToken);
+      return;
     }
-  };
+    if (id === "update") await runUpdate();
+  }
 
-  await tray.onClick((event) => {
-    void handleClick(event.item.title).catch(() => {
-      console.error("The selected system-tray action failed.");
-    });
-  });
-  tray.onExit(() => {
-    trayExited = true;
-    if (!closing) void close(1);
-  });
-  tray.onError(() => {
-    console.error("The system-tray process failed; stopping Cartethyia.");
-    if (!closing) void close(1);
-  });
   process.once("SIGINT", () => void close());
   process.once("SIGTERM", () => void close());
 
   try {
-    await waitForTray(tray);
-    trayReady = true;
+    await tray.ready();
     gateway = await startGateway(port, drainToken);
-    reportTrayStartup({ status: "ready", url: dashboardUrl });
     console.log(`Cartethyia is running at ${dashboardUrl}`);
     void refreshVersion();
 
     while (!closing) {
-      const current: ReturnType<typeof Bun.spawn> | null = gateway;
+      const current: Bun.Subprocess | null = gateway;
       if (!current) {
         await Bun.sleep(100);
         continue;
@@ -872,6 +683,7 @@ async function startTray(): Promise<void> {
     throw error;
   }
 }
+
 
 async function main(): Promise<void> {
   assertBunVersion();
