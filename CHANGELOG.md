@@ -8,6 +8,19 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.2] — 2026-10-18
+
+### Fixed
+
+- **"Hide to tray" now actually runs the gateway in the background.** The handoff
+  was handing a live gateway to a tray that adopted it, which meant the tray
+  owned nothing and the port was empty after choosing it. It now follows the
+  same shape as 9router: spawn a detached `tray` process that starts and owns
+  the gateway from scratch, then drain this one so the new process can claim the
+  port. The tray is a normal first-class run rather than an adopted orphan, so
+  Exit, update, and `cartethyia stop` all behave the same whether the gateway
+  was started from the menu or from `carte --tray`. The adoption path is gone.
+
 ## [2.4.1] — 2026-10-18
 
 ### Fixed

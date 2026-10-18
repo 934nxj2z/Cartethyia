@@ -437,18 +437,13 @@ async function startMenu(): Promise<void> {
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
-        // Hand the gateway to a tray. This process's gateway is attached, so it
-        // would die with the menu; the handoff therefore drains it and starts a
-        // detached one that the tray adopts. The port is briefly empty between
-        // the two, which is the cost of having Ctrl-C reliably stop a gateway
-        // while a hidden one still outlives the terminal.
-        running = false;
-        stopping = true;
-        handedOff = true;
-        console.log("Handing the gateway to the tray…");
-        await shutDown();
-        const replacement = await startGateway(port, drainToken, { detached: true });
-        replacement.unref();
+        // Start a detached `tray` process that owns the gateway from scratch,
+        // then drain this one so the new process can claim the port. This is
+        // the pattern 9router uses and it is simpler than handing a live
+        // gateway between processes: the tray is a normal first-class run, not
+        // an adopted orphan, so Exit and update behave the same whether the
+        // gateway was started here or from `carte --tray`.
+        console.log("Starting the tray in the background…");
         const tray = spawn(
           process.execPath,
           ["run", resolvePackagePath("scripts", "cli", "cli.ts"), "tray"],
@@ -457,12 +452,16 @@ async function startMenu(): Promise<void> {
             detached: true,
             stdio: "ignore",
             windowsHide: true,
-            env: { ...process.env, CARTETHYIA_TRAY_ADOPT_RUNNING: "1" },
+            env: process.env,
           },
         );
         tray.unref();
-        console.log(`Cartethyia keeps running at ${dashboardUrl}.`);
-        console.log("The tray icon now owns it. Stop it with: cartethyia stop");
+        running = false;
+        stopping = true;
+        handedOff = true;
+        await shutDown();
+        console.log(`Cartethyia is running in the background at ${dashboardUrl}.`);
+        console.log("The tray icon owns it. Stop it with: cartethyia stop");
       },
       async () => {
         running = false;
@@ -685,7 +684,6 @@ async function startTray(): Promise<void> {
   let closing = false;
   let busy = false;
   let resetArmed = false;
-  const adopted = process.env.CARTETHYIA_TRAY_ADOPT_RUNNING === "1";
   let latestVersion: string | null = null;
   let closePromise: Promise<void> | undefined;
 
@@ -695,15 +693,7 @@ async function startTray(): Promise<void> {
     closePromise = (async () => {
       const current: ReturnType<typeof Bun.spawn> | null = gateway;
       gateway = null;
-      if (current) {
-        await stopGateway(current, port, drainToken);
-      } else if (adopted) {
-        // An adopted tray never held the gateway as a child, so there is no
-        // process to signal. Draining through the loopback endpoint is the only
-        // way Exit stops it — without this, Exit closed the icon and left the
-        // gateway listening, which looked like a phantom process.
-        await drainThroughEndpoint(port, drainToken);
-      }
+      if (current) await stopGateway(current, port, drainToken);
       await stopTray(tray, trayReady, trayExited);
       process.exitCode = exitCode;
     })();
@@ -860,16 +850,6 @@ async function startTray(): Promise<void> {
   try {
     await waitForTray(tray);
     trayReady = true;
-    // "Hide to tray" hands over a gateway that is already listening. Spawning a
-    // second one would fail on the port, so an adopted tray only watches the
-    // existing process and stops owning it when the menu process exits.
-    if (process.env.CARTETHYIA_TRAY_ADOPT_RUNNING === "1") {
-      reportTrayStartup({ status: "ready", url: dashboardUrl });
-      console.log(`Cartethyia is running at ${dashboardUrl}`);
-      void refreshVersion();
-      while (!closing) await Bun.sleep(500);
-      return;
-    }
     gateway = await startGateway(port, drainToken);
     reportTrayStartup({ status: "ready", url: dashboardUrl });
     console.log(`Cartethyia is running at ${dashboardUrl}`);
