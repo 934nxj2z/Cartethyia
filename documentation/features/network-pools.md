@@ -56,6 +56,24 @@ advancing and skips a pool the same way account failover does.
 
 An operator may set a pool to `disabled`; network failures can park it in
 `cooldown`, and a successful dispatch or recovery restores it to `active`.
+
+**A free-tier refusal retires the egress, and is not a cooldown.** When a
+provider whose limits follow the *address* rather than the credential answers
+`403` with its free-tier wording — OpenCode's `FreeTierError` — the pool is
+flagged `blocked` for that provider for ten years
+(`PROVIDER_BLOCK_MS` in `selector.ts`). Nothing clears that on a timer: the
+address has been retired upstream, and the only fix is replacing the proxy.
+The console distinguishes the two because the fix differs — wait, or replace —
+and the audit row records `egress_blocked` rather than
+`rate_limit_transient`. A probe that answers anything other than `blocked`
+clears a previous block, which is how "the operator replaced the proxy"
+recovers without manual intervention.
+
+Block markers are keyed `(poolId, providerId)`, so one provider's block is
+never visible to another: a marker written for `opencode` does not stop
+`anthropic` from using the same egress. `opencode` is currently the only
+bundled provider declaring `ipScopedRateLimit`.
+
 A proxy's `CONNECT` refusal with `402` or `407` is attributed to the pool,
 not the account dialed through it: the typed `ProxyConnectRefusalError` is
 the pool's own verdict and never cools a provider account.

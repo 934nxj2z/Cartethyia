@@ -73,8 +73,9 @@ const BUDDY_IMAGE_MODEL_IDS: readonly { id: string; endpoint: string; ctx: numbe
  * `seedance-2.5` is the text-to-video model the buddy facade exposes. It is a
  * distinct service kind (`videoGeneration`), not a chat or image row, so it is
  * built by {@link makeBuddyVideoModels} and reached through
- * `/v1/videos/generations` rather than a chat wire. CodeBuddy CN is
- * deliberately absent — it publishes a different roster.
+ * `/videos/generations` (relative to each variant's own base, which is why the
+ * WorkBuddy rows carry the `/v2` segment themselves) rather than a chat wire.
+ * CodeBuddy CN is deliberately absent — it publishes a different roster.
  */
 const BUDDY_VIDEO_MODEL_IDS: readonly { id: string; endpoint: string; ctx: number; out: number }[] = [
   { id: "seedance-2.5", endpoint: "/videos/generations", ctx: 1_000_000, out: 128_000 },

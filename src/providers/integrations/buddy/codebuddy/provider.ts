@@ -109,8 +109,8 @@ export const CODEBUDDY_IMAGE_MODELS: readonly ModelDefinition[] = makeBuddyImage
 /**
  * CodeBuddy's video-generation rows (`seedance-2.5`).
  *
- * Reached through `/v1/videos/generations`, so the endpoint is the upstream
- * video path rather than a chat-completions path.
+ * Reached through `/videos/generations` on the `/v2` base, so the endpoint is
+ * the upstream video path rather than a chat-completions path.
  */
 export const CODEBUDDY_VIDEO_MODELS: readonly ModelDefinition[] = makeBuddyVideoModels(
   "cb",

@@ -19,6 +19,7 @@ feature manuals.
 | [Routing aliases and combos](routing-aliases-combos.md) | Name a model something else, or fan a name out to several |
 | [Usage floor](usage-floor.md) | Skip accounts whose remaining quota is at or below a provider threshold |
 | [Buddy media generation](buddy-media-generation.md) | Generate images and submit/poll video tasks through Buddy providers |
+| [Buddy CLI identity](buddy-cli-identity.md) | Present a Buddy provider as the official CLI client rather than the desktop app |
 
 Procedure does not live here. `.skills/` owns procedure, and each skill names
 the layer's owner: [cartethyia-health-routing](../../.skills/cartethyia-health-routing/SKILL.md)

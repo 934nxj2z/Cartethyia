@@ -12,10 +12,17 @@ different contracts; do not assume the provider variants share every endpoint.
   image path and accepts image count and size when supplied. WorkBuddy image
   generation follows its chat-completion path and extracts image URLs or inline
   image data from the stream.
-- **Video: not working end to end.** The Buddy-family model catalog has a video
-  submission path (`/v2/videos/generations` for the current CodeBuddy route),
-  but successful video production has not been verified. Submission can return
-  a task ID; the actual provider task-status/poll endpoint is unknown. The
+- **Video: not working end to end.** The Buddy family carries a video
+  submission path, but the two variants differ because their base URLs already
+  disagree about the version segment — do not assume they share it:
+
+  | Variant | Base URL | Video path | Effective URL |
+  | --- | --- | --- | --- |
+  | `cb` | `https://www.codebuddy.ai/v2` | `/videos/generations` | `https://www.codebuddy.ai/v2/videos/generations` |
+  | `workbuddy` | `https://www.workbuddy.ai` | `/v2/videos/generations` | `https://www.workbuddy.ai/v2/videos/generations` |
+
+  Successful video production has not been verified. Submission can return a
+  task ID; the actual provider task-status/poll endpoint is unknown. The
   current `GET <submit-url>/<task-id>` poll URL in the adapter and reusable CLI
   is only a guess and has returned 404 in attempted checks.
 - The CLI polls by default; `--no-wait` returns the accepted task information

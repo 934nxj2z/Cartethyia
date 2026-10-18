@@ -12,6 +12,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The providers page can hide providers with no account.** A 73-row catalog
+  where an operator has connected three still meant scrolling past seventy
+  cards to reach their own, so a new toggle filters to configured providers.
+  Credential-less providers (OpenCode Free, Exa, Parallel) stay visible: they
+  have no account because none is usable, not because one was never added, so
+  hiding them would hide a working route. The preference is per browser
+  (localStorage) and shared across tabs, like the existing privacy toggles.
+
 - **Console JSON responses carry a strong `ETag` and answer `304`.** A dashboard
   poll for an unchanged window now costs a conditional request instead of the
   whole payload — roughly 200 bytes instead of 8.8 KiB to 150 KiB per poll. The
@@ -32,6 +40,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   `provider_accounts_tenant_id_idx` (migration `0014`), in both dialects.
   Neither table had an index serving the bare `tenant_id IS NULL OR tenant_id
   = ?` that the provider list and the account listing use.
+
+- **Buddy providers can present a real CLI identity.** The CLI identity this
+  gateway sent was a hybrid no official client produces: `X-IDE-Type: CLI`
+  alongside desktop browser transport, and with every CLI-only marker missing.
+  The complete CLI contract is now available — the `X-Agent-*` envelope,
+  `X-IDE-Version` (which CodeBuddy never sent at all), the eight
+  `x-stainless-*` fingerprints, `traceparent`, and b3's parent span — and
+  `x-product` is the official `SaaS` rather than an invented `WorkBuddy`.
+
+  **Nothing changes by default.** Identity is exactly the header a wrong value
+  can get an account blocked on, so a provider only flips when an account or an
+  operator opts in; unset leaves every header byte-identical to before.
 
 ### Changed
 
@@ -71,13 +91,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   destination renders (settings and keys, providers, pools) rather than
   `system.health`, which none of those pages display.
 
-- **The dashboard persists a narrow slice of its cache** to IndexedDB: session,
-  provider catalog, per-provider models, CLI tool registry, and runtime
   settings. Account, credential, key, share, audit, quota, and payload reads are
   never persisted, so the snapshot holds no unmasked values at rest. Logout and
   401/403 clear the persisted snapshot alongside the in-memory cache.
 
+- **Five dependencies nothing imported are gone.** `@bufbuild/protobuf`,
+  `@electric-sql/pglite`, `impit`, `exact-mirror`, and `undici` had zero real
+  imports anywhere: every `protobuf` hit was prose in a comment, the grok quota
+  decoder is hand-rolled, lite mode already used `bun:sqlite`, and `impit`
+  alone carried eight platform-specific optional binaries. `exact-mirror` still
+  installs because elysia declares it a required peer — that is elysia asking,
+  not this project.
+
+- **Buddy model discovery asks `/v3/config` first.** Both reference gateways
+  treat it as the primary catalog and the personal-models path as the narrower
+  fallback; this gateway only ever called the latter. The old path still
+  answers whenever the new one does not, so a host serving only it behaves
+  exactly as before. The live model list will move — the last snapshot lists
+  `gpt-6-astra`, which the bundled catalog omits today.
+
+- **`workbuddycn` probes the CN directory path.** It was asking a CN host for
+  the international path, which the CN edge answers with 500 rather than 404 —
+  so the failure read as an upstream outage instead of a wrong path. CN billing
+  also moves to `www.codebuddy.cn`, the host the reference bills that realm on,
+  while `X-Domain` stays the domain recorded at login.
+
 ### Fixed
+
+- **A probe no longer retires an egress on the first connection failure.**
+  `bun run probe:egress` reported "fails the first time, works on retry"
+  because one dead socket ended the probe: a cold dial has to resolve the
+  proxy, open the CONNECT tunnel, and finish a TLS handshake, and any of those
+  can be refused or reset once and then accepted on the very next attempt.
+  Transport failures are now retried up to three times.
+
+  A real refusal is *not* retried — a `403 FreeTierError` is an answer about
+  the address, not a failure, so a blocked egress still reports immediately
+  instead of spending three attempts proving it. Our own deadline is not
+  retried either, so a slow address is reported slow rather than consuming the
+  whole budget re-dialling it. Measured against a dead endpoint: 53 ms and one
+  attempt before, 1271 ms and three attempts now; a genuine 403 still answers
+  in 888 ms with a single attempt.
 
 - **`GET /console/api/backup/export?compressed=1` is no longer double-encoded.**
   The route declares an opt-out instead of `content-encoding: gzip`: the bytes

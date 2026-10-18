@@ -94,9 +94,13 @@ the application. See `documentation/getting-started.md` for setup details and
 
 `CARTETHYIA_DB_MODE` is required and has no default. Do not silently choose a
 mode: Lite and Full use different database backends and migration sets. Use the
-existing local `.env` (created from `.env.example`) for optional
-`CARTETHYIA_TEST_DATABASE_URL` test configuration; never point tests at a
-development or production database.
+existing local `.env` (created from `.env.example`) for test configuration;
+never point tests at a development or production database.
+
+`CARTETHYIA_TEST_DATABASE_URL` is **required**, not optional: `bun run test`
+and `bun run test:backend` exit non-zero without it, and the runner refuses to
+fall back to the development `DATABASE_URL`. Only `bun run dashboard:test`
+runs without it.
 
 ## Repository map and boundaries
 
