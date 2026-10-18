@@ -76,6 +76,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "drizzle-orm": "0.45.2",
     "elysia": "^2.0.0-beta.16",
+    "enquirer": "^2.4.1",
     "exact-mirror": "^1.2.6",
     "impit": "^0.14.5",
     "ioredis": "6.0.0",

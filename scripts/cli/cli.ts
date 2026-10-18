@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,7 +130,19 @@ function launchUpdatedTray(signalPath: string): ChildProcess {
   return child;
 }
 
-async function startGateway(port: number, drainToken: string): Promise<ReturnType<typeof Bun.spawn>> {
+async function startGateway(port: number, drainToken: string): Promise<Bun.Subprocess> {
+  // The gateway logs a startup phase line per stage. In menu mode those lines
+  // would scroll through the same terminal the menu is drawing on, so they go
+  // to a file instead and the operator sees only the menu.
+  const configDir = process.env.CARTETHYIA_CONFIG_DIR;
+  let logFd: number | null = null;
+  if (configDir) {
+    try {
+      logFd = openSync(join(configDir, "gateway.log"), "a");
+    } catch {
+      // A read-only config directory costs only the log, not startup.
+    }
+  }
   const child = Bun.spawn(
     [process.execPath, "run", resolvePackagePath("src", "main.ts")],
     {
@@ -141,7 +153,7 @@ async function startGateway(port: number, drainToken: string): Promise<ReturnTyp
       // held the fd and swallowed every keypress after the first, so the menu
       // rendered but never received Enter.
       stdin: "ignore",
-      stdout: "inherit",
+      stdout: logFd ?? "ignore",
       stderr: "inherit",
     },
   );
@@ -322,6 +334,26 @@ async function startMenu(): Promise<void> {
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
+        // Hand the running gateway over to the tray instead of stopping it:
+        // the token stays persisted so `cartethyia stop` still reaches it, and
+        // `detached` keeps the tray alive after this process exits.
+        running = false;
+        stopping = true;
+        const tray = spawn(
+          process.execPath,
+          ["run", resolvePackagePath("scripts", "cli", "cli.ts"), "tray"],
+          {
+            cwd: tmpdir(),
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+            env: { ...process.env, CARTETHYIA_TRAY_ADOPT_RUNNING: "1" },
+          },
+        );
+        tray.unref();
+        console.log(`Cartethyia keeps running at ${dashboardUrl} — the tray icon now owns it.`);
+      },
+      async () => {
         running = false;
       },
     ];
@@ -334,6 +366,7 @@ async function startMenu(): Promise<void> {
         "Backup & Restore",
         "Visit repository",
         updateLabel,
+        "Hide to tray",
         "Exit",
       ],
     );
@@ -597,6 +630,16 @@ async function startTray(): Promise<void> {
   try {
     await waitForTray(tray);
     trayReady = true;
+    // "Hide to tray" hands over a gateway that is already listening. Spawning a
+    // second one would fail on the port, so an adopted tray only watches the
+    // existing process and stops owning it when the menu process exits.
+    if (process.env.CARTETHYIA_TRAY_ADOPT_RUNNING === "1") {
+      reportTrayStartup({ status: "ready", url: dashboardUrl });
+      console.log(`Cartethyia is running at ${dashboardUrl}`);
+      void refreshVersion();
+      while (!closing) await Bun.sleep(500);
+      return;
+    }
     gateway = await startGateway(port, drainToken);
     reportTrayStartup({ status: "ready", url: dashboardUrl });
     console.log(`Cartethyia is running at ${dashboardUrl}`);
