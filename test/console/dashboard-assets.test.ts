@@ -59,6 +59,39 @@ afterAll(async () => {
   await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
+describe("static assets — hashed vs unhashed", () => {
+  /**
+   * The cache header for a hashed asset is `immutable`; for anything else it
+   * revalidates. So this predicate is load-bearing in both directions: a hashed
+   * asset treated as unhashed is re-downloaded after every deploy, and an
+   * unhashed one treated as hashed is pinned in the browser cache until it
+   * expires.
+   */
+  const cases: ReadonlyArray<{ name: string; hashed: boolean; why: string }> = [
+    { name: "app-BCnqn3N3.js", hashed: true, why: "the modern Vite spelling: hyphen separator" },
+    { name: "app.a1b2c3d4.js", hashed: true, why: "the older dot-separated spelling" },
+    { name: "entry-CBp7BXQq.js", hashed: true, why: "a chunk entry, same shape" },
+    { name: "app-N-ONyork.css", hashed: true, why: "CSS chunk, hash contains hyphens" },
+    { name: "script_ab12cd34ef.js", hashed: true, why: "underscore separator" },
+    { name: "index.html", hashed: false, why: "the entry document is never immutable" },
+    { name: "console-backgrounds.jpg", hashed: false, why: "a word, despite matching the separator" },
+    { name: "openai-light.svg", hashed: false, why: "a provider icon; must revalidate" },
+    { name: "favicon.jpg", hashed: false, why: "no hash segment at all" },
+    { name: "wuthering-waves-hiyuki-aemeath-hiyuki-rover.webp", hashed: false, why: "story art: words, not a hash" },
+  ];
+
+  for (const testCase of cases) {
+    test(`${testCase.name} is ${testCase.hashed ? "hashed" : "unhashed"} — ${testCase.why}`, async () => {
+      const dir = join(buildDir, "hashdetect");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, testCase.name), "x");
+      const result = await handler(`/hashdetect/${testCase.name}`);
+      const cacheControl = result.headers["cache-control"] ?? "";
+      expect(cacheControl.includes("immutable")).toBe(testCase.hashed);
+    });
+  }
+});
+
 describe("static assets — served files", () => {
   test("serves an existing file with its bytes", async () => {
     const result = await handler("/assets.js");
