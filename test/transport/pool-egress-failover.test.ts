@@ -220,3 +220,30 @@ test("a 403 from a provider that is not IP-scoped never retires a pool", async (
   expect(await pools.isProviderCooldown("pool-a", "claude")).toMatchObject({ inCooldown: false });
   expect(await pools.isProviderCooldown("pool-b", "claude")).toMatchObject({ inCooldown: false });
 });
+
+test("one IP-scoped provider's block does not retire the pool for another", async () => {
+  // The report was "1 blocked from opencode, blocking others!". Two facts make
+  // that impossible as stated, and both are pinned here: the block key is
+  // (poolId, providerId), so `opencode` cannot exclude a pool for a
+  // provider whose limits belong to the credential; and `opencode` is the only
+  // bundled provider that declares `ipScopedRateLimit`, so no second IP-scoped
+  // provider exists to inherit the marker — `kimi` routes by credential.
+  const pools = new NetworkPoolSelector();
+  await pools.flagProviderBlocked("pool-a", "opencode");
+
+  expect(await pools.isProviderCooldown("pool-a", "opencode")).toMatchObject({
+    inCooldown: true,
+    blocked: true,
+  });
+  // `kimi` is the other IP-scoped provider, on the same egress. The marker was
+  // written for opencode, so kimi must still see this pool as available.
+  expect(await pools.isProviderCooldown("pool-a", "kimi")).toMatchObject({ inCooldown: false });
+  // A credential-keyed provider is untouched as well.
+  expect(await pools.isProviderCooldown("pool-a", "anthropic")).toMatchObject({ inCooldown: false });
+
+  const acquired = await pools.tryAcquireAvailablePool(["pool-a"], "kimi");
+  expect(acquired?.poolId).toBe("pool-a");
+  acquired?.release();
+  // And the blocked provider still cannot have it.
+  expect(await pools.tryAcquireAvailablePool(["pool-a"], "opencode")).toBeUndefined();
+});
