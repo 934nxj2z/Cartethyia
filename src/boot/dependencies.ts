@@ -434,9 +434,11 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // an account unhealthy — a growth endpoint that 404s is a display miss, not a
   // dispatch failure.
   //
-  // Hourly, not minute-cadenced: each claim is once per account per day, and a
-  // task that ticks every minute would spend its whole budget re-reading the
-  // day marker.
+  // Daily, not hourly: each claim is once per account per day and is
+  // ledger-guarded, so at an hourly cadence 23 of every 24 passes were a full
+  // scan of active accounts plus a ledger read per account that resolved to
+  // nothing. Once a day is the shortest interval where a pass can still find
+  // work, which is the only reason to run at all.
   const buddyTaskDeps = {
     db,
     resolveCredential: quotaResolveCredential,
@@ -447,37 +449,37 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   };
   scheduledTasks.register({
     name: "buddy-streak",
-    intervalMs: 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 5 * 60_000,
     run: () => buddyStreakTask(buddyTaskDeps),
   });
   scheduledTasks.register({
     name: "buddy-redeem",
-    intervalMs: 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 8 * 60_000,
     run: () => buddyRedeemTask(buddyTaskDeps),
   });
   scheduledTasks.register({
     name: "buddy-lottery",
-    intervalMs: 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 11 * 60_000,
     run: () => buddyLotteryTask(buddyTaskDeps),
   });
   scheduledTasks.register({
     name: "buddy-travel",
-    intervalMs: 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 14 * 60_000,
     run: () => buddyTravelTask(buddyTaskDeps),
   });
   scheduledTasks.register({
     name: "buddy-adopt",
-    intervalMs: 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 17 * 60_000,
     run: () => buddyAdoptTask(buddyTaskDeps),
   });
   scheduledTasks.register({
     name: "buddy-trial",
-    intervalMs: 6 * 60 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 20 * 60_000,
     run: () => buddyTrialTask(buddyTaskDeps),
   });
