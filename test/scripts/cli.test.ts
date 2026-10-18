@@ -1,22 +1,18 @@
 /**
  * The CLI pieces that broke in the 2.3.x line, pinned.
  *
- * `chooseFromMenu` returned its own resolution when stdin was not a TTY, which
- * is what a piped or CI run hits; without that guard a menu blocks forever on
- * input that never arrives. The drain-token trio is what lets `cartethyia
- * stop` reach a gateway left running by "Hide to background" — they are the
- * only handle on a process that is not a child of the stopping shell.
+ * `chooseFromMenu` returns -1 when stdin is not a TTY, which is what a piped or
+ * CI run hits; without that guard a menu blocks forever on input that never
+ * arrives. The drain token is what lets `cartethyia stop` reach a gateway it did
+ * not start — it has to be stable across runs, because a token regenerated per
+ * start can never match the gateway that is actually running.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  clearPersistedDrainToken,
-  readPersistedDrainToken,
-  writePersistedDrainToken,
-} from "../../scripts/cli/runtime-state";
 import { chooseFromMenu } from "../../scripts/cli/menu";
+import { ensureDrainToken, readPersistedDrainToken } from "../../scripts/cli/runtime-state";
 
 let configDir: string;
 let originalConfigDir: string | undefined;
@@ -44,15 +40,20 @@ test("chooseFromMenu returns -1 when stdin is not a TTY", () => {
   ).resolves.toBe(-1);
 });
 
-test("the drain token round-trips through the runtime state file", () => {
+test("the drain token is stable across calls and persisted", () => {
   expect(readPersistedDrainToken()).toBeNull();
-  writePersistedDrainToken("token-under-test");
-  expect(readPersistedDrainToken()).toBe("token-under-test");
-  clearPersistedDrainToken();
-  expect(readPersistedDrainToken()).toBeNull();
+  const first = ensureDrainToken();
+  expect(first.length).toBeGreaterThan(0);
+  // A second call must return the same token: `stop` in another process reads
+  // this file, and a new token per start could never authenticate.
+  expect(ensureDrainToken()).toBe(first);
+  expect(readPersistedDrainToken()).toBe(first);
 });
 
-test("a corrupt runtime state file reads as no background gateway", () => {
+test("a corrupt runtime state file reads as no token and is replaced", () => {
   writeFileSync(join(configDir, "runtime.json"), "{ not json", "utf8");
   expect(readPersistedDrainToken()).toBeNull();
+  const token = ensureDrainToken();
+  expect(token.length).toBeGreaterThan(0);
+  expect(readPersistedDrainToken()).toBe(token);
 });

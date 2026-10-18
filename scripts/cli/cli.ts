@@ -9,11 +9,7 @@ import { PACKAGE_ROOT, resolvePackagePath, resolveUserConfigDir } from "../../sr
 import { resolvePort } from "../../src/config/runtime";
 import { MINIMUM_BUN_VERSION, bunVersionAtLeast } from "../shared/env";
 import { chooseFromMenu, confirmByTyping, confirmStep } from "./menu";
-import {
-  clearPersistedDrainToken,
-  readPersistedDrainToken,
-  writePersistedDrainToken,
-} from "./runtime-state";
+import { ensureDrainToken, readPersistedDrainToken } from "./runtime-state";
 import { npmUpdate, readInstalledVersion, readLatestPublishedVersion } from "./version";
 import { renderWordmark } from "./wordmark";
 
@@ -132,6 +128,17 @@ function launchUpdatedTray(signalPath: string): ChildProcess {
 }
 
 async function startGateway(port: number, drainToken: string): Promise<Bun.Subprocess> {
+  // Starting a second gateway on the same port used to fail with "stopped
+  // before becoming ready (exit code 1)", which says nothing about the real
+  // cause. Probe the port first and say what is actually there.
+  const existing = await fetch(`http://127.0.0.1:${port}/health`, {
+    signal: AbortSignal.timeout(1_000),
+  }).catch(() => null);
+  if (existing !== null) {
+    throw new Error(
+      `Cartethyia is already running on port ${port}. Use \`cartethyia stop\` to stop it, or open http://127.0.0.1:${port}/console.`,
+    );
+  }
   // The gateway logs a startup phase line per stage. In menu mode those lines
   // would scroll through the same terminal the menu is drawing on, so they go
   // to a file instead and the operator sees only the menu.
@@ -290,7 +297,7 @@ async function stopTray(tray: SysTray, ready: boolean, exited: boolean): Promise
  */
 async function startMenu(): Promise<void> {
   const port = resolvePort();
-  const drainToken = randomBytes(32).toString("hex");
+  const drainToken = ensureDrainToken();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
   const settingsUrl = `${dashboardUrl}/settings`;
   const repositoryUrl = "https://github.com/risunCode/cartethyia";
@@ -302,14 +309,12 @@ async function startMenu(): Promise<void> {
   // runs in a later shell and has no other handle on this process.
   const gateway = await startGateway(port, drainToken);
   gateway.unref();
-  writePersistedDrainToken(drainToken);
 
   let stopping = false;
   const shutDown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     await stopGateway(gateway, port, drainToken);
-    clearPersistedDrainToken();
   };
   process.once("SIGINT", () => void shutDown());
   process.once("SIGTERM", () => void shutDown());
@@ -436,42 +441,69 @@ async function resetConsoleAccount(port: number, token: string): Promise<number>
 }
 
 /**
- * Stops a gateway left running by "Hide to tray". That process is not a child
- * of this one, so it cannot be signalled directly — the only handle is the
- * loopback drain endpoint, which needs the drain token the start wrote.
+ * Stops a running gateway through its loopback drain endpoint.
+ *
+ * That process is not a child of this one, so it cannot be signalled directly —
+ * the token in the config directory is the only handle. A 202 means the drain
+ * was accepted, not that the process is gone, so this waits for the port to
+ * stop answering before reporting success; a `stop` that returns while the
+ * gateway is still serving is worse than one that fails.
  */
 async function stopRunningGateway(): Promise<number> {
   const port = resolvePort();
   const token = readPersistedDrainToken();
   if (token === null) {
     console.error(
-      "No background Cartethyia gateway was found for this install. Start one with `carte`, or stop a foreground run with Ctrl-C.",
+      "This install has no saved drain token, so there is no background gateway to stop. Start one with `carte`, or stop a foreground run with Ctrl-C.",
     );
     return 1;
   }
+
+  let accepted = false;
   try {
     const response = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
       method: "POST",
       headers: { "x-drain-token": token },
       signal: AbortSignal.timeout(3_000),
     });
-    if (response.status !== 202) {
-      console.error(`The gateway refused the drain request (HTTP ${response.status}).`);
+    accepted = response.status === 202;
+    if (!accepted) {
+      console.error(
+        response.status === 401
+          ? `The gateway on port ${port} rejected the drain token. It was started by a different install; stop it where it was started.`
+          : `The gateway refused the drain request (HTTP ${response.status}).`,
+      );
       return 1;
     }
   } catch {
-    console.error("No gateway is listening on the configured port. It may already be stopped.");
+    console.error(`No gateway is listening on port ${port}. It may already be stopped.`);
     return 1;
   }
-  clearPersistedDrainToken();
-  console.log("Cartethyia is draining and will stop once in-flight requests finish.");
-  return 0;
+
+  // Wait for the listener to actually go away before claiming success.
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const alive = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(500),
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (!alive) {
+      console.log("Cartethyia stopped.");
+      return 0;
+    }
+    await Bun.sleep(250);
+  }
+  console.error(
+    `The gateway accepted the drain but is still answering on port ${port} after 20 seconds.`,
+  );
+  return 1;
 }
 
 
 async function startTray(): Promise<void> {
   const port = resolvePort();
-  const drainToken = randomBytes(32).toString("hex");
+  const drainToken = ensureDrainToken();
   const currentVersion = await readInstalledVersion();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
   const settingsUrl = `${dashboardUrl}/settings`;
