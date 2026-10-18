@@ -60,9 +60,6 @@ operator job, start to finish.
 <td align="center"><img src="documentation/assets/screenshots/customization.png" width="100%" alt="Customization" /><br /><b>Customization</b><br /><sub>Background, transparency, and per-surface blur</sub></td>
 <td align="center"><img src="documentation/assets/screenshots/settings.png" width="100%" alt="Settings" /><br /><b>Settings</b><br /><sub>Backup, retention, payload capture, update checks</sub></td>
 </tr>
-<tr>
-<td align="center" colspan="2"><img src="documentation/assets/screenshots/themes-example.png" width="100%" alt="Themes: light, dark, desktop view" /><br /><b>Themes</b><br /><sub>Light, dark, and desktop-class surfaces — the console ships with a built-in theme system, not just a colour swap</sub></td>
-</tr>
 </table>
 
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
