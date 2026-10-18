@@ -8,6 +8,61 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.0] — 2026-10-18
+
+### Added
+
+- **`cartethyia stop` stops a gateway this shell did not start.** The drain
+  token was regenerated on every start and `runtime.json` was deleted on
+  shutdown, so the token `stop` read could never match the gateway actually
+  running — it reported "no gateway found" or a 401 against a live process.
+  The token is now created once per install and kept, so the menu, the tray,
+  and `start` all authenticate with the same secret. `stop` also waits for the
+  port to stop answering before reporting success; a 202 is not a stop.
+- **Backup writes a file, not a settings page.** `POST /admin/export-backup`
+  writes a gzipped config backup to the download directory. The dashboard
+  export requires the console password, which is exactly what a locked-out
+  operator does not have; this route is gated by loopback plus the install
+  token instead. It exports the `config` section only — `telemetry_events`,
+  `telemetry_usage_totals`, and `telemetry_payloads` are per-request history,
+  are the bulk of the file, and are not what an operator is recovering.
+  Restore stays a console action.
+- **`POST /admin/reset-console-account`** deletes every console user, which puts
+  `requiresSetup()` back to true so `/console` asks for a new account. A
+  forgotten password previously had no recovery: `/change-password` needs the
+  current password and first-boot setup only runs when no user exists. Gated
+  by loopback, a constant-time token, and the literal body
+  `{"confirm":"RESET"}`. Providers, API keys, and routing are untouched.
+- **`carte` opens an arrow-key menu.** It lists Open Console, Reset console
+  password, Backup, Visit repository, the update row, Hide to tray, and Exit.
+  Built on `enquirer`, so it works over SSH and headless with no desktop
+  environment.
+
+### Changed
+
+- The gateway runs detached with its output in `gateway.log`, so the menu owns
+  the terminal instead of competing with startup logging.
+- The tray's three version rows collapse into one that carries the running
+  version and either "up to date" or "update to X".
+- `scripts/cli/cli.ts` splits by responsibility into `menu.ts` (key capture and
+  confirmations), `runtime-state.ts` (the install token), `version.ts`, and
+  `wordmark.ts` (the ANSI banner). `scripts/media.ts` moves to
+  `scripts/operations/media.ts`. `bun run test --scope scripts` covers the CLI.
+
+### Fixed
+
+- **An adopted tray's Exit stops the gateway.** "Hide to tray" hands the
+  running gateway to a tray that adopts it, so the tray holds no child process
+  and Exit only closed the icon, leaving the gateway listening. It now drains
+  through the loopback endpoint.
+- Starting while a gateway is already running reported "stopped before
+  becoming ready (exit code 1)", naming neither the port nor the cause. It now
+  says the gateway is already running on that port and how to resolve it.
+- The wordmark repeated down the terminal because the header was printed
+  inside the menu loop while `enquirer` redraws its frame per keypress.
+- A start failure printed "Cartethyia failed to start:" with an empty message.
+  It now names the exit code and the usual cause.
+
 ## [2.3.4] — 2026-10-18
 
 ### Fixed

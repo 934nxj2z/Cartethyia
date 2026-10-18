@@ -166,12 +166,16 @@ async function startGateway(port: number, drainToken: string): Promise<Bun.Subpr
       // terminal, so closing that terminal took the gateway down with it and
       // "Hide to tray" left nothing running.
       stderr: logFd ?? "ignore",
-      // Detached so the gateway outlives the process that started it. Without
-      // this, exiting the menu kills the gateway even though it was unref'd.
-      detached: true,
+      // NOT detached. A detached child cannot be killed from an `exit`
+      // handler on Windows (measured: kill() runs, the gateway keeps serving),
+      // and a terminal's Ctrl-C only reaches children in the same process
+      // group. Staying attached means Ctrl-C and the `exit` backstop both stop
+      // the gateway, at the cost of the gateway dying with the terminal —
+      // which is the behaviour wanted here, since a gateway nobody can see
+      // should not outlive the menu.
+      detached: false,
     },
   );
-  child.unref();
   const startupController = new AbortController();
   const ready = (async (): Promise<void> => {
     const deadline = Date.now() + 30_000;
@@ -310,22 +314,39 @@ async function startMenu(): Promise<void> {
   gateway.unref();
 
   let stopping = false;
+  let handedOff = false;
   const shutDown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     await stopGateway(gateway, port, drainToken);
   };
-  // Ctrl-C must drain the gateway and restore the terminal rather than kill
-  // this process outright: the gateway is detached, so an abrupt exit would
-  // leave it running with the menu's raw-mode terminal behind.
+  // Ctrl-C has to stop the gateway, and the drain endpoint cannot be called
+  // from an exit path: it is async, and enquirer's own Ctrl-C handler calls
+  // process.exit(130) while a prompt is live. So the gateway is a child in this
+  // process group — a terminal's Ctrl-C signals the whole group, and the
+  // gateway drains through the SIGINT handler it already has in src/main.ts —
+  // and `process.on("exit")` is the synchronous backstop for every other way
+  // this process can end (a closed terminal, a crash, a signal Bun cannot
+  // deliver on Windows). That handler can only call synchronous APIs, which is
+  // why it signals the child rather than awaiting the drain endpoint.
+  // `handedOff` is set by "Hide to tray": the gateway is being given to a tray
+  // that will own it, so this process must not kill it on the way out.
+  process.on("exit", () => {
+    if (stopping || handedOff) return;
+    try {
+      gateway.kill();
+    } catch {
+      // Already gone; nothing to stop.
+    }
+  });
   const interrupt = async (): Promise<void> => {
     process.stdout.write("\u001b[2J\u001b[H");
     console.log("Stopping Cartethyia…");
     await shutDown();
     process.exit(0);
   };
-  process.once("SIGINT", () => void interrupt());
-  process.once("SIGTERM", () => void interrupt());
+  process.on("SIGTERM", () => void interrupt());
+  process.on("SIGINT", () => void interrupt());
 
   let latestVersion = await readLatestPublishedVersion();
   let running = true;
@@ -388,12 +409,13 @@ async function startMenu(): Promise<void> {
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
-        // Hand the gateway to a detached tray, then let this process go. The
-        // tray adopts the running gateway (CARTETHYIA_TRAY_ADOPT_RUNNING) so it
-        // does not start a second one on the same port; the drain token stays
-        // persisted so `cartethyia stop` still reaches it.
+        // Hand the gateway to a tray that adopts it (CARTETHYIA_TRAY_ADOPT_RUNNING),
+        // so no second gateway is started on the same port and the drain token
+        // stays usable by `cartethyia stop`. `handedOff` keeps the exit backstop
+        // from killing a gateway the tray now owns.
         running = false;
         stopping = true;
+        handedOff = true;
         const tray = spawn(
           process.execPath,
           ["run", resolvePackagePath("scripts", "cli", "cli.ts"), "tray"],

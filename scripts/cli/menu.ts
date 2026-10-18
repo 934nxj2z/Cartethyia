@@ -41,6 +41,7 @@ export async function chooseFromMenu(
   // has to be recovered from the label rather than from the position.
   const labels = rows.flatMap((row) => (row.kind === "action" ? [row.label] : []));
 
+
   try {
     const answer = await Enquirer.prompt<{ choice: string }>({
       type: "select",
@@ -59,8 +60,8 @@ export async function chooseFromMenu(
     });
     return labels.indexOf(answer.choice);
   } catch {
-    // Enquirer rejects on Ctrl-C or Esc. Return -1 so the caller drains the
-    // gateway and exits cleanly rather than leaving a detached process behind.
+    // Enquirer rejects on Esc and on its own Ctrl-C handling. Return -1 so the
+    // caller drains the gateway rather than leaving a detached process behind.
     process.stdout.write("\u001b[2J\u001b[H");
     return -1;
   }
