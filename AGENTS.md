@@ -108,7 +108,8 @@ development or production database.
 - `scripts/` — CLI, development, build, generation, operations, and test
   utilities. Check the existing subdirectory before adding a script.
 - `migrations/` — PostgreSQL and generated SQLite database baselines, plus the
-  numbered forward migrations (0000–0012) applied at boot; backup/restore is the
+  numbered forward migrations applied at boot (0000–0014 at time of writing;
+  read the directory rather than trusting a count); backup/restore is the
   escape hatch for retired history, not a replacement for them.
 - `test/` and `dashboard/test/` — backend and dashboard tests.
 - `documentation/` — getting started, reference indexes, and feature guides.

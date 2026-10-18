@@ -149,9 +149,10 @@ The quota cache: 1,024 in-process entries, 15-minute TTL, optional Redis shared
 tier, attempt and successful-fetch timestamps recorded separately. A failed
 refresh retains a successful reading for up to 30 minutes while exposing the
 refresh error — never replaces usable quota with an empty result.
-`quota-refresh-sweep` runs every minute, refreshes entries at least four
-minutes old, bounds each pass to 40 accounts / 45 seconds (set in
-`src/boot/dependencies.ts`). See
+`quota-refresh-sweep` runs every minute, refreshes entries at least eight
+minutes old — half the 15-minute cache TTL, so a reading is refreshed roughly
+twice per window instead of three times — and bounds each pass to 40 accounts /
+45 seconds (set in `src/boot/dependencies.ts`). See
 [Usage floor](../features/usage-floor.md) for how readings affect eligibility.
 
 ## Per-family notes
