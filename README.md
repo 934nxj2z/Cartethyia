@@ -20,6 +20,11 @@ cartethyia setup
 carte
 ```
 
+Install it **globally**. A local `npm install cartethyia` puts `cartethyia` and
+`carte` in `./node_modules/.bin/`, which is not on your `PATH` — the commands
+will not be found. Either install globally, or run a local one through
+`npx cartethyia`.
+
 Full install guide, modes, Docker, VPS, systemd, and the one-shot script:
 [getting started](documentation/getting-started.md). To remove it:
 `npm uninstall --global cartethyia`.

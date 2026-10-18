@@ -8,6 +8,21 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.1] — 2026-10-18
+
+### Fixed
+
+- `ws` is bumped to `8.22.0`. The pinned `8.18.3` carried two advisories —
+  uninitialized memory disclosure and memory exhaustion from tiny fragments —
+  and npm reported no fix because the dependency was exact-pinned. Only
+  `src/network/pool/resolver.ts` imports it, for the proxy-pool egress probe.
+- Installing the package locally no longer reads as a broken install. The
+  commands live in `./node_modules/.bin/`, which is not on `PATH`, so
+  `cartethyia` and `carte` did not resolve after `npm install cartethyia`.
+  The install instructions now say `--global` is required, name `npx
+  cartethyia` as the local-install path, and point Linux and macOS users at
+  npm's EACCES guidance for a global install that needs `sudo`.
+
 ## [2.3.0] — 2026-10-18
 
 ### Added

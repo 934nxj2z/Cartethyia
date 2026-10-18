@@ -58,6 +58,12 @@ cartethyia setup
 carte
 ```
 
+`--global` is required. A local `npm install cartethyia` installs the package
+but leaves `cartethyia` and `carte` in `./node_modules/.bin/`, which is not on
+`PATH`, so neither command resolves. For a local install run `npx cartethyia`
+instead. On Linux and macOS a global install may need `sudo`; if it does, see
+<https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally>.
+
 Setup creates the encryption key, asks Lite or Full, checks the database, and
 stores `.env` in the OS config directory (`%APPDATA%\Cartethyia` on Windows,
 `~/Library/Application Support/Cartethyia` on macOS, `$XDG_CONFIG_HOME/Cartethyia`
