@@ -20,6 +20,57 @@ import { GATEWAY_USER_AGENT } from "./gateway-user-agent";
 import { isIP } from "node:net";
 import { isAddressAllowed } from "../../network/ssrf";
 import type { SsrfPolicy } from "../../config/network";
+
+/**
+ * Revision of the compiled provider catalog, and the last one materialized.
+ *
+ * The snapshot builder re-seeds on **every** rebuild, and a re-seed is a
+ * `DELETE` per provider plus a full `INSERT … ON CONFLICT DO UPDATE` of the
+ * compiled catalog. That is correct work when the catalog changed and pure
+ * waste when it did not — and the invalidation that triggers it is a timer
+ * (`account-health-sweep`), so the waste lands on a proxy request.
+ *
+ * Only the paths that can actually change the compiled catalog bump this: a
+ * provider registered, edited, or retired. A cooldown recovery changes account
+ * health, not the catalog, so it must not.
+ */
+let catalogRevision = 0;
+let lastSeededCatalogRevision = -1;
+
+/** Current catalog revision. */
+export function currentCatalogRevision(): number {
+  return catalogRevision;
+}
+
+/** Bumps the revision after a change to the compiled catalog. */
+export function bumpCatalogRevision(): number {
+  catalogRevision += 1;
+  return catalogRevision;
+}
+
+/**
+ * Forces the next re-seed to run even when the revision is unchanged.
+ *
+ * For the boot path and for tests: the compiled catalog has to be materialized
+ * once for the current process regardless of what an earlier call already
+ * applied, because a fresh database or a fresh registry is not a revision
+ * change.
+ */
+export function invalidateCatalogSeed(): void {
+  lastSeededCatalogRevision = -1;
+}
+
+/**
+ * Records that the caller has just materialized the current catalog itself, so
+ * the next `refreshActiveProviderCatalogs` is a no-op.
+ *
+ * The boot path seeds directly rather than through the gate — it must always
+ * run, against a database and a registry that are both fresh — and without this
+ * the first snapshot build would pay for a second identical seed.
+ */
+export function markCatalogSeeded(): void {
+  lastSeededCatalogRevision = catalogRevision;
+}
 /**
  * Idempotently materializes every shipped provider in the database catalog.
  * The canonical provider definition supplies identity and routing defaults;
@@ -60,6 +111,9 @@ export async function seedBundledProviders(db: CartethyiaDatabase): Promise<void
         ),
       },
     });
+  // The compiled catalog is derived from the registry, and this is the path
+  // that reconciles the bundle's own rows into it.
+  bumpCatalogRevision();
 }
 
 /**
@@ -94,6 +148,9 @@ export async function retireUnbundledProviders(db: CartethyiaDatabase): Promise<
     .delete(providers)
     .where(and(isNull(providers.tenantId), notInArray(providers.id, bundledIds)))
     .returning({ id: providers.id });
+  // Deleting a provider removes it from the compiled catalog, so the next
+  // re-seed must run even though no revision bumped on this path otherwise.
+  if (retired.length > 0) bumpCatalogRevision();
   return retired.length;
 }
 
@@ -172,13 +229,22 @@ export async function bundledModelCatalog(
  * boot. Seeding is no longer account-gated, so this is now simply the same walk
  * as at boot; it exists because an account makes the rows routable and the
  * snapshot must reflect that without waiting for a restart.
+ *
+ * Gated on {@link currentCatalogRevision}: this is the seeder the snapshot
+ * builder calls on every rebuild, and the invalidation that triggers it is a
+ * 30 s timer, so an ungated re-seed could be pushed onto the next proxy
+ * request for a catalog that had not changed. The paths that do change the
+ * catalog bump the revision; everything else is a no-op here.
  */
 export async function refreshActiveProviderCatalogs(
   db: CartethyiaDatabase,
   registry: ProviderRegistry,
 ): Promise<void> {
+  const revision = currentCatalogRevision();
+  if (revision === lastSeededCatalogRevision) return;
   const catalog = await bundledModelCatalog(registry);
   await seedBundledModels(db, catalog.modelsByProvider);
+  lastSeededCatalogRevision = revision;
 }
 
 
@@ -217,6 +283,7 @@ export async function registerByokProviders(
     .from(providers)
     .where(and(isNotNull(providers.baseUrl), eq(providers.enabled, true)));
   const hosts = new Map<string, ByokUpstreamHost>();
+  let registered = false;
   for (const row of rows) {
     if (!row.baseUrl) continue;
     const baseUrl = row.baseUrl;
@@ -307,7 +374,13 @@ export async function registerByokProviders(
         }),
     });
     byokRegistrationFingerprints.set(providerId, fingerprint);
+    registered = true;
   }
+  // A changed BYOK registration changes what the compiled catalog contains, so
+  // the next re-seed must run. An unchanged one deliberately does not: this
+  // function is called on every console provider mutation, most of which do not
+  // alter the registration at all.
+  if (registered) bumpCatalogRevision();
   return hosts;
 }
 
@@ -341,6 +414,9 @@ export async function syncByokProvider(
   if (host === undefined && fingerprintBefore !== undefined) {
     registry.unregister(normalized);
     byokRegistrationFingerprints.delete(normalized);
+    // The provider left the registry, so the compiled catalog no longer
+    // contains it: the next re-seed must run to prune its rows.
+    bumpCatalogRevision();
   }
   return host;
 }

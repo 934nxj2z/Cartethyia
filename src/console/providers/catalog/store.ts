@@ -17,7 +17,7 @@ import { listAccountHealthEvents, recoverAccount, type AccountHealthEventRecord 
 import { invalidateCredentialCache } from "../../../providers/operations/provider-credential-service";
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
-import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
+import { bumpCatalogRevision, type BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
 import type { AccountInflightReading, BuddyGrowthTaskLedgerEntry, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateModelMetadataRequest, UpdateProviderAccountRequest, ModelMetadataOverride } from "./contracts";
 import { isServiceKind, validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
@@ -487,6 +487,10 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       .returning({ id: providers.id });
     if (deleted.length === 0) return false;
     this.providerRegistry.unregister(providerId);
+    // The provider left the registry, so the compiled catalog no longer
+    // contains it — the snapshot's re-seed is gated on that revision, and a
+    // delete that did not bump it would leave the provider's model rows behind.
+    bumpCatalogRevision();
     return true;
   }
   async updateGlobal(
