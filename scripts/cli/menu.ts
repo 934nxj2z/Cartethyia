@@ -17,22 +17,25 @@ export type MenuRow =
  * Built on `enquirer` rather than a hand-rolled raw-mode listener: a raw
  * `process.stdin.on("keypress")` handler never fires unless something first
  * calls `readline.emitKeypressEvents`, and the menu rendered as inert text for
- * exactly that reason. `enquirer` owns the keypress plumbing.
+ * exactly that reason. `enquirer` owns the keypress plumbing, including Ctrl-C.
  *
- * `header` is rendered above the list — the caller passes lines such as the
- * running version and URL, so the menu never has to know what it drives.
+ * `header` is printed once here and never handed to `enquirer`: enquirer
+ * redraws its whole frame on every keypress, so a header inside the prompt
+ * repeated once per keystroke and stacked the wordmark down the terminal.
  *
- * Returns -1 when stdin is not a TTY (piped, CI, or a non-interactive run) so
- * callers can fall back without blocking on input that will never arrive.
+ * Returns -1 when stdin is not a TTY (piped, CI, or a non-interactive run) or
+ * when the operator cancels, so the caller can drain and exit either way.
  */
 export async function chooseFromMenu(
   header: string | readonly string[],
   rows: readonly MenuRow[],
 ): Promise<number> {
   if (!process.stdin.isTTY) return -1;
+
   const headerLines = typeof header === "string" ? [header] : header;
-  for (const line of headerLines) console.log(line);
-  console.log("");
+  process.stdout.write("\u001b[2J\u001b[H");
+  for (const line of headerLines) process.stdout.write(`${line}\n`);
+  process.stdout.write("\n");
 
   // Enquirer indexes the rows it renders, rules included, so the action index
   // has to be recovered from the label rather than from the position.
@@ -56,7 +59,9 @@ export async function chooseFromMenu(
     });
     return labels.indexOf(answer.choice);
   } catch {
-    // Enquirer rejects when the prompt is cancelled (Ctrl-C or Esc).
+    // Enquirer rejects on Ctrl-C or Esc. Return -1 so the caller drains the
+    // gateway and exits cleanly rather than leaving a detached process behind.
+    process.stdout.write("\u001b[2J\u001b[H");
     return -1;
   }
 }

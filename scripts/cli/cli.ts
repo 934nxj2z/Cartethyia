@@ -27,7 +27,7 @@ Usage:
   cartethyia update
 
 carte starts the gateway in the background and leaves only the console menu on
-your terminal — Open Console, Reset password, Backup & Restore, Visit
+your terminal — Open Console, Reset password, Backup, Visit
 repository, Update, Exit. Arrow keys and Enter; no desktop environment needed,
 so it works over SSH and headless. Exiting the menu drains the gateway.
 carte --tray uses a system-tray icon instead, which needs a graphical session.
@@ -315,11 +315,22 @@ async function startMenu(): Promise<void> {
     stopping = true;
     await stopGateway(gateway, port, drainToken);
   };
-  process.once("SIGINT", () => void shutDown());
-  process.once("SIGTERM", () => void shutDown());
+  // Ctrl-C must drain the gateway and restore the terminal rather than kill
+  // this process outright: the gateway is detached, so an abrupt exit would
+  // leave it running with the menu's raw-mode terminal behind.
+  const interrupt = async (): Promise<void> => {
+    process.stdout.write("\u001b[2J\u001b[H");
+    console.log("Stopping Cartethyia…");
+    await shutDown();
+    process.exit(0);
+  };
+  process.once("SIGINT", () => void interrupt());
+  process.once("SIGTERM", () => void interrupt());
 
   let latestVersion = await readLatestPublishedVersion();
   let running = true;
+
+  const header = [...renderWordmark(), `Cartethyia ${currentVersion} \u00b7 ${dashboardUrl}`];
 
   while (running) {
     const upToDate = latestVersion === null || !isNewerRelease(currentVersion, latestVersion);
@@ -403,9 +414,7 @@ async function startMenu(): Promise<void> {
       },
     ];
 
-    const choice = await chooseFromMenu(
-      [...renderWordmark(), `Cartethyia ${currentVersion} \u00b7 ${dashboardUrl}`],
-      [
+    const choice = await chooseFromMenu(header, [
         { kind: "action", label: "Open Console", hint: `browser \u00b7 ${dashboardUrl}` },
         { kind: "action", label: "Reset console password", hint: "deletes the account" },
         { kind: "action", label: "Backup", hint: "export config to Downloads" },
@@ -551,7 +560,6 @@ async function startTray(): Promise<void> {
   const drainToken = ensureDrainToken();
   const currentVersion = await readInstalledVersion();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
-  const settingsUrl = `${dashboardUrl}/settings`;
   const icon = resolvePackagePath(
     "tray-assets",
     process.platform === "win32" ? "cartethyia.ico" : "cartethyia.png",
@@ -577,8 +585,8 @@ async function startTray(): Promise<void> {
     enabled: true,
   };
   const backupRestore = {
-    title: "Backup & Restore",
-    tooltip: "Open Console settings to export or restore configuration",
+    title: "Backup",
+    tooltip: "Write a gzipped config backup to your download directory",
     enabled: true,
   };
   const exit = {
@@ -681,7 +689,13 @@ async function startTray(): Promise<void> {
       return;
     }
     if (title === backupRestore.title) {
-      await openUrl(settingsUrl);
+      // Export straight to disk, like the menu does. Restore stays in the
+      // console, where an operator picks the file and confirms the overwrite.
+      const result = await exportBackup(port, drainToken);
+      if (result !== null)
+        console.log(
+          `Backup written to ${result.path} (${(result.bytes / 1024).toFixed(1)} KiB). Telemetry is not included.`,
+        );
       return;
     }
     if (title === repository.title) {

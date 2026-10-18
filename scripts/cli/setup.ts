@@ -418,7 +418,7 @@ export async function setup(): Promise<void> {
     console.log("");
     console.log("  carte");
     console.log("    Starts the gateway in the background and opens the console menu");
-    console.log("    (Open Console, Reset password, Backup & Restore, Visit repository,");
+    console.log("    (Open Console, Reset password, Backup, Visit repository, Update, Exit).");
     console.log("    Update, Exit). Arrow keys and Enter; no desktop environment needed.");
     console.log("");
     console.log("  cartethyia start");

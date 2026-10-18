@@ -74,7 +74,7 @@ data stay outside the npm package. Setup does not install PostgreSQL.
 **Settings**, **Hide to background**, **Check for updates**, and **Exit**. It
 needs no desktop environment, so it works over SSH and on a headless box.
 `carte --tray` starts a system-tray icon instead — versions, **Open Console**,
-**Reset password**, **Backup & Restore**, and **Exit** — and needs a graphical
+**Reset password**, **Backup**, and **Exit** — and needs a graphical
 session; the launcher then releases the terminal once the gateway is ready.
 `cartethyia start` stays in the foreground. Exit drains the gateway through its
 authenticated loopback endpoint before stopping. This does not install a
