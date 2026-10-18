@@ -176,19 +176,37 @@ export async function readTelemetryEvents(): Promise<TelemetryEventRecord[]> {
 export interface EventQuery {
   readonly tenantId?: string;
   readonly since?: Date;
+  /**
+   * Exclusive upper bound on `createdAt`, used to push a pagination cursor into
+   * the query instead of filtering after the whole window was parsed. Without
+   * it a cursor page drops `limit` — the reader cannot know where the page
+   * ends — so only the first page of a list is bounded.
+   */
+  readonly until?: Date;
   readonly apiKeyIds?: readonly string[];
   readonly accountIds?: readonly string[];
   readonly requestId?: string;
+  /**
+   * Distinct from {@link requestId}: `id` defaults to the request id when a row
+   * does not carry one of its own (`event-log.ts:68`), so a row can match by
+   * either. A lookup by `id` short-circuits like `requestId` does, which is the
+   * whole point — without it a single-event detail read parses the retention
+   * window and then scans it in JS.
+   */
+  readonly id?: string;
   readonly httpStatus?: number;
   readonly limit?: number;
 }
 
-function matches(event: TelemetryEventRecord, query: EventQuery, since: number | undefined, keys: ReadonlySet<string> | undefined, accounts: ReadonlySet<string> | undefined): boolean {
+function matches(event: TelemetryEventRecord, query: EventQuery, since: number | undefined, until: number | undefined, keys: ReadonlySet<string> | undefined, accounts: ReadonlySet<string> | undefined): boolean {
   if (query.tenantId !== undefined && event.tenantId !== query.tenantId) return false;
-  if (since !== undefined && new Date(event.createdAt).getTime() < since) return false;
+  const at = new Date(event.createdAt).getTime();
+  if (since !== undefined && at < since) return false;
+  if (until !== undefined && at > until) return false;
   if (keys && (event.apiKeyId === null || !keys.has(event.apiKeyId))) return false;
   if (accounts && (event.accountId === null || !accounts.has(event.accountId))) return false;
   if (query.requestId !== undefined && event.requestId !== query.requestId) return false;
+  if (query.id !== undefined && event.id !== query.id) return false;
   if (query.httpStatus !== undefined && event.httpStatus !== query.httpStatus) return false;
   return true;
 }
@@ -199,6 +217,7 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
     .filter((file) => file.endsWith(".jsonl") && (query.since === undefined || eventFileHour(file) >= hourStamp(query.since)))
     .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   const since = query.since?.getTime();
+  const until = query.until?.getTime();
   const keys = query.apiKeyIds ? new Set(query.apiKeyIds) : undefined;
   const accounts = query.accountIds ? new Set(query.accountIds) : undefined;
   const events: TelemetryEventRecord[] = [];
@@ -207,19 +226,21 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   // field, and a false negative is not possible while a false positive costs
   // only the parse it would have paid anyway.
   const allow =
-    query.tenantId === undefined && query.requestId === undefined
+    query.tenantId === undefined && query.requestId === undefined && query.id === undefined
       ? undefined
       : (line: string): boolean =>
           (query.tenantId === undefined || line.includes(query.tenantId)) &&
-          (query.requestId === undefined || line.includes(query.requestId));
+          (query.requestId === undefined || line.includes(query.requestId)) &&
+          (query.id === undefined || line.includes(query.id));
+  // A single-row lookup: stop at the first (newest) match instead of parsing
+  // the whole retention window.
+  const oneRow = query.requestId !== undefined || query.id !== undefined;
   for (const file of files) {
     const matched: TelemetryEventRecord[] = [];
     for await (const event of readEventFiles([file], allow)) {
-      if (!matches(event, query, since, keys, accounts)) continue;
+      if (!matches(event, query, since, until, keys, accounts)) continue;
       matched.push(event);
-      // A requestId lookup needs one row: stop at the first (newest) match
-      // instead of parsing the whole retention window.
-      if (query.requestId !== undefined) return matched;
+      if (oneRow) return matched;
     }
     matched.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     events.push(...matched);

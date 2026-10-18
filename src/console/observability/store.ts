@@ -795,7 +795,19 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     cursor?: string,
   ): Promise<TelemetryEventListPage> {
     const before = decodeDatedCursor(cursor);
-    const events = await queryTelemetryEvents({ tenantId, ...(before ? {} : { limit: limit + 1 }) });
+    // The cursor becomes an `until` bound inside the query, so `limit` applies
+    // to every page and not only the first. Filtering after the read forced the
+    // previous shape: a cursor page had to fetch the whole window to know where
+    // it ended, so `limit` was dropped the moment a cursor appeared.
+    //
+    // `until` is inclusive while the cursor is exclusive, so rows at the exact
+    // cursor timestamp are still compared by id here — the cheap part of the
+    // predicate, now over one timestamp's worth of rows instead of the window.
+    const events = await queryTelemetryEvents({
+      tenantId,
+      limit: limit + 1,
+      ...(before === undefined ? {} : { until: new Date(before.createdAt) }),
+    });
     const rows = (before
       ? events.filter((event) => event.createdAt < before.createdAt || (event.createdAt === before.createdAt && event.id < before.id))
       : events
@@ -817,7 +829,11 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     includePayload = false,
     createdAt?: string,
   ): Promise<TelemetryEventDetail | undefined> {
-    const events = await queryTelemetryEvents({ tenantId });
+    // Matched by `id`, which is the field the list cursor encodes — not by
+    // `requestId`, which is a different column that merely defaults to the
+    // same value. Predicating on it lets the reader stop at the first hit
+    // instead of parsing the retention window to find one row.
+    const events = await queryTelemetryEvents({ tenantId, id: eventId });
     const event = events.find(
       (candidate) =>
         candidate.id === eventId && (createdAt === undefined || candidate.createdAt === createdAt),
