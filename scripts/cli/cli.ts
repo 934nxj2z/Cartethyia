@@ -299,7 +299,6 @@ async function startMenu(): Promise<void> {
   const port = resolvePort();
   const drainToken = ensureDrainToken();
   const dashboardUrl = `http://127.0.0.1:${port}/console`;
-  const settingsUrl = `${dashboardUrl}/settings`;
   const repositoryUrl = "https://github.com/risunCode/cartethyia";
   const currentVersion = await readInstalledVersion();
 
@@ -358,7 +357,18 @@ async function startMenu(): Promise<void> {
             : "Reset failed; see the gateway log.",
         );
       },
-      async () => openUrl(settingsUrl),
+      async () => {
+        // Export straight to the download directory. The console page asks for
+        // the operator password, which is exactly the thing a locked-out
+        // operator does not have; the CLI already runs as the OS user who owns
+        // the database, so the loopback token is the whole gate.
+        const result = await exportBackup(port, drainToken);
+        if (result === null) return;
+        console.log(
+          `Backup written to ${result.path} (${(result.bytes / 1024).toFixed(1)} KiB, ${Object.keys(result.counts).length} tables).`,
+        );
+        console.log("Telemetry is not included: it is per-request history, not configuration.");
+      },
       async () => openUrl(repositoryUrl),
       async () => {
         if (upToDate) return;
@@ -398,7 +408,7 @@ async function startMenu(): Promise<void> {
       [
         { kind: "action", label: "Open Console", hint: `browser \u00b7 ${dashboardUrl}` },
         { kind: "action", label: "Reset console password", hint: "deletes the account" },
-        { kind: "action", label: "Backup & Restore", hint: "export or import" },
+        { kind: "action", label: "Backup", hint: "export config to Downloads" },
         { kind: "action", label: "Visit repository", hint: "github.com/risunCode/cartethyia" },
         { kind: "action", label: updateLabel, hint: upToDate ? "no update available" : "installs now" },
         { kind: "action", label: "Hide to tray", hint: "keep the gateway running" },
@@ -411,6 +421,41 @@ async function startMenu(): Promise<void> {
     if (action) await action();
   }
   await shutDown();
+}
+
+/**
+ * Asks the gateway to write a gzipped config backup into the download
+ * directory. Returns the written path and counts, or null when it failed.
+ *
+ * The file is produced by the gateway, not here: the gateway owns the database
+ * connection and the schema is dialect-dependent, so reading the tables from
+ * this process would need a second implementation of both.
+ */
+async function exportBackup(
+  port: number,
+  token: string,
+): Promise<{ path: string; bytes: number; counts: Record<string, number> } | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/admin/export-backup`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-drain-token": token },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.error(`The gateway refused the backup (HTTP ${response.status}). ${detail}`.trim());
+      return null;
+    }
+    return (await response.json()) as {
+      path: string;
+      bytes: number;
+      counts: Record<string, number>;
+    };
+  } catch {
+    console.error("Could not reach the gateway. Is it still running?");
+    return null;
+  }
 }
 
 /**
@@ -511,20 +556,10 @@ async function startTray(): Promise<void> {
     "tray-assets",
     process.platform === "win32" ? "cartethyia.ico" : "cartethyia.png",
   );
-  const version = {
-    title: `Current Cartethyia version: ${currentVersion}`,
-    tooltip: `Running Cartethyia ${currentVersion}`,
-    enabled: false,
-  };
   const repository = {
     title: "Repository: risunCode/cartethyia",
     tooltip: "Open the Cartethyia GitHub repository",
     enabled: true,
-  };
-  const updateStatus = {
-    title: "Version tracker: checking npm…",
-    tooltip: "Latest published Cartethyia version on npm",
-    enabled: false,
   };
   const update = {
     title: "Checking for updates…",
@@ -537,8 +572,8 @@ async function startTray(): Promise<void> {
     enabled: true,
   };
   const resetPassword = {
-    title: "Reset password",
-    tooltip: "Open Console settings to change the administrator password",
+    title: "Reset console password",
+    tooltip: "Delete the console account so /console asks for a new one",
     enabled: true,
   };
   const backupRestore = {
@@ -557,9 +592,7 @@ async function startTray(): Promise<void> {
       title: "Cartethyia",
       tooltip: "Cartethyia AI gateway",
       items: [
-        version,
         repository,
-        updateStatus,
         update,
         SysTray.separator,
         openConsole,
@@ -577,6 +610,7 @@ async function startTray(): Promise<void> {
   let trayExited = false;
   let closing = false;
   let busy = false;
+  let resetArmed = false;
   let latestVersion: string | null = null;
   let closePromise: Promise<void> | undefined;
 
@@ -598,21 +632,18 @@ async function startTray(): Promise<void> {
     if (closing) return;
     latestVersion = fetchedVersion;
     if (fetchedVersion === null) {
-      updateStatus.title = "Version tracker: unavailable";
-      update.title = "Check for updates";
+      update.title = `Cartethyia ${currentVersion} · check for updates`;
       update.enabled = true;
     } else {
-      updateStatus.title = `Latest published version: ${fetchedVersion}`;
       if (isNewerRelease(currentVersion, fetchedVersion)) {
-        update.title = `Update to ${fetchedVersion}`;
+        update.title = `Cartethyia ${currentVersion} · update to ${fetchedVersion}`;
         update.enabled = true;
       } else {
-        update.title = `Up to date (${currentVersion})`;
+        update.title = `Cartethyia ${currentVersion} · up to date`;
         update.enabled = false;
       }
     }
     try {
-      await tray.sendAction({ type: "update-item", item: updateStatus });
       await tray.sendAction({ type: "update-item", item: update });
     } catch {
       // The tray may be closing while the background version check completes.
@@ -629,7 +660,27 @@ async function startTray(): Promise<void> {
       await openUrl(dashboardUrl);
       return;
     }
-    if (title === resetPassword.title || title === backupRestore.title) {
+    if (title === resetPassword.title) {
+      // Same recovery the menu offers: /change-password needs the current
+      // password, so deleting the account is the only way back in. A tray click
+      // cannot ask for a typed confirmation, so the first click arms the action
+      // and the second one runs it.
+      if (!resetArmed) {
+        resetArmed = true;
+        console.log(
+          "Click \"Reset console password\" again to delete the console account. This removes every operator login; providers, API keys, and routing are kept.",
+        );
+        return;
+      }
+      resetArmed = false;
+      const removed = await resetConsoleAccount(port, drainToken);
+      if (removed === 0) {
+        console.log(`Console account removed. Open ${dashboardUrl} to create a new one.`);
+        await openUrl(dashboardUrl);
+      }
+      return;
+    }
+    if (title === backupRestore.title) {
       await openUrl(settingsUrl);
       return;
     }
