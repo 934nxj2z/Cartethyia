@@ -8,7 +8,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
-import { cachedRead } from "../shared/read-through-cache";
+import { cachedReadWithEtag, type CachedResult } from "../shared/read-through-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
 import { CachedPreferencesReader, DrizzlePreferencesReader, type PreferencesReader } from "../../persistence/tenant-preferences";
@@ -298,8 +298,14 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     ),
   ) {}
 
-  async health(tenantId: string): Promise<SystemHealthResponse> {
-    return this.computeHealth(tenantId);
+  async health(tenantId: string): Promise<CachedResult<SystemHealthResponse>> {
+    // The only usage-family read that used to bypass both the 5 s in-process
+    // memo and the Redis read-through, so it re-parsed 24 hourly files every
+    // page load. Same 10 s TTL as `/system/usage`.
+    return this.readThroughWithEtag(
+      this.usageCacheKey(tenantId, "24h", "health"),
+      () => this.computeHealth(tenantId),
+    );
   }
 
   private async computeHealth(tenantId: string): Promise<SystemHealthResponse> {
@@ -401,8 +407,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       avg_tokens_per_sec: avgTokensPerSec,
     };
   }
-  async usage(tenantId: string, period: string): Promise<UsageResponse> {
-    return this.readThrough(this.usageCacheKey(tenantId, period, "usage"), () =>
+  async usage(tenantId: string, period: string): Promise<CachedResult<UsageResponse>> {
+    return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "usage"), () =>
       this.computeUsage(tenantId, period),
     );
   }
@@ -415,9 +421,13 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     return `cartethyia:usage:v1:${shape}:${tenantId}:${period}`;
   }
 
-  /** Reads a usage response through Redis; computes when no cache is configured. */
-  private readThrough<T>(key: string, compute: () => Promise<T>): Promise<T> {
-    return cachedRead(this.redis, key, compute);
+  /**
+   * Reads a usage response through Redis — computing when no cache is
+   * configured — and returns the strong validator alongside it, so a repeated
+   * poll can be answered with a `304` instead of the whole payload.
+   */
+  private readThroughWithEtag<T>(key: string, compute: () => Promise<T>): Promise<CachedResult<T>> {
+    return cachedReadWithEtag(this.redis, key, compute);
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {
@@ -467,8 +477,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     return promise;
   }
 
-  async usageSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
-    return this.readThrough(this.usageCacheKey(tenantId, period, "summary"), () =>
+  async usageSummary(tenantId: string, period: string): Promise<CachedResult<UsageSummaryResponse>> {
+    return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "summary"), () =>
       this.computeSummary(tenantId, period),
     );
   }
@@ -527,8 +537,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     };
   }
 
-  async usageChart(tenantId: string, period: string): Promise<UsageChartResponse> {
-    return this.readThrough(this.usageCacheKey(tenantId, period, "chart"), () =>
+  async usageChart(tenantId: string, period: string): Promise<CachedResult<UsageChartResponse>> {
+    return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "chart"), () =>
       this.computeChart(tenantId, period),
     );
   }
@@ -568,8 +578,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     tenantId: string,
     dimension: UsageDimension,
     period: string,
-  ): Promise<UsageByResponse> {
-    return this.readThrough(this.usageCacheKey(tenantId, `${dimension}:${period}`, "by"), () =>
+  ): Promise<CachedResult<UsageByResponse>> {
+    return this.readThroughWithEtag(this.usageCacheKey(tenantId, `${dimension}:${period}`, "by"), () =>
       this.computeBy(tenantId, dimension, period),
     );
   }
@@ -676,8 +686,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     return new Map(keyRows.map((keyRow) => [keyRow.id, keyRow.label] as const));
   }
 
-  async usageCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
-    return this.readThrough(this.usageCacheKey(tenantId, period, "cache"), () =>
+  async usageCache(tenantId: string, period: string): Promise<CachedResult<UsageCacheResponse>> {
+    return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "cache"), () =>
       this.computeCache(tenantId, period),
     );
   }
@@ -709,7 +719,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     period: string,
     limit: number,
     httpStatus?: number,
-  ): Promise<UsageRequestsResponse> {
+  ): Promise<CachedResult<UsageRequestsResponse>> {
     // Ask the reader for `limit` rows instead of folding the whole window and
     // slicing it. It stops at the newest file that fills the page, so the
     // console's most-polled endpoint no longer parses the retention window just
@@ -723,15 +733,29 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     });
     const rows = events.slice(0, limit);
     const hideClientIp = await shouldMaskClientIp(this.preferences, tenantId);
-    const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
-    const labels = await this.apiKeyLabels(tenantId, keyIds);
-    return {
-      items: rows.map((row) => {
-        const item = mapUsageRequestItem(row, hideClientIp);
-        const label = row.apiKeyId ? labels.get(row.apiKeyId) : undefined;
-        return label === undefined ? item : { ...item, apiKeyLabel: label };
-      }),
-    };
+    // Cached like its siblings, so a repeated poll costs a `304` instead of
+    // another read. The mask flag is part of the key: it is a privacy setting,
+    // so a page must never be served from an entry computed under the other
+    // value. The rows were already read above — this bounds the label lookup
+    // and the mapping, not the telemetry read.
+    return this.readThroughWithEtag(
+      this.usageCacheKey(
+        tenantId,
+        `${period}:${limit}:${httpStatus ?? "*"}:${hideClientIp}`,
+        "requests",
+      ),
+      async () => {
+        const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
+        const labels = await this.apiKeyLabels(tenantId, keyIds);
+        return {
+          items: rows.map((row) => {
+            const item = mapUsageRequestItem(row, hideClientIp);
+            const label = row.apiKeyId ? labels.get(row.apiKeyId) : undefined;
+            return label === undefined ? item : { ...item, apiKeyLabel: label };
+          }),
+        };
+      },
+    );
   }
   async usageRequestDetail(
     tenantId: string,

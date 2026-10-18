@@ -23,16 +23,31 @@ export function createObservabilityRoutes(config: ObservabilityConfig): Elysia {
   return new Elysia()
     .error(consoleErrorHandler("Observability operation failed"))
     .get("/system/health", async ({ request }) => {
-      return await factory.getSystemHealth(config.accessResolver(request));
+      return await factory.getSystemHealth(
+        config.accessResolver(request),
+        request.headers.get("if-none-match"),
+      );
 })
     .get("/system/usage", { query: usageQuery }, async ({ request, query }) => {
-      return await factory.getTenantUsage(config.accessResolver(request), query.period);
+      return await factory.getTenantUsage(
+        config.accessResolver(request),
+        query.period,
+        request.headers.get("if-none-match"),
+      );
 })
     .get("/system/usage/summary", { query: usageQuery }, async ({ request, query }) => {
-      return await factory.getUsageSummary(config.accessResolver(request), query.period);
+      return await factory.getUsageSummary(
+        config.accessResolver(request),
+        query.period,
+        request.headers.get("if-none-match"),
+      );
 })
     .get("/system/usage/chart", { query: usageQuery }, async ({ request, query }) => {
-      return await factory.getUsageChart(config.accessResolver(request), query.period);
+      return await factory.getUsageChart(
+        config.accessResolver(request),
+        query.period,
+        request.headers.get("if-none-match"),
+      );
 })
     // One `by-<dimension>` route per member of `USAGE_DIMENSIONS`, so a new
     // dimension cannot be added to the validator without its route existing.
@@ -48,11 +63,20 @@ export function createObservabilityRoutes(config: ObservabilityConfig): Elysia {
             `Unknown usage dimension: ${dimension}`,
           );
         }
-        return await factory.getUsageBy(config.accessResolver(request), dimension, query.period);
+        return await factory.getUsageBy(
+          config.accessResolver(request),
+          dimension,
+          query.period,
+          request.headers.get("if-none-match"),
+        );
 },
     )
     .get("/system/usage/cache", { query: usageQuery }, async ({ request, query }) => {
-      return await factory.getUsageCache(config.accessResolver(request), query.period);
+      return await factory.getUsageCache(
+        config.accessResolver(request),
+        query.period,
+        request.headers.get("if-none-match"),
+      );
 })
     .get("/system/usage/requests", { query: usageRequestsQuery }, async ({ request, query }) => {
       return await factory.listUsageRequests(
@@ -60,6 +84,7 @@ export function createObservabilityRoutes(config: ObservabilityConfig): Elysia {
         query.period,
         query.limit,
         query.httpStatus,
+        request.headers.get("if-none-match"),
       );
 })
     .get("/system/usage/requests/:requestId", async ({ request, params }) => {
