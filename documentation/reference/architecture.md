@@ -5,8 +5,11 @@ or Responses requests to the gateway. Operators manage that gateway through the
 console, which the same process serves at `/console`.
 
 The production backend is `src/`. The browser app is `dashboard/src/`. The browser
-never imports the backend. It talks to `/console/api` and renders what that API
-returns.
+never imports Elysia, the database, or secrets. It talks to `/console/api` and
+renders what that API returns. It does re-export a handful of *pure* values from
+`src/` — dimension and scope lists, the release comparator, a thinking-suffix
+formatter — so an enum cannot drift between the two sides; those modules are
+valueless, and nothing runtime crosses with them.
 
 ## Process
 
@@ -62,9 +65,11 @@ sequenceDiagram
 The canonical model is the boundary between client wire and provider wire. A chat
 client can be served by a Responses or Messages provider because both sides are
 encoded from the same request. `src/protocol/registry.ts` is the switch, selected
-by the provider's `wire_family` (`src/protocol/canonical-model.ts:16`):
-`chat`, `responses`, `messages`, and `gemini` — Factory's native
-`generateContent` wire. There is no `native` family. A provider that frames its
+by the provider's `wire_family` (`src/protocol/canonical-model.ts:15`):
+`chat`, `responses`, and `messages`. `gemini` — Factory's native
+`generateContent` wire — is a member of the enum but is **not** a codec: it is
+dispatched by the Factory adapter's own native path, and `registry.ts` throws
+on it. There is no `native` family. A provider that frames its
 own wire says so on its metadata, not in the enum.
 
 ## Ownership
@@ -86,7 +91,9 @@ own wire says so on its metadata, not in the enum.
 `InMemoryRouteSnapshotService` builds one frozen snapshot: candidates, aliases,
 combos, provider routing, and pool routing. A console mutation calls `invalidate()`,
 which bumps the revision and drops the cache. The next request rebuilds. The
-mutation itself does not wait for seven database reads.
+mutation itself does not wait for the eleven database reads a rebuild issues
+(providers, models, accounts, aliases, combos, provider and pool routing
+settings, disabled models, and the two CLI mapping tables).
 
 `RoutingEngine` turns a requested model into a `RoutePlan`. A bare name matches
 `model_id`. A `provider/model` name matches both. Alias and combo lookup happen
@@ -143,8 +150,7 @@ Two database modes share one schema:
 | Full | external PostgreSQL | Redis when `REDIS_URL` is set, else memory |
 
 The PostgreSQL baseline defines the foundational schema for a new database;
-Lite builds from its generated SQLite baseline. Numbered migrations bring
-both backends to the current schema and support compatible in-place upgrades.
+both backends to the current schema. **In-place upgrades are not supported.**
 An existing database with retired migration history, or
 tables without the current baseline ledger entry, is rejected at startup.
 Create a fresh database and restore a backup. Restore maps the retired

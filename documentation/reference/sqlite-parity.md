@@ -63,7 +63,8 @@ A caller that interpolates its own `::jsonb`, `::uuid`, or `octet_length`
 bypasses `dialect.ts` and fails on SQLite. `usage-flush.ts` is the one *store*
 that spells `::uuid` and `::bigint`, and it branches: PostgreSQL gets
 `UPDATE ... FROM (VALUES ...)` with the casts, SQLite gets a
-`SELECT ... UNION ALL` with neither, because SQLite rejects `UPDATE ... FROM`.
+`SELECT ... UNION ALL` with neither, because SQLite stores the key as text and
+rejects that `UPDATE ... FROM (VALUES ...)` form outright.
 That branch is exercised by `test/persistence/usage-flush.test.ts`, which
 flushes 25 keys in one statement on a migrated SQLite file and reads the
 totals back.
