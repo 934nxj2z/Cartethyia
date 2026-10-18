@@ -5,8 +5,6 @@
     "": {
       "name": "cartethyia",
       "dependencies": {
-        "@bufbuild/protobuf": "^2.14.1",
-        "@electric-sql/pglite": "^0.5.8",
         "drizzle-orm": "0.45.2",
         "elysia": "^2.0.0-beta.16",
         "enquirer": "^2.4.1",
@@ -32,7 +30,7 @@
     },
     "dashboard": {
       "name": "cartethyia-dashboard",
-      "version": "2.3.4",
+      "version": "2.4.6",
       "dependencies": {
         "@radix-ui/react-select": "^2.3.7",
         "@tanstack/react-query": "5.102.8",
@@ -61,10 +59,6 @@
   },
   "packages": {
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
-
-    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.1", "", {}, "sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw=="],
-
-    "@electric-sql/pglite": ["@electric-sql/pglite@0.5.9", "", {}, "sha512-GoQTRMZ/o4J3sMW4mLDtDFGNOm1xy5oH+iHDALWll3uERY6OF4BSnL1t7FZH2Mlw+RPceDBlFJgSaecO73c4EA=="],
 
     "@floating-ui/core": ["@floating-ui/core@1.8.0", "", { "dependencies": { "@floating-ui/utils": "^0.2.12" } }, "sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ=="],
 
