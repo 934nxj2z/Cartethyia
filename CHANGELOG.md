@@ -8,6 +8,19 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.4.4] — 2026-10-18
+
+### Fixed
+
+- **An update now actually takes effect.** `npm install --global` cannot replace
+  the package directory while a process is running out of it: on Windows the
+  rename fails with `EBUSY` and npm exits `14`. The update ran with the gateway
+  and the menu still alive, so the install failed and the failure was reported
+  as success — "Update to 2.4.3 installs now", with the install left on 2.4.2.
+  Both the menu and the tray now stop the gateway before the install and start
+  it again afterwards, and a non-zero npm exit is reported with its code and
+  the current version is restored rather than leaving nothing running.
+
 ## [2.4.3] — 2026-10-18
 
 ### Fixed

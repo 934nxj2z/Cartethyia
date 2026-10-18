@@ -356,8 +356,22 @@ async function startMenu(): Promise<void> {
       async () => openUrl(repositoryUrl),
       async () => {
         if (upToDate) return;
+        // npm cannot replace the package directory while a process is running
+        // from it: on Windows the rename fails with EBUSY and npm exits 14.
+        // The gateway has to be stopped before the install, not after.
+        console.log("Stopping the gateway so npm can replace its files…");
+        await shutDown();
         const code = await npmUpdate();
-        console.log(code === 0 ? "Update finished." : "Update failed.");
+        if (code !== 0) {
+          console.log(`Update failed (npm exited ${code}). Restarting the current version.`);
+          const restored = await startGateway(port, drainToken);
+          restored.unref();
+          return;
+        }
+        const restarted = await startGateway(port, drainToken);
+        restarted.unref();
+        const installed = await readInstalledVersion();
+        console.log(`Cartethyia updated and restarted on ${installed} at ${dashboardUrl}`);
         latestVersion = await readLatestPublishedVersion();
       },
       async () => {
@@ -617,14 +631,26 @@ async function startTray(): Promise<void> {
   const runUpdate = async (): Promise<void> => {
     if (busy) return;
     busy = true;
+    // npm cannot replace the package directory while a process is running from
+    // it: on Windows the rename fails with EBUSY and npm exits 14. Stop first.
+    tray.update("update", "Stopping to update\u2026", false);
+    const current = gateway;
+    gateway = null;
+    if (current) await stopGateway(current, port, drainToken);
+
     tray.update("update", "Updating Cartethyia\u2026", false);
     const code = await npmUpdate();
+    if (code !== 0) {
+      gateway = await startGateway(port, drainToken);
+      busy = false;
+      tray.update("update", `Update failed (npm ${code}) \u2014 retry`, true);
+      return;
+    }
+    gateway = await startGateway(port, drainToken);
     busy = false;
-    tray.update(
-      "update",
-      code === 0 ? "Updated \u2014 restart Cartethyia" : "Update failed \u2014 retry",
-      code !== 0,
-    );
+    const installed = await readInstalledVersion();
+    tray.update("update", `Cartethyia ${installed} \u00b7 up to date`, false);
+    console.log(`Cartethyia updated and restarted on ${installed} at ${dashboardUrl}`);
   };
 
   async function handleSelect(id: string): Promise<void> {
