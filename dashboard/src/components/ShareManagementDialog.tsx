@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Eye, EyeOff, Link2, RefreshCw, RotateCw } from "lucide-react";
+import { Ban, ChevronDown, ChevronRight, Eye, EyeOff, Link2, RefreshCw, RotateCw } from "lucide-react";
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -346,6 +346,11 @@ export function ShareManagementContent({
   onSecretRevealed?: (secret: string) => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Revoked recipients stay listed for their usage history, so an unfiltered
+  // list grows without bound; defaulting to active is the view an operator
+  // acts on.
+  const [statusFilter, setStatusFilter] = useState<"active" | "revoked">("active");
+  const [confirmingBulk, setConfirmingBulk] = useState<"all" | "unused" | null>(null);
   const share = useShareApiKey();
   const regenerate = useRegenerateApiKey();
   const revoke = useRevokeSharedKey();
@@ -356,10 +361,47 @@ export function ShareManagementContent({
   // error box over the key's own usage.
   const summary = useSharedKeys(isPersonal ? null : parent.id);
   const children = summary.data ?? [];
+  const visibleChildren =
+    statusFilter === "active"
+      ? children.filter((child) => child.revokedAt === null)
+      : children.filter((child) => child.revokedAt !== null);
+  /**
+   * Recipients that never spent a token. Revoking these is safe in a way
+   * "revoke all" is not: nobody has used them, so no client holding the key
+   * loses anything. The point is list hygiene — a popular template accumulates
+   * issued-but-unused keys, and they crowd out the rows that matter.
+   */
+  const unusedChildren = children.filter(
+    (child) => child.revokedAt === null && child.allTime.totalTokens === 0,
+  );
 
   useEffect(() => {
     setExpanded(null);
   }, [parent.id]);
+
+  /**
+   * Revokes every recipient in a chosen set.
+   *
+   * Sequential on purpose: the endpoint revokes one key per call, and firing
+   * them in parallel would race the parent's lifetime budget read. The count
+   * is reported per outcome so a partial failure is visible rather than
+   * swallowed by one shared toast.
+   */
+  const revokeBulk = async (targets: readonly SharedKeySummary[], noun: string): Promise<void> => {
+    let done = 0;
+    for (const child of targets) {
+      try {
+        await revoke.mutateAsync({ parentKeyId: parent.id, childKeyId: child.id });
+        done += 1;
+      } catch {
+        // One refusal must not abort the rest; the tally below reports it.
+      }
+    }
+    await summary.refetch();
+    const failed = targets.length - done;
+    if (failed > 0) toast.error(`Revoked ${done} of ${targets.length} ${noun}; ${failed} failed.`);
+    else toast.success(`Revoked ${done} ${noun}.`);
+  };
 
   const busy = share.isPending || regenerate.isPending;
   const [confirmingRegenerate, setConfirmingRegenerate] = useState(false);
@@ -484,6 +526,76 @@ export function ShareManagementContent({
             <span className="mr-2 ml-auto text-caption text-text-tertiary tabular-nums">
               Active users: {activeChildCount(children)}
             </span>
+            <div className="inline-flex items-center gap-1 rounded-chip border border-inner-border p-0.5" role="group" aria-label="Filter recipients by status">
+              {(["active", "revoked"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={statusFilter === value}
+                  onClick={() => setStatusFilter(value)}
+                  className={`rounded-chip border-0 px-3 py-1 text-badge font-semibold capitalize cursor-pointer ${
+                    statusFilter === value
+                      ? "bg-surface-1 text-text-primary"
+                      : "bg-transparent text-text-secondary hover:text-text-primary"
+                  }`}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+            {confirmingBulk !== null ? (
+              <span className="inline-flex items-center gap-2 rounded-chip border border-danger-border bg-surface-2 px-3 py-1">
+                <span className="text-badge text-text-secondary">
+                  {confirmingBulk === "all"
+                    ? `Revoke ${visibleChildren.length}?`
+                    : `Revoke ${unusedChildren.length} unused?`}
+                </span>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  loading={revoke.isPending}
+                  onClick={() => {
+                    const targets = confirmingBulk === "all" ? visibleChildren : unusedChildren;
+                    const noun = confirmingBulk === "all" ? "recipients" : "unused recipients";
+                    setConfirmingBulk(null);
+                    void revokeBulk(targets, noun);
+                  }}
+                >
+                  Confirm
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setConfirmingBulk(null)}>
+                  Cancel
+                </Button>
+              </span>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={unusedChildren.length === 0 || revoke.isPending}
+              title={
+                unusedChildren.length === 0
+                  ? "No active recipient has spent zero tokens"
+                  : `Revoke ${unusedChildren.length} recipient${unusedChildren.length === 1 ? "" : "s"} that never spent a token`
+              }
+              onClick={() => setConfirmingBulk("unused")}
+              icon={<Ban size={13} />}
+            >
+              Revoke no-usage
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={visibleChildren.length === 0 || revoke.isPending}
+              title={
+                visibleChildren.length === 0
+                  ? "Nothing to revoke in this view"
+                  : `Revoke all ${visibleChildren.length} listed recipient${visibleChildren.length === 1 ? "" : "s"}`
+              }
+              onClick={() => setConfirmingBulk("all")}
+              icon={<Ban size={13} />}
+            >
+              Revoke all
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -507,11 +619,15 @@ export function ShareManagementContent({
               message={getErrorMessage(summary.error, "Could not load recipients.")}
               onRetry={() => void summary.refetch()}
             />
-          ) : children.length === 0 ? (
+          ) : visibleChildren.length === 0 ? (
             <EmptyState
               compact
-              title="No recipients yet"
-              message="Keys generated through this link appear here with their masked client IP and token usage."
+              title={statusFilter === "revoked" ? "No revoked recipients" : "No active recipients"}
+              message={
+                statusFilter === "revoked"
+                  ? "Revoked keys appear here once a recipient's key is revoked."
+                  : "Keys generated through this link appear here with their masked client IP and token usage."
+              }
             />
           ) : (
             <div className="data-table-container max-h-[46vh]">
@@ -530,7 +646,7 @@ export function ShareManagementContent({
                   </tr>
                 </thead>
                 <tbody>
-                  {children.map((child: SharedKeySummary) => {
+                  {visibleChildren.map((child: SharedKeySummary) => {
                     const open = expanded === child.id;
                     return (
                       <Fragment key={child.id}>

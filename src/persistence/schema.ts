@@ -844,6 +844,19 @@ export const shareLinks = pgTable(
     // link; historical rows written before this column carry NULL and simply
     // cannot be shown again.
     tokenEncrypted: bytea("token_encrypted"),
+    /**
+     * The public slug this page is reachable at, in the clear.
+     *
+     * `tokenEncrypted` is the bearer token under the deployment's encryption
+     * key, so a link cannot be re-displayed once that key changes — which is
+     * exactly what a restore onto a fresh deployment does. Holding the slug
+     * unencrypted keeps every restored share page reachable under the address
+     * it was created with.
+     *
+     * Nullable: rows written before this column have no slug, and inventing one
+     * would publish an address the page never had.
+     */
+    slug: text("slug"),
     kind: text("kind").$type<ShareLinkKind>().notNull().default("enroll"),
     active: boolean("active").notNull().default(true),
     createdAt: createdAtColumn(),
@@ -852,6 +865,9 @@ export const shareLinks = pgTable(
   },
   (table) => [
     uniqueIndex("share_links_token_hash_idx").on(table.tokenHash),
+    // Partial: rows without a slug (written before the column) are not
+    // constrained, so backfilling is never blocked by a uniqueness collision.
+    uniqueIndex("share_links_slug_uidx").on(table.slug).where(sql`${table.slug} IS NOT NULL`),
     index("share_links_api_key_idx").on(table.apiKeyId),
     index("share_links_active_kind_expires_idx").on(table.active, table.kind, table.expiresAt),
     check("share_links_kind_check", sql`${table.kind} IN ('enroll', 'handoff')`),

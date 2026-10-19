@@ -140,7 +140,13 @@ export interface ApiKeyConfig {
 export interface ShareKeyResponse {
   readonly id: string;
   readonly url: string;
-  readonly token: string;
+  /**
+   * The bearer half of the link. Null when the row was written under an
+   * encryption key this deployment no longer holds: the page stays reachable
+   * from `url`, but the secret cannot be shown again and must be regenerated
+   * before the link can authenticate.
+   */
+  readonly token: string | null;
   readonly kind: ShareLinkKind;
   readonly expiresAt: string | null;
 }
