@@ -169,10 +169,11 @@ interface HistogramSeries {
 class Histogram implements HistogramMetric {
   private readonly series = new Map<string, HistogramSeries>();
   /**
-   * The label names this histogram emits, fixed by the first LABELLED
-   * observation. A Prometheus metric family must expose one consistent label set,
-   * so a later observation carrying different keys is normalized against this set
-   * rather than creating a second, incompatible series.
+   * The label names this histogram emits. Declared at registration when the
+   * caller passes them to `histogram()`, otherwise fixed by the first LABELLED
+   * observation. A Prometheus metric family must expose one consistent label
+   * set, so a later observation carrying different keys is normalized against
+   * this set rather than creating a second, incompatible series.
    */
   private labelNames: readonly string[] = [];
 
@@ -180,12 +181,18 @@ class Histogram implements HistogramMetric {
     readonly name: string,
     readonly help: string,
     readonly buckets: readonly number[],
-  ) {}
+    labelNames: readonly string[] = [],
+  ) {
+    // A declared set is stable across runs and workers, so the exposition is
+    // deterministic even before the first observation arrives. Sorting keeps
+    // the order fixed either way.
+    this.labelNames = [...labelNames].sort();
+  }
 
   observe(value: number, labels?: MetricLabels): void {
+    // Fall back to inferring the set from the first labelled observation when
+    // the metric was registered without declaring one.
     if (this.labelNames.length === 0 && labels !== undefined) {
-      // Sorting makes the exposition order deterministic, so two runs of the same
-      // code produce byte-identical output.
       this.labelNames = Object.keys(labels).sort();
     }
     const normalized = normalizeLabels(labels, this.labelNames);
@@ -384,8 +391,23 @@ export class PrometheusRegistry {
     return metric;
   }
 
-  histogram(name: string, help: string, buckets: readonly number[]): HistogramMetric {
-    const metric = new Histogram(name, help, buckets);
+  /**
+   * Registers a histogram.
+   *
+   * `labelNames` declares the label set up front. It is optional because a
+   * histogram observed without labels still has to render, but passing it is
+   * the correct call: a declared set is stable across runs and workers, so the
+   * exposition is deterministic even before the first observation, and an
+   * observation carrying undeclared keys cannot create a second, incompatible
+   * series.
+   */
+  histogram(
+    name: string,
+    help: string,
+    buckets: readonly number[],
+    labelNames: readonly string[] = [],
+  ): HistogramMetric {
+    const metric = new Histogram(name, help, buckets, labelNames);
     this.all.push(metric);
     return metric;
   }

@@ -457,32 +457,20 @@ describe("PrometheusRegistry — histogram", () => {
   });
 
   /**
-   * KNOWN DEFECT — `HistogramMetric.observe` accepts a `labels` argument and
-   * silently discards it.
+   * FIXED — this used to be pinned as a known defect.
    *
-   * `HistogramMetric` (the interface) declares
-   * `observe(value: number, labels?: MetricLabels): void`. The only
-   * implementation — `Histogram` in `src/observability/metrics.ts` — declares
-   * `observe(value: number)` and stores no labels, and the registry's
-   * `histogram(name, help, buckets)` factory takes no label names either. So the
-   * interface advertises a capability the implementation does not have, and the
-   * extra argument is accepted at runtime (TypeScript permits a call with more
-   * arguments through an interface-typed reference) and dropped without a word.
+   * `Histogram.observe(value, labels?)` previously accepted the argument and
+   * silently discarded it: the interface advertised a capability the
+   * implementation did not have, so `observe(ms, { route })` produced one
+   * merged histogram across every route with no error and no way to tell from
+   * the output. A latency percentile averaging a fast route with a slow one
+   * reads as if it described the route the operator filtered on.
    *
-   * Reachable impact today is limited: both call sites
-   * (`proxy_request_latency_ms` in `error-lifecycle.ts`,
-   * `proxy_provider_adapter_load_ms` in `providers/registry.ts`) observe without
-   * labels, so nothing is mis-attributed right now. The defect is the contract.
-   * A caller who follows the interface and writes `observe(ms, { route })` gets
-   * one merged histogram across every route — no error, no missing-sample
-   * signal, and no way to tell from the output. A latency percentile that
-   * averages a fast route with a slow one is worse than no percentile, because
-   * the operator reads it as if it described the route they filtered on.
-   *
-   * Written with `test.failing` so it flips to a failure the moment the
-   * implementation honours the parameter (or the parameter is removed from the
-   * interface, which would break this call at typecheck — also a signal). The
-   * assertion goes through `observe`, which is the half that compiles today.
+   * The implementation now stores labels per series, and the registry's
+   * `histogram()` factory accepts a declared `labelNames` set. The assertion
+   * below is deliberately written against `observe` — the half that compiled
+   * even while the defect was live — so it fails again if labels are ever
+   * dropped from the render path.
    */
   test("a label passed to observe reaches the rendered sample", () => {
     // The defect this pins: `Histogram.observe(value, labels?)` accepted the
@@ -529,6 +517,27 @@ describe("PrometheusRegistry — histogram", () => {
     );
     expect(sampleLine(registry, 'test_ms_bucket{route="/v1/chat",le="+Inf"}')).toBe(
       'test_ms_bucket{route="/v1/chat",le="+Inf"} 1',
+    );
+  });
+
+  test("a declared label set is honoured before the first observation", () => {
+    // The registry factory takes labelNames so a metric's series are declared
+    // rather than inferred from whichever observation arrives first. That makes
+    // the exposition deterministic across runs and workers, and stops an
+    // observation carrying undeclared keys from creating a second series.
+    const registry = new PrometheusRegistry();
+    const histogram = registry.histogram("test_ms", "help", [10], ["route"]);
+    histogram.observe(5, { route: "/v1/chat" });
+    // An undeclared key must not open a second, incompatible series.
+    histogram.observe(7, { route: "/v1/chat", extra: "ignored" });
+
+    expect(sampleLine(registry, 'test_ms_count{route="/v1/chat"}')).toBe(
+      'test_ms_count{route="/v1/chat"} 2',
+    );
+    expect(registry.render()).not.toContain("extra=");
+    // Both observations (5 and 7) fall in the le=10 bucket.
+    expect(sampleLine(registry, 'test_ms_bucket{route="/v1/chat",le="10"}')).toBe(
+      'test_ms_bucket{route="/v1/chat",le="10"} 2',
     );
   });
 
