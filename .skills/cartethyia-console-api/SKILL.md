@@ -88,7 +88,7 @@ status for the same condition.
 `"omit"` (`settings/contracts.ts:140`) because a preferences patch echoes the whole
 bag; do not widen it without a reason.
 
-## Guards you must not remove
+## Guards that are load-bearing
 
 - The CSRF middleware and the mutation limiter (`src/console/console-router-guards.ts:21`,
   `:77`). Both are hard-coded against `/console/api/`. Adding a path to their

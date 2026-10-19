@@ -112,9 +112,12 @@ runs without it.
 - `scripts/` — CLI, development, build, generation, operations, and test
   utilities. Check the existing subdirectory before adding a script.
 - `migrations/` — PostgreSQL and generated SQLite database baselines, plus the
-  numbered forward migrations applied at boot (0000–0014 at time of writing;
-  read the directory rather than trusting a count); backup/restore is the
-  escape hatch for retired history, not a replacement for them.
+  numbered forward migrations applied at boot. Read the directory for the
+  current set; never trust a count written here. `0000_baseline.sql` is pinned
+  by a content hash, so it is append-only history: a schema change goes into a
+  new numbered file, not into the baseline. Backup/restore is the escape hatch
+  for retired history, not a replacement for it. `bun run check:migrations`
+  verifies the schema and the committed SQL agree.
 - `test/` and `dashboard/test/` — backend and dashboard tests.
 - `documentation/` — getting started, reference indexes, and feature guides.
 - `.skills/` — focused, repository-specific procedures and domain guidance.
@@ -190,6 +193,21 @@ of duplicating long explanations in `AGENTS.md`.
 Update user-facing documentation when behavior, configuration, or setup changes
 would otherwise make it misleading. Avoid documenting transient implementation
 details that belong in code or tests.
+
+### The next reader has to be able to trust it
+
+A guide that states a number, a range, or a version goes stale on its own. When
+it does, the next reader follows it and gets a wrong answer — which is worse
+than having no line there, because it looks authoritative.
+
+- Describe the **rule**, not the current count. "Read the directory for the
+  current set" survives adding a migration; a written range does not.
+- When a figure is genuinely the point (a pixel breakpoint a test pins, a cap a
+  constant owns), name the owning constant or file so the reader can check it
+  rather than trusting the prose.
+- If a document contradicts itself, that is a bug in the document, not a
+  preference to be balanced. Fix the contradiction and say which way it
+  resolves, with the mechanism that decides it.
 
 ## Git, data, and credentials
 

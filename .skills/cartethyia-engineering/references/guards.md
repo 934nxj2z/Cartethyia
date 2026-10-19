@@ -14,6 +14,25 @@
 - Preserve intentional provider wire bytes and header behavior.
 - Change generated output through its source/generator, never by hand.
 
+## Generated vs. pinned
+
+Two different reasons to leave a file alone, and they call for different moves:
+
+- **Generated** — a script owns the content, so hand-editing is lost on the next
+  run. Change the generator and re-run it. In this repo that is
+  `migrations/lite-sqlite3/0000_baseline.sql` (`scripts/generate/sqlite-ddl.ts`)
+  and `src/providers/discovery/catalog/catalog-blob.ts`
+  (`scripts/generate/models-catalog.ts`).
+- **Pinned** — the file is hand-written but its *content hash* is recorded in
+  persisted state, so editing it invalidates databases or clients already out
+  there. `migrations/full-postgres/0000_baseline.sql` is this: it has no
+  generator, and `baselineSchemaMarker()` hashes it into the migration ledger.
+  A schema change belongs in a new numbered migration; editing the baseline
+  makes existing databases refuse to boot.
+
+Neither rule means "never touch it". Both mean "know which one it is before
+editing, and change it the way it is meant to change".
+
 ## Naming and structure
 
 - Keep `scripts/` grouped by purpose: `cli/`, `operations/`, `install/`,

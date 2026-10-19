@@ -95,6 +95,12 @@ Repo invariants, deadness rules, and the browser-safe boundary live in
 owns the gates). Read it when a change touches `src/` vs `dashboard/`,
 generated output, or security boundaries.
 
+`guards.md` separates **generated** output (a script owns it — change the
+generator) from **pinned** history (`migrations/full-postgres/0000_baseline.sql`,
+hand-written but hashed into the migration ledger — change it with a new
+numbered migration). Both are "do not hand-edit", for different reasons; knowing
+which one you are looking at decides the fix.
+
 ## Completing a change
 
 The gate list is `references/verification.md`; that file is the single owner.

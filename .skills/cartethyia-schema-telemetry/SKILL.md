@@ -9,31 +9,50 @@ Use for a schema change, a baseline update, or a new usage/telemetry field.
 
 ## Schema changes
 
-The repository ships one baseline per backend plus the numbered files that
-have not yet been folded into it. A fresh database builds from
-`0000_baseline.sql`. An existing database applies every later numbered file
-whose id is absent from `cartethyia_schema_migrations`, in order, on both
-backends (`src/persistence/db-sqlite.ts`, `src/persistence/db-pg.ts`). A
-database whose ledger names a file that no longer exists is rejected: recreate
-it and restore from backup. Do not rewrite a released baseline.
+The repository ships one baseline per backend plus the numbered files after it.
+A fresh database builds from `0000_baseline.sql` and then applies **every**
+forward file in order, on both backends (`src/persistence/db-sqlite.ts`,
+`src/persistence/db-pg.ts`) — verified: a fresh database records all 15 files
+and gets tables that only a numbered file creates.
+
+**Treat `0000_baseline.sql` as append-only history.** It is pinned by a content
+hash: `baselineSchemaMarker()` records `sha256` of the file into
+`cartethyia_schema_migrations`, and `assertMigrationHistorySupported()` rejects
+any database whose recorded marker no longer matches the file on disk. So
+editing the baseline does not upgrade existing databases — it makes them refuse
+to boot, with "Create a fresh database and restore from a backup". A fresh
+install gets forward-file changes anyway, so folding a change into the baseline
+buys nothing and costs every existing deployment.
 
 1. Update `src/persistence/schema.ts`.
-2. For a change an existing database must receive, add the next numbered file
-   to **both** `migrations/full-postgres/` and `migrations/lite-sqlite3/`. The
-   statement must be a no-op on a database the current baseline already
-   created, because a fresh install runs the baseline and then every later
-   file. `0008_add_models_route_unique_index.sql` is the shape: the bundled
-   model seed upserts on an index a pre-baseline database does not have, and
-   boot dies without it.
-3. Fold the change into `migrations/full-postgres/0000_baseline.sql` as well,
-   so a fresh database is born with it. Regenerate the SQLite baseline with
-   `bun scripts/generate/sqlite-ddl.ts`; `test/persistence/sqlite-baseline.test.ts`
+2. Add the next numbered file to **both** `migrations/full-postgres/` and
+   `migrations/lite-sqlite3/`. The statement must be a no-op on a database the
+   current baseline already created, because a fresh install runs the baseline
+   and then every later file. `0008_add_models_route_unique_index.sql` is the
+   shape: the bundled model seed upserts on an index a pre-baseline database
+   does not have, and boot dies without it.
+3. Regenerate the SQLite baseline with `bun scripts/generate/sqlite-ddl.ts`
+   **only** when the canonical schema itself changed in a way the SQLite
+   derivation has to follow (a new table or column). `test/persistence/sqlite-baseline.test.ts`
    fails when the two disagree. Do not edit the SQLite baseline by hand.
+   Do not touch `0000_baseline.sql` for a forward-only change.
 4. Update backup validation and restore mapping for old column names, enum
    values, defaults, or required data that must survive recreation.
 5. Test the fresh schema, the numbered file against a database created before
    it, and legacy backup restoration. Never test against a live development
    or production database.
+
+Two consequences worth knowing before you touch `migrations/`:
+
+- A schema edit that no migration covers is invisible until runtime. Run
+  `bun run check:migrations` — it builds two throwaway databases (one from the
+  committed SQL, one from the DDL Drizzle derives from `schema.ts`) and diffs
+  their real catalogs. `drizzle-kit check` cannot do this: it compares against
+  `migrations/**/meta/` snapshots, which this project never generates because
+  the migrations are hand-written, so it reports "Everything's fine" even after
+  a whole new table is added to the schema with no migration.
+- Never run `drizzle-kit generate` against `migrations/`: it rewrites every
+  committed baseline.
 
 Drizzle numeric columns may require string persistence. Use bigint number mode
 for absolute epoch milliseconds. Manual migrations are not applied by the boot
