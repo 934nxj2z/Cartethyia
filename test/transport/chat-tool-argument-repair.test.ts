@@ -28,6 +28,29 @@ describe("chat tool argument repair", () => {
     expect(repairToolArguments("")).toBe("{}");
   });
 
+
+  test("repairs an unquoted key", () => {
+    const repaired = repairToolArguments('{path:"a.ts"}');
+    expect(JSON.parse(repaired)).toEqual({ path: "a.ts" });
+  });
+
+  test("repairs a truncated object", () => {
+    // jsonrepair completes the dangling key rather than dropping it, so the
+    // call survives with an explicit null instead of failing to parse.
+    const repaired = repairToolArguments('{"path":"a.ts","depth":');
+    expect(JSON.parse(repaired)).toEqual({ path: "a.ts", depth: null });
+  });
+
+  // `jsonrepair` turns arbitrary prose into a quoted JSON string, which parses
+  // but is not a tool-argument object. Accepting it would replace a clear
+  // parser error with a silent string argument, so it must be refused.
+  test("refuses text that repairs to a non-object", () => {
+    expect(repairToolArguments("not json at all")).toBe("not json at all");
+  });
+
+  test("refuses text that repairs to an array", () => {
+    expect(repairToolArguments("[1,2,]")).toBe("[1,2,]");
+  });
   test("returns unrepairable text unchanged", () => {
     const raw = "not json at all";
     expect(repairToolArguments(raw)).toBe(raw);
