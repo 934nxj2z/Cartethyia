@@ -74,13 +74,13 @@ export const HERMES_MODELS: readonly ModelDefinition[] = [
   // dispatching it answers 404 "This model is no longer free", so keeping it
   // would be a card that can only ever fail. `meituan/longcat-2.5-preview:free`
   // replaces it and answers 200.
-  defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true }),
-  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 131072, reasoning: true }),
-  defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true }),
-  defineModel({ id: "stepfun/step-5-preview:free", ctx: 1048576, out: 131072, reasoning: true }),
-  defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true }),
-  defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true }),
-  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true }),
+  defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "stepfun/step-5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
 ];
 
 
@@ -163,7 +163,12 @@ export async function discoverHermesFreeModels(options: {
       modalities: { input: hasImage ? ["text", "image"] : ["text"], output: ["text"] },
       reasoning: true,
       toolCall: true,
-      // The row reached this point only because both rates parse to zero.
+      // The row reached this point only because both rates parse to zero, so
+      // it is the free tier by the provider's own pricing. `free` is the
+      // billing statement and `freeTier` the catalog one; the model list groups
+      // on the tier, so without it these rows land in the fetched tail instead
+      // of the free section.
+      freeTier: true,
       cost: { input: 0, output: 0, pricing_model: "pay-per-use" },
     });
   }
