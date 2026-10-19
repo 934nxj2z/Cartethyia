@@ -52,6 +52,10 @@ export async function seedBundledModels(
           reasoning: definition.reasoning,
           toolCall: definition.toolCall,
           cost: definition.cost,
+          // A static row either knows it is refused on a free plan or says
+          // nothing. Never coerced to false: the column is three-valued, and
+          // "nobody established it" is not the same claim as "served on free".
+          proOnly: definition.proOnly ?? null,
           source: "builtin",
           sourceUpdatedAt: now,
           enabled: true,
@@ -79,6 +83,7 @@ export async function seedBundledModels(
       reasoning: sql`excluded.reasoning`,
       toolCall: sql`excluded.tool_call`,
       cost: sql`excluded.cost`,
+      proOnly: sql`excluded.pro_only`,
       source: sql`'builtin'`,
       sourceUpdatedAt: sql`excluded.source_updated_at`,
     },

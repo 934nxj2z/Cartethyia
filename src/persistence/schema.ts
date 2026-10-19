@@ -256,6 +256,20 @@ export const providerAccounts = pgTable("provider_accounts", {
    */
   accountEmail: text("account_email"),
 
+  /**
+   * The plan the provider reports for this account, last seen by a quota read.
+   *
+   * Persisted rather than read from the quota cache: that cache is a short
+   * in-process TTL and empty on a cold start, so the plan would be unknown
+   * exactly when a freshly booted process makes its first routing decisions.
+   *
+   * Nullable: most providers report no plan at all, and an account never read
+   * must say so rather than have a plan invented for it. Routing reads absence
+   * as "unknown", never as "free" — guessing free would send pro-only traffic
+   * to an account that may well be refused.
+   */
+  quotaPlan: text("quota_plan"),
+
   },
   (table) => [
     uniqueIndex("provider_accounts_identity_uidx").on(
@@ -348,6 +362,21 @@ export const models = pgTable(
     source: text("source"),
     sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Whether the upstream refuses this model on a free plan.
+     *
+     * Nullable three-valued: `true` refused on free, `false` served on free,
+     * `NULL` nobody established it. `NULL` is the state of every model on every
+     * provider that publishes nothing about plan access, and collapsing it to
+     * `false` would assert a measured fact for rows nobody measured.
+     *
+     * A column rather than a derived rule because CodeBuddy publishes nothing
+     * that predicts access — `credits` and `vendor` were both measured against
+     * real dispatches and neither correlates. Only the refusal itself is a
+     * signal, so the answer has to be recorded. See
+     * `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`.
+     */
+    proOnly: boolean("pro_only"),
   },
   (table) => [
     uniqueIndex("models_provider_model_route_uidx").on(

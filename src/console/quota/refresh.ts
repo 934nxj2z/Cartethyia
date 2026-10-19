@@ -377,6 +377,25 @@ async function runQuotaRefresh(
   // unsupported") is itself the answer the page must render, and caching it
   // stops every page open from re-hitting a provider that just refused us.
   await setCachedQuota(targetLens(target), target.accountId, quota, deps.redis);
+  // Persist the plan the provider reported, because routing gates on it: some
+  // upstreams refuse a model on a free plan and nothing but the account's own
+  // plan says which. The cache above is a short in-process TTL and empty after
+  // a restart, so it cannot be the only copy — the row is what survives one.
+  //
+  // A failed fetch leaves the last known plan in place rather than clearing
+  // it. The refresh failing is evidence about the network or the credential,
+  // not evidence that the account's plan changed, and clearing on failure
+  // would drop the router back to "unknown" on every transient error.
+  if (quota.plan !== null) {
+    try {
+      await deps.db
+        .update(providerAccounts)
+        .set({ quotaPlan: quota.plan })
+        .where(eq(providerAccounts.id, target.accountId));
+    } catch (error) {
+      log.warn(`[quota] failed to record plan for account=${target.accountId}`, error as Error);
+    }
+  }
   // A quota surface that names the account adopts the identity — but only over
   // a default label. An operator's custom rename is never overwritten, and the
   // CASE keeps the read and the write in one statement so a concurrent rename

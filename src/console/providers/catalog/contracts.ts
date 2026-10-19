@@ -337,6 +337,16 @@ export interface ModelCatalogEntry {
    * so an operator can tell a measured window from a stand-in.
    */
   limitsEstimated?: boolean;
+  /**
+   * True when the provider refuses this model on a free plan, so the surface
+   * can mark it rather than letting an operator discover it from a dispatch
+   * failure.
+   *
+   * Absence is "tier unknown", not "served on a free plan" — most providers
+   * publish nothing about plan access, and a pill that renders unknown as free
+   * would mislabel every one of them.
+   */
+  proOnly?: boolean;
 }
 export interface FlatModelCatalogEntry {
   readonly providerId: string;

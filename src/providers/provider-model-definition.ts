@@ -72,6 +72,27 @@ export interface ModelDefinition {
    */
   readonly freeTier?: boolean;
   /**
+   * Whether the provider refuses this row on a free plan.
+   *
+   * The opposite statement to `freeTier`, and not its absence: `freeTier` says
+   * "served on the free tier", while this says "refused there". A row neither
+   * marked is simply one whose tier nobody established — which is most rows,
+   * and must not be rendered as "free".
+   *
+   * CodeBuddy is why both exist. Its console directory publishes no field that
+   * predicts access: `credits` and `vendor` were both measured against real
+   * dispatches and neither correlates — `kimi-k3` bills `x1.62` and is served
+   * on a free account while `gpt-5.6-luna` bills `x0.14` and is refused. The
+   * only signal is the refusal itself: `11158 "model [X] is not allowed for
+   * user type [personal_free_user]"`. See
+   * `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`.
+   *
+   * Optional, and absence is "tier unknown" rather than "served on free". Read
+   * it as `=== true`; a UI that shows a tier must treat undefined as unknown,
+   * not as the permissive answer.
+   */
+  readonly proOnly?: boolean;
+  /**
    * True when neither the row nor the catalog could state this model's limits,
    * so `contextLimit`/`outputLimit` are the shared fallback rather than
    * anything measured.
@@ -163,6 +184,8 @@ export interface ModelHelperRow {
    * rows. Defaults to false — a row nobody marked is not a free-tier row.
    */
   readonly freeTier?: boolean;
+  /** Whether the provider refuses this row on a free plan. See `ModelDefinition.proOnly`. */
+  readonly proOnly?: boolean;
 }
 
 function defaultEndpoint(wireFamily: ModelDefinition["wireFamily"]): string {
@@ -263,6 +286,7 @@ export function defineModel(row: ModelHelperRow): ModelDefinition {
     toolCall: row.toolCall ?? true,
     cost,
     ...(row.freeTier === undefined ? {} : { freeTier: row.freeTier }),
+    ...(row.proOnly === undefined ? {} : { proOnly: row.proOnly }),
     ...(limitsEstimated ? { limitsEstimated: true } : {}),
   };
 }

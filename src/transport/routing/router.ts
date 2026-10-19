@@ -20,6 +20,7 @@ import {
   candidateSupportsRequest,
   type RequiredCapability,
 } from "../translation/capabilities";
+import { planAllowsCandidate } from "./plan-gate";
 import { InMemoryAdmissionController, admissionKey } from "./admission";
 import { ReservationManager } from "./reservations";
 import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
@@ -667,6 +668,18 @@ export class RoutingEngine {
       if (eligible.length === 0)
         throw capabilityUnsupportedError(requiredCapabilities.join(", "));
     }
+    // Plan gate: a model the upstream refuses on a free plan is not offered to
+    // an account the upstream reports as free. That pair is a certain refusal,
+    // and sending it anyway advances the account's failure streak toward a
+    // six-hour park for something that is not the account's fault.
+    //
+    // Applied only when another candidate survives. Every account being free is
+    // not a routing failure — it is the operator having only free accounts, and
+    // the honest outcome is the upstream's own `11158`, which names the model
+    // and the plan. Dropping the last candidate would replace that clear refusal
+    // with a generic "no candidates" that names neither.
+    const planAllowed = eligible.filter((candidate) => planAllowsCandidate(candidate));
+    if (planAllowed.length > 0) eligible = planAllowed;
     eligible = this.applyProviderRouting(eligible, snapshot, tid);
     // Re-assert the cooling order: `applyProviderRouting` rotates accounts
     // within one `provider::model` run, and that rotation is by design blind to

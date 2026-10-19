@@ -63,6 +63,23 @@ export interface RouteCandidate {
    * Absent/`true` preserves the existing invariant: no account configured
    * means the route is unusable, not silently public. */
   readonly requires_account?: boolean;
+  /**
+   * True when the upstream refuses this model on a free plan.
+   *
+   * Three-valued by absence as well as by value: only `true` excludes a free
+   * account. `false` and absent both mean the model is not known to be gated,
+   * and routing must not turn "not known" into "free accounts may serve it" —
+   * that would send pro-only traffic to an account that is certain to be
+   * refused.
+   */
+  readonly pro_only?: boolean;
+  /**
+   * The plan the provider last reported for `provider_account_id`.
+   *
+   * Absent means the plan was never read, which is a different state from
+   * "free": guessing free here would defeat the gate it exists to serve.
+   */
+  readonly account_plan?: string | null;
 }
 
 /**

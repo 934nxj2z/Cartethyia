@@ -93,6 +93,34 @@ export const BUDDY_IMAGE_MODEL_ID_SET: ReadonlySet<string> = new Set(
 );
 
 /**
+ * Ids the buddy facade refuses on a free plan.
+ *
+ * Measured, not inferred: every id in the CodeBuddy intl roster was dispatched
+ * on a `personal_free_user` account, twice, and these six answered `11158
+ * "model [X] is not allowed for user type [personal_free_user]"`. The rest
+ * answered 200.
+ *
+ * Nothing in the console directory predicts it. `credits` does not — `kimi-k3`
+ * bills `x1.62` and is served while `gpt-5.6-luna` bills `x0.14` and is
+ * refused — and `vendor` does not either. Only the refusal itself is a signal,
+ * which is why this is a list and not a rule.
+ *
+ * Hardcoded deliberately: it is one account's tier, so it is a fact about that
+ * plan rather than about the model. A pro account serves all six. The pill is
+ * therefore a hint about a free account, and a dispatch is what settles it.
+ *
+ * @see `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`
+ */
+export const BUDDY_PRO_ONLY_MODEL_IDS: ReadonlySet<string> = new Set([
+  "primary-model",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gemini-3.5-flash",
+]);
+
+/**
  * Builds the image-generation rows for one buddy provider.
  *
  * Shared rather than copied per provider: cb and WorkBuddy serve the same image
@@ -185,6 +213,7 @@ export function makeBuddyModel(
   if (!entry[0]) throw new GatewayError("invalid_request", 400, "invalid model");
   const image = BUDDY_IMAGE_MODEL_ID_SET.has(entry[0]);
   const efforts = (realm === "cn" ? BUDDY_CN_EFFORTS : BUDDY_INTL_EFFORTS)[entry[0].toLowerCase()];
+  const proOnly = BUDDY_PRO_ONLY_MODEL_IDS.has(entry[0].toLowerCase());
   return defineModel({
     id: entry[0],
     providerId,
@@ -196,6 +225,7 @@ export function makeBuddyModel(
     ctx: entry[4],
     out: entry[5],
     ...(image ? { toolCall: false } : entry[6] === undefined ? {} : { toolCall: entry[6] }),
+    ...(proOnly ? { proOnly: true } : {}),
   });
 }
 

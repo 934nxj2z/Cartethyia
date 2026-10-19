@@ -809,6 +809,14 @@ function ModelCard({
                   {modelSourceBadge(model.source)}
                 </span>
               ) : null}
+              {model.proOnly === true ? (
+                <span
+                  title="Refused on a free plan. Nothing in the provider's model directory predicts it, so this comes from a real dispatch: the upstream answers that the model is not allowed for a free user type."
+                  className="shrink-0 rounded-pill bg-accent-soft px-3 py-0.5 text-micro font-bold tracking-label text-accent"
+                >
+                  Pro
+                </span>
+              ) : null}
               {model.enabled ? null : (
                 <span
                   className="shrink-0 rounded-pill bg-red-soft px-3 py-0.5 text-micro font-bold tracking-[0.04em] text-red"
