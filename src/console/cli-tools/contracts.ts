@@ -486,9 +486,9 @@ export const TOOL_REGISTRY = {
         roleKind: "primary",
       },
       {
-        id: "gpt-5.1",
-        name: "GPT-5.1",
-        alias: "gpt-5.1",
+        id: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        alias: "gpt-5.6-sol",
         roleLabel: "Fallback Agent",
         roleKind: "secondary",
       },
@@ -505,7 +505,7 @@ export const TOOL_REGISTRY = {
     settingsFile: "~/.factory/settings.json",
     defaultModels: [
       { id: "claude/claude-sonnet-5", name: "Claude Sonnet 5", alias: "sonnet" },
-      { id: "gpt-5.1", name: "GPT-5.1", alias: "gpt-5.1" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", alias: "gpt-5.6-sol" },
     ],
   },
 
@@ -540,7 +540,7 @@ export const TOOL_REGISTRY = {
     surface: "chat" as const,
     settingsFile: "Code/User/chatLanguageModels.json",
     defaultModels: [
-      { id: "gpt-5.1", name: "GPT-5.1", alias: "gpt-5.1" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", alias: "gpt-5.6-sol" },
       { id: "claude/claude-sonnet-5", name: "Claude Sonnet 5", alias: "sonnet" },
     ],
   },
@@ -703,7 +703,7 @@ amp --model "{{model}}"`,
     docsUrl: "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/",
     defaultModels: [
       { id: "claude/claude-sonnet-5", name: "Claude Sonnet 5", alias: "sonnet" },
-      { id: "gpt-5.1", name: "GPT-5.1", alias: "gpt-5.1" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", alias: "gpt-5.6-sol" },
     ],
     notes: [
       {
