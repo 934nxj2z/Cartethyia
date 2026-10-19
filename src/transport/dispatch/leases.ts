@@ -14,6 +14,63 @@ export interface AttemptLeases {
   readonly reservation: Reservation;
   readonly proxySlot?: { poolId: string; release: () => void };
   readonly networkPoolId?: string;
+  /**
+   * Ownership of this attempt's account/network-pool release.
+   *
+   * A provider session that outlives the HTTP request — Cursor's Run, held open
+   * for the client's next tool-result request — takes the release over instead
+   * of having the request release it when the response is flushed. Request-scoped
+   * accounting (admission, per-request telemetry) still settles per request;
+   * only the *slot and pool inflight* move to the session's lifetime.
+   */
+  readonly ownership?: AttemptLeaseOwnership;
+}
+
+/**
+ * Request-scoped accounting versus session-scoped ownership.
+ *
+ * One HTTP request = one admission lease, one reservation, one pool slot. One
+ * Cursor Run = one upstream turn that can span several HTTP requests, and it
+ * must keep the slot for the whole turn. Transferring ownership is the only way
+ * to satisfy both: the request settles its own accounting and stops owning the
+ * release; the session owns it until the Run terminates.
+ *
+ * Idempotent by construction — the release is handed over at most once, and a
+ * second transfer attempt gets `undefined` so nothing is released twice.
+ */
+export class AttemptLeaseOwnership {
+  #transferred = false;
+
+  constructor(private readonly release: () => void) {}
+
+  /**
+   * Hands the release to a provider session. Returns the release to call
+   * exactly once when the session terminates, or `undefined` when this attempt
+   * already transferred it (or released it itself).
+   */
+  transferToProviderSession(): (() => void) | undefined {
+    if (this.#transferred) return undefined;
+    this.#transferred = true;
+    const release = this.release;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+    };
+  }
+
+  /**
+   * Releases only when ownership was never transferred — the ordinary
+   * end-of-request path. Returns false when a session owns it, so the caller
+   * can see that the slot outlives this request.
+   */
+  releaseByResponse(): boolean {
+    if (this.#transferred) return false;
+    this.#transferred = true;
+    this.release();
+    return true;
+  }
 }
 
 export interface AttemptLeaseSource {
@@ -23,6 +80,21 @@ export interface AttemptLeaseSource {
   readonly estimatedInputTokens: number;
   readonly estimatedOutputTokens: number;
   readonly authorizationSnapshot: ApiKeyAuthorizationSnapshot;
+  /**
+   * True when this request continues a provider session the gateway already
+   * holds, so its account and network-pool slot are already occupied by that
+   * session.
+   *
+   * A Cursor tool-result request borrows the held Run: it talks to the socket
+   * that is already open and does not open another connection. Acquiring a
+   * second pool slot would charge one logical upstream turn two concurrency
+   * slots — and, with a pool at its limit, would make the continuation fail
+   * with `proxy_pool_capacity_exceeded` for a turn that is already inside it.
+   *
+   * Admission (API-key authorization) and the routing reservation still run:
+   * per-request accounting is per request.
+   */
+  readonly borrowsHeldSession?: boolean;
 }
 
 async function acquirePoolSlot(
@@ -196,7 +268,10 @@ export async function acquireAttemptLeases(
     // address per request, so storing it here would only pin a stale answer.
     if (input.networkBindingFactory && input.host)
       await input.networkBindingFactory.resolve(input.host.hostname, input.signal, input.host.port);
-    const slot = await acquirePoolSlot(candidate, source, input.poolSelector, input.strictPoolSelection);
+    // A continuation borrows the session's slot; see `borrowsHeldSession`.
+    const slot = source.borrowsHeldSession === true
+      ? undefined
+      : await acquirePoolSlot(candidate, source, input.poolSelector, input.strictPoolSelection);
     if (slot) partial.proxySlot = slot;
     if (input.strictPoolSelection && input.signal.aborted)
       throw new GatewayError("transport_closed", 499, "request was cancelled");
@@ -209,6 +284,14 @@ export async function acquireAttemptLeases(
       reservation: partial.reservation,
       ...(partial.proxySlot ? { proxySlot: partial.proxySlot } : {}),
       ...(partial.proxySlot ? { networkPoolId: partial.proxySlot.poolId } : {}),
+      // The pool slot is the one resource a provider session can outlive, so it
+      // is the one wrapped in a transferable owner. The admission lease and the
+      // routing reservation stay request-scoped: the account's concurrency slot
+      // is held for the Run's duration, while per-request usage settles per
+      // request.
+      ...(partial.proxySlot
+        ? { ownership: new AttemptLeaseOwnership(partial.proxySlot.release) }
+        : {}),
     };
   } catch (error) {
     await releaseAttemptLeases(partial, source.routingEngine);
@@ -221,14 +304,28 @@ export async function releaseAttemptLeases(
     readonly lease?: AdmissionLease | undefined;
     readonly reservation?: Reservation | undefined;
     readonly proxySlot?: { release: () => void } | undefined;
+    /**
+     * When present, the pool slot's release is owned rather than called
+     * directly: `releaseByResponse()` releases only if a provider session did
+     * not take it over. A slot a live Cursor Run is holding must not be freed
+     * at response time — the Run's next request needs it, and releasing early
+     * is what lets another tenant's request occupy a slot that is still in use.
+     */
+    readonly ownership?: AttemptLeaseOwnership | undefined;
   },
   routingEngine: Pick<RoutingEngine, "release">,
 ): Promise<void> {
   // Every release runs inside the settled set: a throwing pool-slot release
   // must not skip the admission lease or routing reservation (slot + inflight
   // leak). Sync release is wrapped so it participates in the same guarantee.
+  // When ownership exists it supersedes the raw slot release: calling both
+  // would release twice, and `releaseByResponse` is the single-shot gate.
   await Promise.allSettled([
-    ...(leases.proxySlot ? [Promise.resolve().then(() => leases.proxySlot?.release())] : []),
+    ...(leases.ownership
+      ? [Promise.resolve().then(() => leases.ownership?.releaseByResponse())]
+      : leases.proxySlot
+        ? [Promise.resolve().then(() => leases.proxySlot?.release())]
+        : []),
     ...(leases.lease ? [leases.lease.release()] : []),
     ...(leases.reservation ? [routingEngine.release(leases.reservation)] : []),
   ]);

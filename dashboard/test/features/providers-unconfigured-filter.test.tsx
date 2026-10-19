@@ -46,6 +46,22 @@ const CATALOG: readonly ProviderResponse[] = [
 
 const seed = [{ key: queryKeys.providers.all, data: CATALOG }];
 
+test("custom provider cards show their configured Base URL", async () => {
+  const customProvider = provider("my-gateway", {
+    isBuiltIn: false,
+    baseUrl: "https://gateway.example/v1",
+    configured: true,
+  });
+  const view = await mount(createElement(Providers), {
+    seed: [{ key: queryKeys.providers.all, data: [customProvider] }],
+  });
+  await view.flush();
+
+  expect(view.container.textContent).toContain("Base URL");
+  expect(view.container.textContent).toContain("https://gateway.example/v1");
+  view.unmount();
+});
+
 function visibleIds(container: HTMLElement): string[] {
   return [...container.querySelectorAll('a[href*="/providers/"]')]
     .map((el) => el.getAttribute("href") ?? "")

@@ -95,10 +95,8 @@ export const BUDDY_IMAGE_MODEL_ID_SET: ReadonlySet<string> = new Set(
 /**
  * Ids the buddy facade refuses on a free plan.
  *
- * Measured, not inferred: every id in the CodeBuddy intl roster was dispatched
- * on a `personal_free_user` account, twice, and these six answered `11158
- * "model [X] is not allowed for user type [personal_free_user]"`. The rest
- * answered 200.
+ * The international CodeBuddy and WorkBuddy catalogs share this roster and
+ * the same Pro-tier model classification.
  *
  * Nothing in the console directory predicts it. `credits` does not — `kimi-k3`
  * bills `x1.62` and is served while `gpt-5.6-luna` bills `x0.14` and is
@@ -115,9 +113,16 @@ export const BUDDY_PRO_ONLY_MODEL_IDS: ReadonlySet<string> = new Set([
   "primary-model",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-6-luna",
+  "gpt-6-sol",
+  "gpt-6.1-sol",
   "gpt-5.5",
   "gpt-5.4",
   "gemini-3.5-flash",
+  "gemini-3.8-flash",
+  "grok-4.6",
+  "grok-4.7",
 ]);
 
 /**

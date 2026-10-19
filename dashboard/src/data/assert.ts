@@ -272,6 +272,12 @@ export function assertProviders(value: unknown): ProviderResponse[] {
   });
 }
 
+export function assertProvider(value: unknown): ProviderResponse {
+  const [provider] = assertProviders([value]);
+  if (provider === undefined) throw invalidResponse("Invalid provider response");
+  return provider;
+}
+
 export function assertModels(value: unknown): ModelCatalogEntry[] {
   if (!Array.isArray(value)) throw invalidResponse("Invalid model response");
   return value.map((model) => {

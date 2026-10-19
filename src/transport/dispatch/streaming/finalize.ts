@@ -26,6 +26,7 @@ import { metrics } from "../../../observability/metrics";
 import { flagPoolBlocked, flagPoolCooldown } from "../../../network/pool-health";
 import { isFreeTierIpBlock, shouldCooldownPool } from "../retry-policy";
 import { releaseAttemptLeases } from "../leases";
+import type { AttemptLeaseOwnership } from "../leases";
 import { finalizeRequestTelemetry } from "../../guards/error-lifecycle";
 import { drainAbortReason } from "../../shutdown-notice";
 import {
@@ -69,6 +70,12 @@ export interface StreamFinalizeInput {
    * single pre-content Responses retry rebinds it mid-stream.
    */
   readonly getIterator: () => AsyncIterator<CanonicalEvent>;
+  /**
+   * Ownership of this attempt's account/network-pool release. A provider
+   * session that outlived this request already took it over, so
+   * `releaseByResponse()` is a no-op and the slot stays held for the session.
+   */
+  readonly leaseOwnership?: AttemptLeaseOwnership | undefined;
   /** First-token latency in the spread shape `completeAttempt` accepts. */
   readonly ttfbFields: (
     firstByteAt: number | undefined,
@@ -338,6 +345,9 @@ export class StreamFinalizer {
         lease,
         reservation,
         proxySlot,
+        ...(this.input.leaseOwnership === undefined
+          ? {}
+          : { ownership: this.input.leaseOwnership }),
       },
       prepared.routingEngine,
     );
@@ -392,6 +402,11 @@ export class StreamFinalizer {
         candidate.providerId,
         candidate.modelId,
       );
+      // A deferred terminal means the provider's turn is not over: the stream
+      // ended because the model asked for a tool the client must answer, and the
+      // authoritative usage arrives with the request that continues the same
+      // upstream turn. Committing an estimate here would bill that turn twice.
+      const deferredUsage = pipeline.terminal.usage_deferred === true;
       await completeAttempt(state, {
         status: upstreamTruncated ? "truncated" : "completed",
         ...this.streamCompletionContext(),
@@ -404,7 +419,7 @@ export class StreamFinalizer {
             }
           : {}),
         usage: finalUsage,
-        commitUsage: finalUsage,
+        ...(deferredUsage ? {} : { commitUsage: finalUsage }),
         responseBody: pipeline.telemetryEventTranscript,
         ...(pipeline.clientResponseText ? { clientResponseText: pipeline.clientResponseText } : {}),
         ...(pipeline.firstContentDeltaAtMs !== undefined ? { firstContentDeltaAtMs: pipeline.firstContentDeltaAtMs } : {}),

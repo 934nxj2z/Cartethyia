@@ -72,9 +72,7 @@ function clampGithubReasoningEffort(payload: Record<string, unknown>): void {
 /** Supported virtual Copilot Auto catalog ids and their router tiers. */
 export const GITHUB_AUTO_MODEL_TIERS: ReadonlyMap<string, "efficiency" | "balance" | "intelligence"> = new Map([
   ["auto", "balance"],
-  ["gpt-6-luna-low", "efficiency"],
-  ["gpt-6-luna-medium", "balance"],
-  ["gpt-6-luna-high", "intelligence"],
+  ["gpt-6-luna", "efficiency"],
 ]);
 
 /** Copilot model ids excluded from both the fallback and discovered catalogs. */
@@ -86,7 +84,9 @@ export const GITHUB_EXCLUDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "gpt-5.4-mini-free-auto",
   "gpt-5.6-luna",
   "gpt-5.6-luna-free-auto",
-  "gpt-6-luna",
+  "gpt-6-luna-low",
+  "gpt-6-luna-medium",
+  "gpt-6-luna-high",
   "kimi-k3",
   "kimi-k3-base",
   "kimi-k3-copilot",

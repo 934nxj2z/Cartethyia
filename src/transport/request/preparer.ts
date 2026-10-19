@@ -1,7 +1,9 @@
 import { GatewayError } from "../../protocol/gateway-error";
 import type { CanonicalRequest, ServiceKind } from "../../protocol/canonical-model";
+import { toolResultParts } from "../../protocol/canonical-model";
 import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan } from "../routing/route-model";
+import type { RouteContinuationAffinity } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
 import type { RequiredCapability } from "../translation/capabilities";
@@ -14,6 +16,7 @@ import { parseThinkingSuffix, withThinkingSuffixIntent } from "../translation/th
 import { nativeServicePathFor } from "../contracts";
 import { log } from "../../observability/logger";
 import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
+import { cursorRunSessions } from "../../providers/integrations/cursor/cursor-session-manager";
 import {
   degradedRequestVariants,
   degradeEncryptedReasoning,
@@ -32,6 +35,90 @@ function requestNeedsToolRepair(request: CanonicalRequest): boolean {
   return false;
 }
 
+/** Prefix of a provider-continuation tool-call id the gateway itself minted. */
+const CURSOR_CALL_PREFIX = "call_cursor_";
+
+/**
+ * The provider-continuation tool results this request carries.
+ *
+ * Only ids the gateway minted (`call_cursor_<run-id>_<exec-id>`) are considered.
+ * Any other id belongs to a conversation the client owns; it is not a
+ * continuation and must not influence routing.
+ */
+export function continuationCallIds(request: CanonicalRequest): readonly string[] {
+  const ids: string[] = [];
+  for (const message of request.messages) {
+    if (message.role !== "tool" && message.role !== "user") continue;
+    for (const part of toolResultParts(message)) {
+      if (!part.call_id.startsWith(CURSOR_CALL_PREFIX)) continue;
+      if (!ids.includes(part.call_id)) ids.push(part.call_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Resolves a request's pending tool results to the one account that owns them.
+ *
+ * Every pending id must resolve to the *same* live Run and the same account.
+ * Ids resolving to different Runs, or to no live Run at all, are refused rather
+ * than partially applied: one result cannot be delivered to another account's
+ * upstream turn, and a request that cannot be satisfied as a whole must not be
+ * dispatched at all.
+ *
+ * Returns `undefined` when the request carries no continuation ids — the
+ * ordinary routing path.
+ */
+export function resolveContinuationAffinity(
+  request: CanonicalRequest,
+  authorization: ResolvedApiKey,
+): RouteContinuationAffinity | undefined {
+  const ids = continuationCallIds(request);
+  if (ids.length === 0) return undefined;
+  const scope = {
+    tenantId: authorization.tenantId,
+    apiKeyId: authorization.id,
+  };
+  let affinity: RouteContinuationAffinity | undefined;
+  for (const callId of ids) {
+    // The registry resolves by tenant + API key + provider + account, so a call
+    // id replayed from another key or tenant resolves nothing.
+    const record = lookupPendingCall(callId, scope);
+    if (record === undefined) {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        "This tool result refers to a Cursor tool call that is no longer pending. Resend the complete conversation.",
+        { callId },
+      );
+    }
+    if (affinity !== undefined && affinity.providerAccountId !== record.providerAccountId) {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        "These tool results belong to different Cursor accounts; resend them one account at a time.",
+        { callIds: [...ids] },
+      );
+    }
+    affinity = {
+      providerId: record.providerId,
+      providerAccountId: record.providerAccountId,
+    };
+  }
+  return affinity;
+}
+
+/** Looks up one pending call across every provider that records continuations. */
+function lookupPendingCall(
+  callId: string,
+  scope: { readonly tenantId: string; readonly apiKeyId: string },
+): { readonly providerId: string; readonly providerAccountId: string } | undefined {
+  const record = cursorRunSessions.describePendingCall(callId, scope);
+  return record === undefined
+    ? undefined
+    : { providerId: record.providerId, providerAccountId: record.providerAccountId };
+}
+
 export interface PreparedProxyRequest {
   readonly canonicalRequest: CanonicalRequest;
   readonly authorization: ResolvedApiKey;
@@ -42,6 +129,13 @@ export interface PreparedProxyRequest {
   readonly degradedCapabilities?: readonly RequiredCapability[];
   /** Snapshot-consistent plan used to reserve each individual attempt. */
   readonly plan: RoutePlan;
+  /**
+   * The account this request must reach because a provider session is already
+   * live on it. Set only when the request carried a live tool result; the
+   * dispatch path uses it to borrow the held session instead of acquiring a
+   * second account and pool slot.
+   */
+  readonly continuationAffinity?: RouteContinuationAffinity;
   readonly estimatedInputTokens: number;
   readonly estimatedOutputTokens: number;
   readonly deadlineMs: number;
@@ -150,6 +244,13 @@ export class ProxyRequestPreparer {
     // requires the `image` capability — it plans like the text request it has
     // become, instead of being routed to a vision route for nothing.
     const requestWithAttachments = dropCorruptAttachments(request).request;
+    // Continuation affinity is resolved before anything else: a request
+    // carrying a tool result for a live provider session must be planned against
+    // the one account that owns that session, before capability derivation or
+    // degradation could narrow the candidate set past it. This is also the
+    // point where a mismatched or expired call id becomes a 400 the caller can
+    // act on, instead of a dispatch that silently starts a new upstream turn.
+    const continuationAffinity = resolveContinuationAffinity(request, authorization);
     // Capability-aware routing: derive requirements BEFORE planning so the
     // router filters candidates against snapshot profiles. When nothing
     // supports the full request, degrade (same greedy order) and re-plan
@@ -176,6 +277,7 @@ export class ProxyRequestPreparer {
           variant.required,
           allowCliMappings,
           authorization.cliMappingOwnerId ?? authorization.id,
+          continuationAffinity,
         );
       } catch (error) {
         if (error instanceof GatewayError && error.code === "capability_unsupported") continue;
@@ -303,6 +405,7 @@ export class ProxyRequestPreparer {
       eligibleRouteCandidates: eligible,
       degradedCapabilities: degraded,
       plan,
+      ...(continuationAffinity === undefined ? {} : { continuationAffinity }),
       estimatedInputTokens,
       estimatedOutputTokens,
       deadlineMs: input.deadlineMs,

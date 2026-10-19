@@ -435,6 +435,15 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
             >
               {customProvider.label || customProvider.providerId}
             </div>
+            {customProvider.baseUrl ? (
+              <div
+                className="mt-1 min-w-0 truncate font-mono text-micro text-text-tertiary"
+                title={customProvider.baseUrl}
+              >
+                <span className="font-semibold text-text-secondary">Base URL</span>{" "}
+                {customProvider.baseUrl}
+              </div>
+            ) : null}
             <div className="mt-1.5 flex flex-wrap gap-2">
               {accounts === undefined ? (
                 <SecondaryQueryBadge

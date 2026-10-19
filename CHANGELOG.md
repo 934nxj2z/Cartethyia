@@ -53,7 +53,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   can get an account blocked on, so a provider only flips when an account or an
   operator opts in; unset leaves every header byte-identical to before.
 
+- **Cursor is a bundled provider.** It speaks Connect-RPC over protobuf on a
+  bidirectional HTTP/2 stream, so it is reached through validated HTTP/2 egress
+  rather than `fetch`, and its Run origin is resolved per dispatch from
+  `GetServerConfig` instead of being a configured base URL.
+
+  Its tool loop spans **two client requests on one upstream Run**: the first
+  returns a tool call and the second submits that tool's result on the same Run,
+  so the Run — and the account and pool slot it holds — outlive the request that
+  opened them. A continuation is authorized by server-recorded tenant, API key,
+  provider, and account, not by the call id alone; a mismatch is refused, and a
+  call that is no longer pending fails explicitly rather than starting a Run the
+  model is not waiting on. An unanswered Run expires on its own
+  (`RUN_IDLE_TTL_MS`) so a tool round the client never answered cannot hold a
+  stream and a slot indefinitely.
+
+  Only an `mcp_args` call whose namespace and function name match a tool the
+  request declared is executed. Cursor's own shell, filesystem, and workspace
+  tools are answered `rejected`, never run. Images are sniffed and size-checked
+  before the Run is dialed, and image URLs must be HTTPS and are not followed
+  through redirects. Unrecognized bytes are rejected even when labelled as a
+  supported image type.
+
+  There is no quota collector and no static catalog: no Cursor quota endpoint is
+  established, and the roster is per-account and per-plan. See
+  [Cursor provider](documentation/features/cursor-provider.md).
+
 ### Changed
+
+- **Copilot Luna Auto now exposes one canonical efficient model id.**
+  `gpt-6-luna` selects the `efficiency` tier. The separate
+  `gpt-6-luna-low`, `gpt-6-luna-medium`, and `gpt-6-luna-high` catalog entries
+  are removed; the latter two no longer appear from account discovery either.
 
 - **Chat decoding recovers tool calls when an upstream emits the captured
   `<tool_calls:…>` envelope as assistant text.** Previously the XML-like call
@@ -125,6 +156,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   while `X-Domain` stays the domain recorded at login.
 
 ### Fixed
+
+- **Console recovery clears stale login lockouts.** The local `carte` reset
+  previously removed console users but left the per-login failure buckets in
+  `console_lockouts`; recreating the account from the same IP therefore stayed
+  temporarily blocked. The reset now clears both in one transaction.
 
 - **A probe no longer retires an egress on the first connection failure.**
   `bun run probe:egress` reported "fails the first time, works on retry"

@@ -794,7 +794,7 @@ function ModelCard({
             >
               <span
                 title={`${model.wireFamily} · ${model.route ?? providerId}`}
-                className="shrink-0 rounded-pill px-3 py-0.5 text-micro font-bold tracking-[0.04em]"
+                className="shrink-0 rounded-tiny px-3.5 py-0.5 text-micro font-bold tracking-[0.04em]"
                 // The wire family is a runtime value from the catalog, so its
                 // chip colours stay inline.
                 style={{ ...wireChipStyle(model.wireFamily) }}
@@ -812,7 +812,7 @@ function ModelCard({
               {model.proOnly === true ? (
                 <span
                   title="Refused on a free plan. Nothing in the provider's model directory predicts it, so this comes from a real dispatch: the upstream answers that the model is not allowed for a free user type."
-                  className="shrink-0 rounded-pill bg-accent-soft px-3 py-0.5 text-micro font-bold tracking-label text-accent"
+                  className="shrink-0 rounded-tiny border border-orange bg-orange-soft px-3.5 py-0.5 text-micro font-bold uppercase tracking-[0.04em] text-orange"
                 >
                   Pro
                 </span>

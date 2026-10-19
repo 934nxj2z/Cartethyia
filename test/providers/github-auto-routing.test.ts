@@ -18,7 +18,7 @@ const credential = JSON.stringify({
 });
 
 const request = {
-  model: "gpt-6-luna-high",
+  model: "gpt-6-luna",
   messages: [{ role: "user", content: [{ kind: "text", text: "Find the bug." }] }],
   generation_controls: { temperature: 0.2 },
   source_surface: "chat",
@@ -27,7 +27,7 @@ const request = {
 
 const candidate: ProviderDispatchTarget = {
   provider_id: "github",
-  model_id: "gpt-6-luna-high",
+  model_id: "gpt-6-luna",
   wire_family: "chat",
   endpoint_path: "/chat/completions",
   capabilities: {},
@@ -36,9 +36,10 @@ const candidate: ProviderDispatchTarget = {
 describe("GitHub Copilot Auto routing", () => {
   test("maps catalog variants to supported Auto tiers", () => {
     expect(GITHUB_AUTO_MODEL_TIERS.get("auto")).toBe("balance");
-    expect(GITHUB_AUTO_MODEL_TIERS.get("gpt-6-luna-low")).toBe("efficiency");
-    expect(GITHUB_AUTO_MODEL_TIERS.get("gpt-6-luna-medium")).toBe("balance");
-    expect(GITHUB_AUTO_MODEL_TIERS.get("gpt-6-luna-high")).toBe("intelligence");
+    expect(GITHUB_AUTO_MODEL_TIERS.get("gpt-6-luna")).toBe("efficiency");
+    expect(GITHUB_AUTO_MODEL_TIERS.has("gpt-6-luna-low")).toBe(false);
+    expect(GITHUB_AUTO_MODEL_TIERS.has("gpt-6-luna-medium")).toBe(false);
+    expect(GITHUB_AUTO_MODEL_TIERS.has("gpt-6-luna-high")).toBe(false);
     expect(GITHUB_AUTO_MODEL_TIERS.has("auto-intelligence")).toBe(false);
   });
 
@@ -169,7 +170,7 @@ describe("GitHub Copilot Auto routing", () => {
     ]);
     expect(requests[0]?.body).toEqual({
       prompt: "Find the bug.",
-      tier: "intelligence",
+      tier: "efficiency",
     });
     expect(requests[0]?.headers.get("x-github-api-version")).toBe("2026-08-01");
     expect(requests[2]?.body.model).toBe("routed-model");

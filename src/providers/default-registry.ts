@@ -201,6 +201,28 @@ export const PROVIDER_CAPABILITIES = {
     loadAuthentication: oauthCapability(() => import("./integrations/kimi/kimi-oauth"), "kimiCodeOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/kimi/kimi-quota"), "fetchKimiQuota"),
   },
+  cursor: {
+    // Cursor's Run is a Connect-RPC bidi stream on a *dynamically discovered*
+    // agent origin, not the API host the auth and catalog calls use. The path
+    // is pinned here so a probe verifies the endpoint dispatch actually calls;
+    // the origin itself is resolved per dispatch from GetServerConfig.
+    endpointPathsByWireFamily: { chat: "/agent.v1.AgentService/Run" },
+    loadAdapter: async () => (await import("./integrations/cursor/cursor")).cursorAdapter,
+    loadAuthentication: oauthCapability(() => import("./integrations/cursor/cursor-auth"), "cursorOAuthClient", {
+      withRefresher: true,
+    }),
+    // No quota collector: no Cursor quota endpoint is established by the donor
+    // or the API evidence, and inventing one would publish a balance this
+    // gateway cannot measure.
+    //
+    // The roster is per-account and per-plan, and Cursor declares each model's
+    // capabilities, so discovery is the catalog rather than a static list.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/cursor/cursor-catalog")).discoverCursorModels({
+        credential,
+        ...(fetcher === undefined ? {} : { fetcher }),
+      }),
+  },
   cerebras: {
     endpointPathsByWireFamily: { chat: "/chat/completions" },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/cerebras")).CEREBRAS_SPEC),

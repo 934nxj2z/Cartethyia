@@ -2,6 +2,7 @@ import {
   Activity,
   Bell,
   Clock,
+  ChevronDown,
   Cpu,
   FlaskConical,
   Globe,
@@ -43,9 +44,11 @@ import type { SessionUser } from "../../data/contracts";
 
 interface NavItemDef {
   readonly label: string;
-  readonly path: string;
+  readonly path?: string;
   readonly icon: LucideIcon;
   readonly badge?: string;
+  readonly disabled?: boolean;
+  readonly children?: readonly NavItemDef[];
 }
 
 interface NavGroupDef {
@@ -70,6 +73,23 @@ export const navigationGroups: readonly NavGroupDef[] = [
       { label: "Quota Management", path: "/quota", icon: ShieldAlert },
       { label: "Proxy & Requests", path: "/proxy", icon: Network },
       { label: "CLI Tools", path: "/cli-tools", icon: Terminal },
+    ],
+  },
+  {
+    label: "Tools",
+    items: [
+      { label: "Coming soon", path: "#tools-coming-soon-1", icon: Globe, disabled: true },
+      {
+        label: "Coming soon",
+        path: "#tools-coming-soon-2",
+        icon: Globe,
+        children: Array.from({ length: 5 }, (_, index) => ({
+          label: `Coming soon ${index + 1}`,
+          path: `#tools-coming-soon-${index + 3}`,
+          icon: Globe,
+          disabled: true,
+        })),
+      },
     ],
   },
   {
@@ -462,6 +482,7 @@ function SidebarNavList({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [indicator, setIndicator] = useState({ top: 0, height: 0, opacity: 0 });
+  const [expandedItems, setExpandedItems] = useState<ReadonlySet<string>>(() => new Set());
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -492,19 +513,83 @@ function SidebarNavList({
         aria-hidden="true"
       />
       {items.map((item) => {
+        if (item.children !== undefined) {
+          const expanded = expandedItems.has(item.path ?? item.label);
+          return (
+            <div key={item.path ?? item.label}>
+              <button
+                type="button"
+                className="nav-link-item w-full"
+                aria-expanded={expanded}
+                onClick={() =>
+                  setExpandedItems((current) => {
+                    const next = new Set(current);
+                    const key = item.path ?? item.label;
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })
+                }
+              >
+                <item.icon size={17} className="nav-link-icon" />
+                <span>{item.label}</span>
+                <ChevronDown
+                  size={14}
+                  className={`ml-auto shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {expanded ? (
+                <div className="ml-6 border-l border-inner-border pl-2">
+                  {item.children.map((child) => (
+                    <button
+                      key={child.path ?? child.label}
+                      type="button"
+                      className="nav-link-item w-full cursor-not-allowed opacity-55"
+                      disabled
+                      title="Coming soon"
+                    >
+                      <child.icon size={15} className="nav-link-icon" />
+                      <span>{child.label}</span>
+                      <span className="nav-link-badge">Soon</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        }
+        if (item.disabled) {
+          return (
+            <button
+              key={item.path ?? item.label}
+              type="button"
+              className="nav-link-item w-full cursor-not-allowed opacity-55"
+              disabled
+              aria-label={`${item.label} — unavailable`}
+              title="Coming soon"
+            >
+              <item.icon size={17} className="nav-link-icon" />
+              <span>{item.label}</span>
+              <span className="nav-link-badge">Soon</span>
+            </button>
+          );
+        }
+        if (item.path === undefined) return null;
+        const path = item.path;
         const isActive =
-          item.path === "/"
+          path === "/"
             ? pathname === "/"
-            : pathname === item.path || pathname.startsWith(`${item.path}/`);
+            : pathname === path || pathname.startsWith(`${path}/`);
         return (
           <NavLink
-            key={item.path}
-            to={item.path}
-            end={item.path === "/"}
+            key={path}
+            to={path}
+            end={path === "/"}
             data-active={isActive ? "true" : undefined}
             className={`nav-link-item ${isActive ? "active" : ""}`}
-            onMouseEnter={() => onIntent(item.path)}
-            onFocus={() => onIntent(item.path)}
+            onMouseEnter={() => onIntent(path)}
+            onFocus={() => onIntent(path)}
           >
             <item.icon size={17} className="nav-link-icon" />
             <span>{item.label}</span>

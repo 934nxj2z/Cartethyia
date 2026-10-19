@@ -354,6 +354,19 @@ export interface CanonicalTerminalEvent {
   readonly response_id?: string;
   /** Event timestamp in milliseconds since epoch (optional for profiling). */
   readonly timestamp?: number;
+  /**
+   * Set by an adapter whose turn is not finished: the stream ended because the
+   * model asked for a tool the client must answer, and the provider's
+   * authoritative usage arrives with the *later* request that continues the
+   * same upstream turn.
+   *
+   * The settle path reads this to skip charging estimated tokens for the
+   * interim response — otherwise one logical turn bills an input/output
+   * estimate on the tool-call response and the real usage on the continuation,
+   * which double-counts the turn. Only a provider that genuinely spans client
+   * requests with one upstream turn sets it.
+   */
+  readonly usage_deferred?: true;
 }
 
 /** An ordered canonical stream event; sequence numbers must increase monotonically. */
