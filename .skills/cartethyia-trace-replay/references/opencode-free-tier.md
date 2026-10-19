@@ -45,8 +45,8 @@ Corollary for deployments: a datacenter IP (Railway and similar) is blocked.
   `FreeUsageLimitError`** on 2026-10-18 — rate-limited, not refused. Treat it as
   a fallback whose quota is unknown, not as a dead lane.
 
-Full measured contract with the correction history:
-`documentation/archive/opencode-free-tier.md`.
+The measured contract above is the current one; the superseded investigation
+that carried the correction history is no longer in the tree.
 
 Absent the fingerprint, a free-model request is refused:
 
@@ -117,9 +117,10 @@ like an unreachable host.
 - Live ids: `GET https://opencode.ai/zen/v1/models` (open, no credential).
   Limits and status: `https://models.opencode.ai/api.json` — a `status:
   "deprecated"` row is on its way out; do not guess either.
-- Known-good real-client capture:
-  `documentation/archive/opencode-freetier-capture.log`. Its `user-agent` is
-  stale — add the version segment before replaying it.
+- A known-good real-client capture lived alongside the superseded
+  investigation and was dropped with it; re-capture from a real client rather
+  than trusting a stale one, and note its `user-agent` needs the version
+  segment before replaying.
 
 ## What does NOT matter
 

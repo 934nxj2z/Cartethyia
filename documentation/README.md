@@ -51,7 +51,6 @@ documentation/
 ├── getting-started.md    installing and running it
 ├── installation.md       VPS/systemd, reverse proxy, one-shot script
 ├── why-cartethyia.md     the problem it was built for and how it differs
-├── archive/              superseded investigations, kept for the record
 ├── research/             live investigations, kept while they are open
 ├── assets/screenshots/   console screenshots the README showcases
 ├── reference/            how it is built, one page per layer
