@@ -885,9 +885,29 @@ export function isRetryableFailure(error: unknown): boolean {
 }
 
 /**
+ * Minimum wall-clock budget a follow-on attempt needs to be worth starting.
+ *
+ * A retry repeats the whole pre-dispatch phase — credential resolution,
+ * admission, pool slot, request preparation — so it needs at least this much
+ * headroom on top of whatever the upstream itself takes. Below this, the
+ * attempt is killed by the deadline before it can return anything usable, and
+ * starting it replaces the first attempt's real error with a second one's
+ * timeout.
+ *
+ * Owned here so the attempt loop, the empty-stream replay, and the Codex
+ * retry budget cannot drift apart; each previously declared its own copy of
+ * the constant.
+ */
+export const MIN_RETRY_BUDGET_MS = 15_000;
+
+/**
  * Capped exponential backoff with full jitter for a zero-based attempt index.
  * The base and cap are operator-tunable (`CARTETHYIA_FALLBACK_RETRY_BASE_MS`,
  * `CARTETHYIA_FALLBACK_RETRY_CAP_MS`) and default to 100ms / 2000ms.
+ *
+ * Used for every retry delay, including the empty-stream replay: jitter keeps
+ * concurrent clients from resynchronizing, and the cap keeps a provider that
+ * returns 200-with-no-events from driving an unbounded wait.
  */
 export function fallbackRetryDelayMs(attemptIndex: number): number {
   const exp = Math.min(resolveFallbackRetryCapMs(), resolveFallbackRetryBaseMs() * 2 ** attemptIndex);

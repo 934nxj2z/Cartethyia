@@ -31,7 +31,11 @@ import { decodeSseEvents } from "../../../protocol/sse-decoder";
 import { imageCreatedSeconds, imagePrompt, responsesImageResult } from "../../../protocol/image-generation";
 import { isRecord, joinUrl } from "../../../protocol/codecs";
 import { postUpstreamJson } from "../../../protocol/upstream/post-json";
-import { parseUpstreamBackoff, sleep as defaultSleep } from "../../../transport/failure-policy";
+import {
+  MIN_RETRY_BUDGET_MS,
+  parseUpstreamBackoff,
+  sleep as defaultSleep,
+} from "../../../transport/failure-policy";
 
 /**
  * Sleep used by the 429 capacity-wait loop, overridable in tests.
@@ -276,13 +280,6 @@ const CODEX_429_MAX_WAIT_MS = 60_000;
 
 /** Zero-delay 429 guard. Grows from 50ms, doubling per wait. */
 const CODEX_429_MIN_WAIT_MS = 50;
-
-/**
- * The attempt-loop floor: a retry repeats the whole pre-dispatch phase, so it
- * needs at least this much budget left on top of the upstream call itself.
- * Mirrors `MIN_RETRY_BUDGET_MS` in `src/transport/dispatch/attempt-loop.ts`.
- */
-const MIN_RETRY_BUDGET_MS = 15_000;
 
 /** The `x-codex-*` window headers, in seconds or epoch seconds. */
 function codexWindowResetMs(res: Response): number | undefined {

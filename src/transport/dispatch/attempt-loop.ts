@@ -10,7 +10,13 @@
  */
 import { GatewayError } from "../../protocol/gateway-error";
 import type { ResolvedCredential } from "../../providers/provider-contracts";
-import { classifyTerminalOutcome, fallbackRetryDelayMs, isRetryableFailure, sleep } from "../failure-policy";
+import {
+  classifyTerminalOutcome,
+  fallbackRetryDelayMs,
+  isRetryableFailure,
+  MIN_RETRY_BUDGET_MS,
+  sleep,
+} from "../failure-policy";
 import { resolveRouteMaxAttempts } from "../../config/timeouts";
 import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
 import type { OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
@@ -178,12 +184,8 @@ export async function runAttemptLoop<TResult, TAdapter>(
   const perMemberCap =
     memberCount > 1 ? Math.max(1, Math.ceil(maxAttempts / memberCount)) : maxAttempts;
   const attemptsByMember = new Map<string, number>();
-  // Minimum wall-clock left before a follow-on attempt is worth starting. A
-  // retry repeats the whole pre-dispatch phase (credential, admission, pool
-  // slot, prepare), so it needs at least that much budget on top of whatever
-  // the upstream itself takes. Below this, the attempt would be killed by the
-  // deadline before it could return anything the client could use.
-  const MIN_RETRY_BUDGET_MS = 15_000;
+  // The budget itself is owned by failure-policy, so this loop, the
+  // empty-stream replay, and the Codex retry budget cannot drift apart.
   let index = 0;
   let attempts = 0;
   while (index < candidates.length && attempts < maxAttempts) {

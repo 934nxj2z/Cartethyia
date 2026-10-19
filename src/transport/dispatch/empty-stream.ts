@@ -18,6 +18,11 @@
  * rather than surfacing an empty body to the client.
  */
 import { GatewayError } from "../../protocol/gateway-error";
+import {
+  fallbackRetryDelayMs,
+  MIN_RETRY_BUDGET_MS,
+  sleep as abortableSleep,
+} from "../failure-policy";
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -38,9 +43,17 @@ export type EmptyStreamFetch = (
   init: { headers: Record<string, string>; body: string; signal: AbortSignal },
 ) => Promise<Response>;
 
+/**
+ * Retry-delay policy.
+ *
+ * Delays come from `fallbackRetryDelayMs` (capped exponential with full
+ * jitter), whose base and cap are operator-tunable. There is deliberately no
+ * per-caller base: the local formula this replaced was uncapped and
+ * unjittered, so a provider returning 200-with-no-events could drive an
+ * unbounded wait, and concurrent clients could resynchronize their retries.
+ */
 export interface EmptyStreamPolicy {
   readonly maxEmptyReplays?: number;
-  readonly baseDelayMs?: number;
   readonly firstEventTimeoutMs?: number;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
@@ -55,9 +68,8 @@ export interface EmptyStreamResult {
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_REPLAYS = 2;
-const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 200_000; // 200s, matches CARTETHYIA_STREAM_FIRST_CHUNK_TIMEOUT_MS default
-const MIN_RETRY_BUDGET_MS = 15_000; // attempt-loop floor
+
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -66,27 +78,7 @@ export function isEmptyStream(tally: StreamTally): boolean {
   return tally.dataEvents === 0 || (!tally.meaningful && !tally.thoughtOnly);
 }
 
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new GatewayError("transport_closed", 499, "Aborted"));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new GatewayError("transport_closed", 499, "Aborted"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
 
-function backoffMs(attempt: number, base: number): number {
-  return base * 2 ** attempt;
-}
 
 // ─── Main function ─────────────────────────────────────────────────────────
 
@@ -109,9 +101,8 @@ export async function fetchWithEmptyStreamRecovery(
   },
 ): Promise<EmptyStreamResult> {
   const maxReplays = deps.policy?.maxEmptyReplays ?? DEFAULT_MAX_REPLAYS;
-  const baseDelay = deps.policy?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const firstEventTimeout = deps.policy?.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS;
-  const sleep = deps.policy?.sleep ?? defaultSleep;
+  const sleep = deps.policy?.sleep ?? abortableSleep;
 
   if (endpoints.length === 0) {
     throw new GatewayError("platform_unavailable", 502, "No endpoints available", {}, "upstream");
@@ -173,7 +164,7 @@ export async function fetchWithEmptyStreamRecovery(
 
       // Empty — replay if we haven't exhausted this endpoint's budget
       if (replay < replaysAllowed) {
-        const delay = backoffMs(replay, baseDelay);
+        const delay = fallbackRetryDelayMs(replay);
         try {
           await sleep(delay, deps.signal);
         } catch (error) {
