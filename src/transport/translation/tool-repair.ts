@@ -9,16 +9,31 @@ import { canContainToolResult } from "../../protocol/canonical-model";
 
 const MISSING_TOOL_OUTPUT = "<missing tool output>";
 
-/** True when any tool/user turn carries a `toolResult` part for `callId`. */
-function findToolResult(
-  turns: readonly CanonicalMessage[],
-  callId: string,
-): boolean {
-  return turns.some(
-    (turn) =>
-      canContainToolResult(turn) &&
-      turn.content.some((part) => part.kind === "toolResult" && part.call_id === callId),
-  );
+/**
+ * Maps each answered call id to the LAST message index carrying its result.
+ *
+ * A call is answered iff some result appears at an index greater than the
+ * call's own, so the highest index is sufficient — no per-call scan of the
+ * remaining messages is needed. Built in one forward sweep, O(n·p) overall.
+ *
+ * The previous implementation sliced the remaining array per assistant turn
+ * and scanned it per call id: O(n²·p) plus O(n) array allocations on every
+ * request carrying tools, which a 200-turn agentic conversation turned into
+ * ~20 000 part scans of pure synchronous CPU before the upstream was ever
+ * contacted.
+ */
+function lastResultIndexByCallId(
+  messages: readonly CanonicalMessage[],
+): Map<string, number> {
+  const lastIndex = new Map<string, number>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index] as CanonicalMessage;
+    if (!canContainToolResult(message)) continue;
+    for (const part of message.content) {
+      if (part.kind === "toolResult") lastIndex.set(part.call_id, index);
+    }
+  }
+  return lastIndex;
 }
 
 /**
@@ -40,18 +55,24 @@ export function repairMissingToolResponses(
   messages: readonly CanonicalMessage[],
 ): CanonicalMessage[] {
   const repaired: CanonicalMessage[] = [];
+  // Answered-by-a-later-message, resolved once instead of per assistant turn.
+  const lastResultIndex = lastResultIndexByCallId(messages);
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index] as CanonicalMessage;
     repaired.push(message);
     if (message.role !== "assistant") continue;
-    const callIds = message.content
-      .filter((part) => part.kind === "toolCall")
-      .map((part) => (part as Extract<typeof part, { kind: "toolCall" }>).call_id);
+    const callIds = toolCallIdsIn(message);
     if (callIds.length === 0) continue;
 
-    // Answered = a later tool message carrying a matching toolResult part.
-    const later = messages.slice(index + 1);
-    const orphanIds = callIds.filter((id) => !findToolResult(later, id));
+    // Positional: a result answers only calls in EARLIER messages, so the
+    // answering index must be strictly greater than this one. That is also
+    // what stops a result for batch N from silencing a same-id call the
+    // client reuses in batch N+1, and stops a replayed stale turn from
+    // satisfying the call declared beside it.
+    const orphanIds = callIds.filter((id) => {
+      const answeredAt = lastResultIndex.get(id);
+      return answeredAt === undefined || answeredAt <= index;
+    });
     if (orphanIds.length === 0) continue;
 
     for (const callId of orphanIds) {
