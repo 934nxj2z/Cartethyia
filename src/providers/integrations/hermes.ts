@@ -6,8 +6,36 @@ import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } fr
 
 const HERMES_PROVIDER_ID = "hermes" as const;
 
-/** Portal attribution tags required by the Nous Research inference API. */
-const HERMES_PORTAL_TAGS = ["product=hermes-agent", "client=hermes-client-v0.13.0"] as const;
+/**
+ * Portal attribution tags the Nous Research inference API requires.
+ *
+ * The endpoint validates the *shape* and rejects the request with 400 `missing
+ * user tag` when no `user=` tag is present. Measured against the live API:
+ *
+ *   tags=[user=u1]   → 200      tags=[a=b]   → 400 missing user tag
+ *   tags=[user=]     → 200      tags=[x]     → 400 missing user tag
+ *   tags=[] / absent → 400      no user tag  → 400
+ *
+ * The value is not validated — any non-empty value passes — so `user=` is a
+ * required field rather than a credential. That matters for what to put in it:
+ * a fabricated product name would be a false attribution, and there is no
+ * account identity to send, because the inference API exposes no account,
+ * usage or quota endpoint (every candidate answers 404). `user=hermes-agent`
+ * names the client rather than inventing an end user.
+ *
+ * `product=` and `client=` are the tags Hermes' own client sends
+ * (`agent/portal_tags.py` in `NousResearch/hermes-agent`). Neither is required
+ * for dispatch — a request carrying only `user=` answers 200 — but they are
+ * sent because they are the client's real attribution and cost nothing. The
+ * client version tracks the released tag `v2026.9.24`, which is date-based:
+ * Hermes does not publish a semver, so the `0.13.0` this used to claim was not
+ * a version Hermes ever had.
+ */
+const HERMES_PORTAL_TAGS = [
+  "product=hermes-agent",
+  "client=hermes-client-v2026.9.24",
+  "user=hermes-agent",
+] as const;
 
 function injectHermesTags(
   payload: Record<string, unknown>,
@@ -37,10 +65,22 @@ import type { ModelDefinition } from "../provider-model-definition";
  * `upstage/solar-mini4:free` exist).
  */
 export const HERMES_MODELS: readonly ModelDefinition[] = [
+  // The live `/models` free rows, with the limits the catalog states. Verified
+  // against the API: every id here answers 200 except
+  // `stepfun/step-5-preview:free`, which reports 429 "temporarily at capacity
+  // upstream" — a capacity fact, not a roster one, so the row stays.
+  //
+  // `meituan/longcat-2.0:free` is gone: the catalog still lists the id, but
+  // dispatching it answers 404 "This model is no longer free", so keeping it
+  // would be a card that can only ever fail. `meituan/longcat-2.5-preview:free`
+  // replaces it and answers 200.
   defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true }),
-  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 32768, reasoning: true }),
+  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 131072, reasoning: true }),
   defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true }),
-  defineModel({ id: "meituan/longcat-2.0:free", ctx: 1048756, out: 262144, reasoning: true }),
+  defineModel({ id: "stepfun/step-5-preview:free", ctx: 1048576, out: 131072, reasoning: true }),
+  defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true }),
+  defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true }),
+  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true }),
 ];
 
 
