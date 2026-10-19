@@ -413,7 +413,7 @@ export function SharePage(): ReactElement {
             <b>Cartethyia</b>
           </a>
           <div className="inline-flex items-center gap-4 max-narrow:gap-3">
-            <GithubBadge className="max-narrow:min-w-17 max-narrow:justify-center max-narrow:px-0 max-narrow:[&_.github-badge-metric]:hidden" />
+            <GithubBadge className="max-narrow:[&_.github-badge-metric]:hidden max-narrow:[&_.github-badge]:px-2.5" />
             <button
               type="button"
               className="grid size-17 cursor-pointer place-items-center rounded-pill border border-inner-border bg-surface-2 text-text-secondary hover:border-border-strong hover:text-text-primary focus-visible:outline-2 focus-visible:outline-focus-ring focus-visible:outline-offset-2"

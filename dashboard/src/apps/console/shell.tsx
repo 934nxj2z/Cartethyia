@@ -37,7 +37,7 @@ import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
 import { DASHBOARD_RELEASE_LABEL, DASHBOARD_VERSION } from "../../lib/version";
-import { GITHUB_RELEASES_URL, GITHUB_REPO_URL } from "../../lib/links";
+import { GITHUB_ALT_RELEASES_URL, GITHUB_ALT_REPO_URL } from "../../lib/links";
 import { isNewerRelease, type SystemHealthResponse } from "../../data/contracts";
 import type { SessionUser } from "../../data/contracts";
 
@@ -617,10 +617,10 @@ export function DashboardShell({
                 <span>Cartethyia</span>
               </div>
               <div className="brand-version-badge">
-                <a href={GITHUB_REPO_URL} target="_blank" rel="noreferrer" className="brand-version-link">{DASHBOARD_RELEASE_LABEL}</a>
+                <a href={GITHUB_ALT_REPO_URL} target="_blank" rel="noreferrer" className="brand-version-link">{DASHBOARD_RELEASE_LABEL}</a>
                 {updateAvailable ? (
                   <a
-                    href={releaseQuery.data?.html_url ?? GITHUB_RELEASES_URL}
+                    href={releaseQuery.data?.html_url ?? GITHUB_ALT_RELEASES_URL}
                     target="_blank"
                     rel="noreferrer"
                     className="brand-update-badge"

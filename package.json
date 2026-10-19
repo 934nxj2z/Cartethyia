@@ -7,11 +7,11 @@
   "packageManager": "bun@1.4.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/risunCode/Cartethyia.git"
+    "url": "git+https://github.com/risunCodex/Cartethyia.git"
   },
-  "homepage": "https://github.com/risunCode/Cartethyia#readme",
+  "homepage": "https://github.com/risunCodex/Cartethyia#readme",
   "bugs": {
-    "url": "https://github.com/risunCode/Cartethyia/issues"
+    "url": "https://github.com/risunCodex/Cartethyia/issues"
   },
   "keywords": [
     "ai",

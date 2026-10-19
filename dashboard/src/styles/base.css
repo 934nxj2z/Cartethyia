@@ -805,6 +805,111 @@ main > .state-viewport {
   width: auto;
 }
 
+/* Split control: the repository chip and its "other sources" menu share one
+   outline so they read as a single control, the way a split button does. The
+   chip keeps its own radius on the left only, and the toggle closes the right.
+   The toggle is sized to the chip's height, not to its own icon: a 26px sliver
+   next to a 34px chip reads as a stray arrow rather than half of one button. */
+.github-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.github-split .github-badge {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.github-split-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+  border: 1px solid var(--inner-border);
+  border-left: 0;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+.github-split-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.github-split-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.github-split-toggle[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+/* Anchored to the control, right-aligned: the surfaces that host this sit at
+   the right edge of their header, so a left-aligned menu would run off-screen
+   on a narrow viewport. */
+.github-split-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 230px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 32%);
+}
+
+.github-split-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.github-split-item:hover,
+.github-split-item:focus-visible {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.github-split-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.github-split-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.github-split-item-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.github-split-item-hint {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-tertiary);
+}
+
 /* Native checkboxes render at ~13px, which reads as a speck next to the 32px
    controls that usually sit beside them. One size everywhere, and the accent
    colour so a checked box matches the theme. Plain CSS (not @layer) so it

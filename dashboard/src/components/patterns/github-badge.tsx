@@ -1,5 +1,12 @@
-import type { ReactElement } from "react";
-import { GITHUB_REPO, GITHUB_REPO_URL } from "../../lib/links";
+import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from "react";
+import {
+  GITHUB_ALT_REPO,
+  GITHUB_ALT_REPO_URL,
+  GITHUB_REPO_URL,
+  NPM_PACKAGE_URL,
+  SOURCE_LINKS,
+  type SourceLink,
+} from "../../lib/links";
 
 /**
  * The badge host, declared here rather than imported from the backend CSP
@@ -19,6 +26,10 @@ export const BADGE_IMAGE_ORIGIN = "https://img.shields.io";
  * live inside the image, so the `alt` names what is counted rather than the
  * figure — a reader who needs the exact number follows the link to the
  * repository, which is the only place it is authoritative.
+ *
+ * Read from the alternative repository, not the primary: the primary account is
+ * hidden, so its badges would render zero or fail to load, and a badge showing
+ * a count the reader cannot act on is worse than no badge at all.
  */
 function badgeUrl(metric: "stars" | "forks", color: string): string {
   const params = new URLSearchParams({
@@ -26,7 +37,7 @@ function badgeUrl(metric: "stars" | "forks", color: string): string {
     labelColor: "0b1220",
     color,
   });
-  return `${BADGE_IMAGE_ORIGIN}/github/${metric}/${GITHUB_REPO}?${params.toString()}`;
+  return `${BADGE_IMAGE_ORIGIN}/github/${metric}/${GITHUB_ALT_REPO}?${params.toString()}`;
 }
 
 /** The GitHub mark, inlined so no brand-icon dependency is needed. */
@@ -45,36 +56,167 @@ export function GithubMark({ size = 16 }: { size?: number }): ReactElement {
   );
 }
 
-/**
- * Repository link with live star and fork counts. The host surface supplies the
- * chip styling; this component owns only the mark, the badges, and the target.
- */
-export function GithubBadge({ className = "" }: { className?: string }): ReactElement {
+/** The npm mark, inlined for the same reason as the GitHub one. */
+function NpmMark({ size = 15 }: { size?: number }): ReactElement {
   return (
-    <a
-      className={`github-badge ${className}`.trim()}
-      href={GITHUB_REPO_URL}
-      target="_blank"
-      rel="noreferrer"
-      aria-label="Cartethyia on GitHub"
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
     >
-      <GithubMark size={15} />
-      <img
-        className="github-badge-metric"
-        src={badgeUrl("stars", "2ea043")}
-        alt="GitHub stars"
-        height={20}
-        loading="lazy"
-        decoding="async"
-      />
-      <img
-        className="github-badge-metric"
-        src={badgeUrl("forks", "1f6feb")}
-        alt="GitHub forks"
-        height={20}
-        loading="lazy"
-        decoding="async"
-      />
-    </a>
+      <path d="M0 0v16h16V0H0Zm13 13h-2V5H8v8H3V3h10v10Z" />
+    </svg>
   );
 }
+
+/** The GitLab mark, inlined for the same reason as the GitHub one. */
+function GitlabMark({ size = 15 }: { size?: number }): ReactElement {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m15.5 6.3-.02-.06-2.14-5.58a.56.56 0 0 0-.22-.26.57.57 0 0 0-.65.03.57.57 0 0 0-.19.29l-1.45 4.42H5.17L3.72.72A.57.57 0 0 0 3.53.43a.57.57 0 0 0-.65-.03.56.56 0 0 0-.22.26L.52 6.24l-.02.06a3.97 3.97 0 0 0 1.32 4.59l.01.01.02.02 3.25 2.44 1.61 1.22.98.74a.67.67 0 0 0 .81 0l.98-.74 1.61-1.22 3.26-2.45.01-.01a3.97 3.97 0 0 0 1.32-4.59Z" />
+    </svg>
+  );
+}
+
+/** The Discord mark, inlined for the same reason as the others. */
+function DiscordMark({ size = 15 }: { size?: number }): ReactElement {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M13.55 3.02A12.6 12.6 0 0 0 10.5 2.1a8.9 8.9 0 0 0-.4.83 11.7 11.7 0 0 0-3.2 0 8.6 8.6 0 0 0-.41-.83 12.6 12.6 0 0 0-3.05.92C1.3 5.75.85 8.4 1.07 11.01a12.7 12.7 0 0 0 3.74 1.9c.3-.41.57-.85.8-1.31-.44-.17-.86-.37-1.26-.6l.31-.24a9 9 0 0 0 7.68 0l.31.24c-.4.23-.82.43-1.26.6.23.46.5.9.8 1.31a12.7 12.7 0 0 0 3.74-1.9c.26-3.03-.44-5.66-1.98-7.99ZM5.68 9.4c-.73 0-1.33-.67-1.33-1.49s.59-1.49 1.33-1.49c.74 0 1.34.68 1.33 1.49 0 .82-.59 1.49-1.33 1.49Zm4.64 0c-.73 0-1.33-.67-1.33-1.49s.59-1.49 1.33-1.49c.74 0 1.34.68 1.33 1.49 0 .82-.59 1.49-1.33 1.49Z" />
+    </svg>
+  );
+}
+
+function MarkFor({ id, size }: { id: SourceLink["id"]; size?: number }): ReactElement {
+  if (id === "npm") return <NpmMark size={size} />;
+  if (id === "gitlab") return <GitlabMark size={size} />;
+  if (id === "discord") return <DiscordMark size={size} />;
+  return <GithubMark size={size} />;
+}
+
+/**
+ * Repository link with live star and fork counts, plus a split menu of every
+ * place the project can be obtained.
+ *
+ * The primary action opens the alternative repository, because the primary
+ * repository is hidden — a link that may not load is not a useful default. The
+ * menu carries the rest so the reader is not left without a way through.
+ *
+ * The host surface supplies the chip styling; this component owns the mark,
+ * the badges, the menu, and the targets.
+ */
+export function GithubBadge({ className = "" }: { className?: string }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  const close = useCallback(() => setOpen(false), []);
+
+  // Dismiss on outside click and on Escape, so the menu cannot trap focus or
+  // outlive the reader's attention.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, close]);
+
+  return (
+    // The host surface styles the OUTER element (it sets height, padding and
+    // colors for its own header), so the split layout lives on an inner wrapper.
+    // Putting `github-split` on the same element made the host's
+    // `align-items: center` and `gap` win on specificity, which collapsed the
+    // toggle to its icon height and left a gap between the two halves.
+    <div className={className} ref={rootRef}>
+      <div className="github-split">
+      <a
+        className="github-badge"
+        href={GITHUB_ALT_REPO_URL}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Cartethyia on GitHub"
+      >
+        <GithubMark size={15} />
+        <img
+          className="github-badge-metric"
+          src={badgeUrl("stars", "2ea043")}
+          alt="GitHub stars"
+          height={20}
+          loading="lazy"
+          decoding="async"
+        />
+        <img
+          className="github-badge-metric"
+          src={badgeUrl("forks", "1f6feb")}
+          alt="GitHub forks"
+          height={20}
+          loading="lazy"
+          decoding="async"
+        />
+      </a>
+      <button
+        type="button"
+        className="github-split-toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        aria-label="More ways to get Cartethyia"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <svg width={12} height={12} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
+          <path d="M8 11 3 5h10l-5 6Z" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="github-split-menu" id={menuId} role="menu" aria-label="Source and package links">
+          {SOURCE_LINKS.map((link) => (
+            <a
+              key={link.id}
+              className="github-split-item"
+              href={link.href}
+              target="_blank"
+              rel="noreferrer"
+              role="menuitem"
+              onClick={close}
+            >
+              <MarkFor id={link.id} size={14} />
+              <span className="github-split-item-text">
+                <span className="github-split-item-label">{link.label}</span>
+                <span className="github-split-item-hint">{link.hint}</span>
+              </span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+      </div>
+    </div>
+  );
+}
+
+export { GITHUB_ALT_REPO_URL, GITHUB_REPO_URL, NPM_PACKAGE_URL };

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
-import { Activity, ArrowRight, ArrowUpRight, Home, Menu, MessageCircle, Network, ShieldCheck, Sparkles, Terminal, X } from "lucide-react";
-import { GITHUB_REPO_URL } from "../../lib/links";
+import { Activity, ArrowRight, ArrowUpRight, Home, LogIn, MessageCircle, Network, ShieldCheck, Sparkles, Terminal } from "lucide-react";
+import { GITHUB_ALT_REPO_URL } from "../../lib/links";
 import { GithubBadge } from "../../components/patterns/github-badge";
-import { acquireBodyScrollLock } from "../../hooks/use-modal-focus";
 import { useReducedMotion } from "../../hooks/use-reduced-motion";
 
 type SignalIconName = "activity" | "network" | "shield" | "sparkles" | "terminal";
@@ -200,7 +199,6 @@ export function LandingPage(): ReactElement {
   const reducedMotion = useReducedMotion();
   const scrollBehavior = reducedMotion ? "auto" : "smooth";
   const [activeIndex, setActiveIndex] = useState(0);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set([0]));
   const [showAll, setShowAll] = useState(false);
   // Drives the header's shape: full-bleed and square-edged at the top of the
@@ -216,12 +214,6 @@ export function LandingPage(): ReactElement {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
   const sectionRefs = useRef<Array<HTMLElement | null>>([]);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    return acquireBodyScrollLock(document.body);
-  }, [menuOpen]);
-
 
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return;
@@ -262,7 +254,6 @@ export function LandingPage(): ReactElement {
   }, [activeIndex, scrollBehavior]);
 
   const scrollToChapter = (index: number): void => {
-    setMenuOpen(false);
     sectionRefs.current[index]?.scrollIntoView({ behavior: scrollBehavior, block: "start" });
   };
 
@@ -307,7 +298,7 @@ export function LandingPage(): ReactElement {
               <Terminal size={14} aria-hidden={true} />
               Console
             </a>
-            <a href={GITHUB_REPO_URL} target="_blank" rel="noreferrer">
+            <a href={GITHUB_ALT_REPO_URL} target="_blank" rel="noreferrer">
               <MessageCircle size={14} aria-hidden={true} />
               Community
             </a>
@@ -326,26 +317,10 @@ export function LandingPage(): ReactElement {
             </button>
             <a className="landing-header-control landing-header-console" href={CONSOLE_PATH}>
               Enter console
-              <ArrowUpRight size={14} aria-hidden={true} />
+              <LogIn size={14} aria-hidden={true} />
             </a>
-            <button
-              className="landing-header-menu-toggle"
-              type="button"
-              aria-label={menuOpen ? "Close menu" : "Open menu"}
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((o) => !o)}
-            >
-              {menuOpen ? <X size={17} aria-hidden={true} /> : <Menu size={17} aria-hidden={true} />}
-            </button>
           </div>
         </div>
-        <div className="landing-header-menu-overlay" data-open={menuOpen} aria-hidden={true} onClick={() => setMenuOpen(false)} />
-        <nav className="landing-header-mobile-nav" data-scrolled={scrolled} data-open={menuOpen} aria-label="Mobile navigation" aria-hidden={!menuOpen}>
-          <a className="mt-1 inline-flex h-11 items-center justify-center gap-2 rounded-control border border-story-white bg-story-white px-3.5 text-badge font-bold text-story-deep no-underline transition-colors hover:bg-story-white/90" href={CONSOLE_PATH}>
-            Enter console
-            <ArrowUpRight size={14} aria-hidden={true} />
-          </a>
-        </nav>
       </header>
 
       {showAll ? (

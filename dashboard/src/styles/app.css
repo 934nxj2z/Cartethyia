@@ -964,14 +964,46 @@ html[data-app="landing"] .landing-header-menu-toggle {
 }
 
 html[data-app="landing"] .landing-header-github {
+  /* The split control paints its own chip and toggle, so the wrapper must not
+     paint a second border around them. It keeps the sizing only. */
   min-height: 38px;
-  padding-inline: 10px;
+  padding-inline: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-story-white);
+}
+
+/* The landing header is dark, so the split control's two halves take the story
+   palette rather than the neutral chip colors the console theme uses. */
+html[data-app="landing"] .landing-header-github .github-badge {
+  min-height: 38px;
   border-color: color-mix(in srgb, var(--color-story-white) 25%, transparent);
   background-color: color-mix(in srgb, var(--color-story-white) 8%, transparent);
   color: var(--color-story-white);
 }
 
-html[data-app="landing"] .landing-header-github:hover,
+html[data-app="landing"] .landing-header-github .github-badge:hover {
+  border-color: var(--color-story-white);
+  background-color: var(--color-story-white);
+  color: var(--story-deep);
+}
+
+html[data-app="landing"] .landing-header-github .github-split-toggle {
+  border-color: color-mix(in srgb, var(--color-story-white) 25%, transparent);
+  background-color: color-mix(in srgb, var(--color-story-white) 8%, transparent);
+  color: var(--color-story-white);
+}
+
+html[data-app="landing"] .landing-header-github .github-split-toggle:hover,
+html[data-app="landing"] .landing-header-github .github-split-toggle[aria-expanded="true"] {
+  border-color: var(--color-story-white);
+  background-color: var(--color-story-white);
+  color: var(--story-deep);
+}
+
+/* Only the standalone control keeps a wrapper hover; the split control handles
+   its own two halves above, and a wrapper hover here would paint a third
+   rectangle behind them. */
 html[data-app="landing"] .landing-header-control:hover {
   border-color: var(--color-story-white);
   background-color: var(--color-story-white);
@@ -1117,20 +1149,14 @@ html[data-app="landing"] .landing-story-visual {
 }
 
 @media (max-width: 1024px) {
-  html[data-app="landing"] .landing-header-menu-toggle,
-  html[data-app="landing"] .landing-header-menu-overlay {
+  /* No burger: the mobile menu held exactly one action ("Enter console"), so a
+     hamburger to reveal a single button was a click that bought nothing. The
+     console button is shown directly instead. */
+  html[data-app="landing"] .landing-header-console {
     display: inline-flex;
   }
 
-  html[data-app="landing"] .landing-header-menu-overlay {
-    display: block;
-  }
-
-  html[data-app="landing"] .landing-header-mobile-nav {
-    display: grid;
-  }
-
-  html[data-app="landing"] .landing-header-console {
+  html[data-app="landing"] .landing-header-show-all {
     display: none;
   }
 }
@@ -1153,9 +1179,15 @@ html[data-app="landing"] .landing-story-visual {
     display: none;
   }
 
+  /* The split control is two elements wide (chip + toggle), so it cannot be
+     pinned to a single 38px box. Collapse the chip to its mark instead. */
   html[data-app="landing"] .landing-header-github {
-    width: 38px;
+    width: auto;
     padding-inline: 0;
+  }
+
+  html[data-app="landing"] .landing-header-github .github-badge {
+    padding-inline: 10px;
   }
 }
 

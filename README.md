@@ -10,6 +10,24 @@ Configure provider accounts once, issue an API key, and point OpenCode, Droid, C
 
 Built with Bun, TypeScript, Elysia, embedded SQLite or external PostgreSQL, and optional Redis coordination.
 
+> **Repository availability**
+>
+> The primary repository (`risunCode/Cartethyia`) is currently hidden from
+> public view. GitHub restricted it after automated star activity looked like
+> vote manipulation rather than real interest — the project itself is
+> unaffected, and this was not a code, security, or licensing issue.
+>
+> Until it is restored, use one of these. They carry the same history and the
+> same releases:
+>
+> - **GitHub (mirror):** <https://github.com/risunCodex/Cartethyia>
+> - **GitLab:** <https://gitlab.com/risuncode/cartethyia>
+> - **npm:** <https://www.npmjs.com/package/cartethyia>
+>
+> Stars and forks are appreciated on the mirror, where they can actually be
+> counted. The dashboard and console link to the mirror by default so release
+> checks keep working while the primary is hidden.
+
 ## <img src="https://api.iconify.design/lucide/download.svg?color=%238b949e" width="20" height="20" alt=""> Installation
 
 You need Node/npm and **Bun 1.4.0 or newer**.
