@@ -274,6 +274,10 @@ export const PROVIDER_CAPABILITIES = {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode/provider")).OPENCODE_GO_SPEC),
     loadModels: async () => (await import("./integrations/opencode/provider")).OPENCODE_GO_MODELS,
     loadModelDiscovery: openAIModelDiscovery("opencode-go", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/go/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+    // The Go plan publishes a real usage surface; the anonymous free tier has
+    // none (it is rate-limited by egress IP, not by a balance), so this is
+    // deliberately registered on the keyed tier only.
+    loadQuotaCollector: async () => (await import("./integrations/opencode/opencode-go-quota")).fetchOpenCodeGoQuota,
   },
   agentrouter: {
     loadAdapter: async () => (await import("./integrations/agentrouter/agentrouter")).createAgentRouterAdapter(),
