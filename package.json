@@ -45,7 +45,7 @@
     "build": "bun run scripts/binary/build.ts",
     "prepack": "bun run dashboard:build",
     "setup": "bun run scripts/cli/command/setup.ts",
-    "start": "bun run scripts/binary/start.ts",
+    "start": "bun run scripts/cli/main.ts start",
     "doctor": "bun run scripts/cli/command/doctor.ts",
     "probe:egress": "bun run scripts/operations/probe-egress.ts",
     "restart": "bun run scripts/binary/restart.ts",

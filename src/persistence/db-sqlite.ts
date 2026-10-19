@@ -11,6 +11,7 @@ import {
   BASELINE_MIGRATION_ID,
   assertMigrationHistorySupported,
   baselineSchemaMarker,
+  acceptedBaselineSchemaMarkers,
   MIGRATION_LEDGER_TABLE,
   migrationFiles,
   migrationIdFor,
@@ -448,15 +449,16 @@ export async function applySqliteMigrations(
     .get() as { present: number } | null;
   const files = migrationFiles(folder);
   const baselineFile = files.find((file) => migrationIdFor(file) === BASELINE_MIGRATION_ID);
+  const baselineSource =
+    baselineFile === undefined ? undefined : readFileSync(baselineFile, "utf8");
   const baselineMarker =
-    baselineFile === undefined
-      ? undefined
-      : baselineSchemaMarker(readFileSync(baselineFile, "utf8"));
+    baselineSource === undefined ? undefined : baselineSchemaMarker(baselineSource);
   assertMigrationHistorySupported(
     applied,
     [
       ...files.map(migrationIdFor),
       ...(baselineMarker === undefined ? [] : [baselineMarker]),
+      ...(baselineSource === undefined ? [] : acceptedBaselineSchemaMarkers(baselineSource)),
     ],
     tenants !== null,
     baselineMarker,

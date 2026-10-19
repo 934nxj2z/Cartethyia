@@ -16,6 +16,7 @@ import {
   BASELINE_MIGRATION_ID,
   assertMigrationHistorySupported,
   baselineSchemaMarker,
+  acceptedBaselineSchemaMarkers,
   migrationFiles,
   resolveMigrationsFolder,
 } from "./migrate";
@@ -157,10 +158,10 @@ export async function applySqlMigrations(
 ): Promise<void> {
   const files = migrationFiles(folder);
   const baselineFile = files.find((file) => basename(file) === BASELINE_MIGRATION_ID);
+  const baselineSource =
+    baselineFile === undefined ? undefined : readFileSync(baselineFile, "utf8");
   const baselineMarker =
-    baselineFile === undefined
-      ? undefined
-      : baselineSchemaMarker(readFileSync(baselineFile, "utf8"));
+    baselineSource === undefined ? undefined : baselineSchemaMarker(baselineSource);
   const client = await pool.connect();
   try {
     await client.query(`SELECT pg_advisory_lock(hashtext('cartethyia:migrations'))`);
@@ -177,6 +178,7 @@ export async function applySqlMigrations(
       [
         ...files.map((file) => basename(file)),
         ...(baselineMarker === undefined ? [] : [baselineMarker]),
+      ...(baselineSource === undefined ? [] : acceptedBaselineSchemaMarkers(baselineSource)),
       ],
       tenants.rows[0]?.present === true,
       baselineMarker,

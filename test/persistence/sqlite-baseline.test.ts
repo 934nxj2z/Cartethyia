@@ -18,7 +18,11 @@ import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/generate/sqlite-ddl";
 import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
 import { applySqliteMigrations, buildSqliteHandle, createSqliteDatabase } from "../../src/persistence/db-sqlite";
-import { baselineSchemaMarker, MIGRATION_LEDGER_TABLE } from "../../src/persistence/migrate";
+import {
+  acceptedBaselineSchemaMarkers,
+  baselineSchemaMarker,
+  MIGRATION_LEDGER_TABLE,
+} from "../../src/persistence/migrate";
 import { tenants } from "../../src/persistence/schema";
 
 const committed = readFileSync(resolve(process.cwd(), "migrations", "lite-sqlite3", "0000_baseline.sql"), "utf8");
@@ -163,4 +167,40 @@ test("SQLite migration upgrades existing databases to allow multiple shared keys
   } finally {
     sqlite.close();
   }
+});
+
+/**
+ * A comment-only edit to the baseline must not lock out existing databases.
+ *
+ * This is the 2.4.6 regression, reproduced: the marker was the sha256 of the raw
+ * file text, so changing a comment in the header changed the marker, and every
+ * database created by 2.4.5 refused to boot with "different baseline schema".
+ * The schema had not changed at all.
+ *
+ * The marker now hashes the statements with comments stripped, and the markers
+ * older releases recorded are accepted for the same schema.
+ */
+const withExtraComment = `${committed}\n-- an added comment must not change the schema identity\n`;
+
+test("a comment-only edit leaves the baseline marker unchanged", () => {
+  expect(baselineSchemaMarker(withExtraComment)).toBe(baselineSchemaMarker(committed));
+});
+
+test("the baseline markers recorded by 2.4.x are accepted for this schema", () => {
+  const accepted = acceptedBaselineSchemaMarkers(committed);
+  expect(accepted).toContain(baselineSchemaMarker(committed));
+  // Frozen history: databases created by v2.4.0-v2.4.5 carry this one.
+  expect(accepted).toContain(
+    "baseline-schema:438c5e014c5f86f483a84e8a106b0e62143d4eb0b0daad728a300bcc683d8c02",
+  );
+});
+
+test("a genuinely different baseline schema is still rejected", () => {
+  // Any real schema change must produce a different identity. Appending a column
+  // is the smallest such change and does not depend on exact baseline wording.
+  const different = `${committed}\nCREATE TABLE "added_later" ("id" text PRIMARY KEY);\n`;
+  expect(different).not.toBe(committed);
+  // The *current* marker must move, so a database built from the changed schema
+  // is not accepted under the identity of the old one.
+  expect(baselineSchemaMarker(different)).not.toBe(baselineSchemaMarker(committed));
 });
