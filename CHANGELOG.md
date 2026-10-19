@@ -55,6 +55,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Chat decoding recovers tool calls when an upstream emits the captured
+  `<tool_calls:…>` envelope as assistant text.** Previously the XML-like call
+  and argument tags appeared in the answer and no tool ran. Complete envelopes
+  are now recovered across SSE chunk boundaries; only names declared by the
+  request can become calls, and the same markup in the reasoning channel is
+  removed without executing it. An incomplete envelope is neither run nor
+  surfaced.
+
 - **gzip now applies only where it said it did.** The compression wrapper is
   scoped by a path allowlist (`/console/api/` and `/metrics`) inside
   `gzipResponse`. Elysia merges a child instance's `hoc` into the root app, so
