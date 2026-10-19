@@ -1,6 +1,71 @@
 import { openSync } from "node:fs";
+import {
+  clearInstanceLock,
+  fingerprint,
+  pidAlive,
+  readInstanceLock,
+  writeInstanceLock,
+} from "./instance-lock";
 import { join } from "node:path";
 import { PACKAGE_ROOT, resolvePackagePath } from "../../../src/config/package-paths";
+
+/**
+ * Frees the port when what holds it is this install's own gateway.
+ *
+ * Returns `null` when the port is free (or was successfully taken), and a
+ * message to fail with otherwise. It never kills a process it cannot identify:
+ * a stranger's service on this port is reported, not drained.
+ *
+ * The probe is two-step on purpose. `/health` alone is answered by anything, so
+ * it only says "something is there"; the drain request is what distinguishes
+ * ours from someone else's, because it is token-gated — and a 401 means another
+ * Cartethyia install, which this one must not stop.
+ */
+async function claimPort(port: number, drainToken: string): Promise<string | null> {
+  // A lock naming this install's own gateway is the strongest evidence
+  // available, so prefer it over the network probe when it is live.
+  const lock = readInstanceLock();
+  const ours = lock !== null && lock.port === port && lock.tokenFingerprint === fingerprint(drainToken);
+
+  const response = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
+    method: "POST",
+    headers: { "x-drain-token": drainToken },
+    signal: AbortSignal.timeout(3_000),
+  }).catch(() => null);
+
+  if (response === null) {
+    // Nothing answered a drain request. If our own lock names a dead pid, the
+    // marker is stale and nothing is holding the port — clear it and continue.
+    if (ours && !pidAlive(lock.pid)) {
+      clearInstanceLock();
+      return null;
+    }
+    return `Port ${port} is busy and nothing there answers a drain request. Stop whatever holds it, or set a different PORT.`;
+  }
+  if (response.status === 401) {
+    return `Another Cartethyia gateway is already running on port ${port} under a different install. Stop it from its own terminal or tray — this install will not stop a gateway it does not own.`;
+  }
+  if (response.status === 403) {
+    return `Port ${port} refused a drain from loopback. Stop what holds it, then start again.`;
+  }
+  if (response.status !== 202) {
+    return `Port ${port} is busy and refused to drain (HTTP ${response.status}). Stop it manually, then start again.`;
+  }
+  // Drain accepted. Wait for the port to actually free: the gateway flushes its
+  // 202 before closing sockets, so acceptance is not release.
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const stillUp = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(500),
+    }).catch(() => null);
+    if (stillUp === null) {
+      clearInstanceLock();
+      return null;
+    }
+    await Bun.sleep(200);
+  }
+  return `The gateway on port ${port} accepted a drain but did not release the port within 30 seconds. Stop it manually, then start again.`;
+}
 
 /**
  * Starts the gateway and resolves once it answers its own health probe.
@@ -24,9 +89,12 @@ export async function startGateway(
     signal: AbortSignal.timeout(1_000),
   }).catch(() => null);
   if (existing !== null) {
-    throw new Error(
-      `Cartethyia is already running on port ${port}. Open http://127.0.0.1:${port}/console, or stop the terminal that started it.`,
-    );
+    // Something already owns the port. Replace it only when it proves to be our
+    // own gateway — otherwise stop and say what is there. A gateway left behind
+    // by a closed terminal used to make every later start fail until the
+    // operator found and killed it by hand.
+    const claimed = await claimPort(port, drainToken);
+    if (claimed !== null) throw new Error(claimed);
   }
   // The gateway logs a startup phase line per stage. In menu mode those lines
   // would scroll through the same terminal the menu is drawing on, so they go
@@ -92,6 +160,10 @@ export async function startGateway(
       throw new Error(`Cartethyia stopped before becoming ready (exit code ${result.code})`);
     }
     if (result.status === "failure") throw result.error;
+    // Recorded only once the child is actually serving: a marker written before
+    // readiness would name a gateway that never came up, and the next start
+    // would treat a live port as ours when it is not.
+    writeInstanceLock(port, child.pid, drainToken);
     return child;
   } catch (error) {
     child.kill();
