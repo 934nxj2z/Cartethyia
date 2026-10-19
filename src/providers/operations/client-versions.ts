@@ -222,6 +222,11 @@ export const VERSION_SOURCES = {
     fallback: "0.0.95",
     sources: [{ url: "https://registry.npmjs.org/@cline/sdk/latest", extract: clineSdkVersion }],
   },
+  clineCli: {
+    key: "cline-cli",
+    fallback: "3.0.73",
+    sources: [{ url: "https://registry.npmjs.org/cline/latest", extract: clineSdkVersion }],
+  },
   codex: {
     key: "codex",
     fallback: "0.163.0",
@@ -362,6 +367,7 @@ const resolvers = {
   grok: createClientVersionResolver({ ...VERSION_SOURCES.grok, client: "grok" }),
   clineClient: createClientVersionResolver({ ...VERSION_SOURCES.clineClient, client: "cline" }),
   clineSdk: createClientVersionResolver({ ...VERSION_SOURCES.clineSdk, client: "cline-sdk" }),
+  clineCli: createClientVersionResolver({ ...VERSION_SOURCES.clineCli, client: "cline-cli" }),
   codex: createClientVersionResolver({ ...VERSION_SOURCES.codex, client: "codex" }),
   workbuddyClient: createClientVersionResolver({ ...VERSION_SOURCES.workbuddyClient, client: "workbuddy" }),
   workbuddyCnClient: createClientVersionResolver({ ...VERSION_SOURCES.workbuddyCnClient, client: "workbuddy-cn" }),
@@ -384,7 +390,10 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   opencode: resolvers.opencode,
   "opencode-zen": resolvers.opencode,
   "opencode-go": resolvers.opencode,
-  cline: resolvers.clineClient,
+  // The identity this provider is dispatched under is the CLI's, so the route
+  // identity reports the CLI version. `clineClient` (the VS Code extension
+  // manifest) is no longer the client this provider claims to be.
+  cline: resolvers.clineCli,
   codex: resolvers.codex,
   qoder: resolvers.qoder,
   commandcode: resolvers.commandcode,
@@ -503,8 +512,10 @@ export function buildGrokAuthUserAgent(version = getGrokVersion()): string {
 
 export const getClineClientVersion = accessor("clineClient").get;
 export const getClineSdkVersion = accessor("clineSdk").get;
+export const getClineCliVersion = accessor("clineCli").get;
 export const _resetClineClientVersionCache = accessor("clineClient").reset;
 export const _resetClineSdkVersionCache = accessor("clineSdk").reset;
+export const _resetClineCliVersionCache = accessor("clineCli").reset;
 
 export const getCodexVersion = accessor("codex").get;
 

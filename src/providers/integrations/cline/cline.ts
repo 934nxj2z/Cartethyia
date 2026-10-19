@@ -10,7 +10,7 @@ import { getCachedModelDiscovery } from "../../operations/model-discovery-cache"
 import { defineModel } from "../../provider-model-definition";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 import {
-  getClineClientVersion,
+  getClineCliVersion,
   getClineSdkVersion,
 } from "../../operations/client-versions";
 export const CLINE_BASE_URL = providerBaseUrl("cline");
@@ -47,23 +47,37 @@ async function clineExtraHeaders(context: ProviderDispatchContext): Promise<Reco
       authOverride = { authorization: `Bearer ${token}` };
     }
   }
-  const clientVersion = getClineClientVersion();
+  // The chat surface claims the CLI identity, matching the billing surface in
+  // `cline-quota.ts` and the reference client: `cline` (npm, bin `cline`) is a
+  // separate release line from the VS Code extension, so the client version
+  // must come from the CLI package, not the extension manifest. `@cline/sdk`
+  // is a dependency of the CLI, so its version stays the core version.
+  const clientVersion = getClineCliVersion();
   const sdkVersion = getClineSdkVersion();
+  // Cline's own client sends `X-Task-ID` on inference calls as the stable
+  // prompt-cache/session key, and omits it on account and discovery calls
+  // rather than inventing a per-request identity. `conversation_affinity` is
+  // that same value here: stable across the retries of one conversation, so a
+  // retried dispatch keeps its cache entry instead of starting a new one.
+  const taskId = context.conversation_affinity;
 
   return {
     ...authOverride,
     "user-agent": `Cline/${clientVersion}`,
-    // Referer travels in both spellings; some upstream checks are case-sensitive.
-    "http-referer": "https://cline.bot",
+    // One spelling only. Header names are case-insensitive, so sending both
+    // `http-referer` and `HTTP-Referer` does not hedge against a case-sensitive
+    // check — it makes `Headers` merge them into the single value
+    // `https://cline.bot, https://cline.bot`.
     "HTTP-Referer": "https://cline.bot",
     "x-platform": clinePlatform(),
     "x-platform-version": clinePlatformVersion(),
     "x-title": "Cline",
-    "x-client-type": "cline-sdk",
+    "x-client-type": "cline-cli",
     "x-client-version": clientVersion,
     "x-core-version": sdkVersion,
     "X-Title": "Cline",
     "x-is-multi-root": "false",
+    ...(taskId ? { "x-task-id": taskId } : {}),
     accept: "text/event-stream, application/json",
   };
 }

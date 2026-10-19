@@ -22,8 +22,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
-  _resetClineClientVersionCache,
-  getClineClientVersion,
+  _resetClineCliVersionCache,
+  getClineCliVersion,
   getClineSdkVersion,
 } from "../../src/providers/operations/client-versions";
 import {
@@ -77,7 +77,7 @@ describe("Cline quota headers", () => {
     // The bug: both slots carried the client version. Asserting the two are
     // *different values* is what catches it — asserting each against its own
     // constant would pass on a regression that swapped the two.
-    const clientVersion = getClineClientVersion();
+    const clientVersion = getClineCliVersion();
     const sdkVersion = getClineSdkVersion();
     const { fetcher, seen } = capturingFetcher();
     await fetchClineQuota("workos:token", fetcher);
@@ -89,18 +89,21 @@ describe("Cline quota headers", () => {
 
   test("the SDK version is the one @cline/sdk actually publishes", async () => {
     // A core version no release ever published is the whole defect. The SDK
-    // line is 0.0.x while the client is 4.1.x, so the leading major is the
-    // property that separates them — asserted structurally rather than pinned,
-    // because a real SDK release will move the number.
+    // line is 0.0.x while the CLI is 3.x, so the leading major is the property
+    // that separates them — asserted structurally rather than pinned, because a
+    // real release will move the number. The CLI is not the extension: the
+    // extension's 4.x line must never appear in either slot here.
     const sdkVersion = getClineSdkVersion();
+    const cliVersion = getClineCliVersion();
     expect(sdkVersion.startsWith("0.")).toBe(true);
-    expect(getClineClientVersion().startsWith("4.")).toBe(true);
+    expect(cliVersion.startsWith("3.")).toBe(true);
+    expect(cliVersion).not.toBe(sdkVersion);
   });
 
-  test("the billing surface keeps the CLI identity the chat surface does not use", async () => {
-    // `cline.ts` claims `cline-sdk` for chat; the billing endpoints are read by
-    // the CLI. Both are correct for their own surface, so this pins the value
-    // that must not drift into the chat one.
+  test("the billing surface claims the CLI identity", async () => {
+    // Both surfaces now claim `cline-cli`: the CLI is the client this provider
+    // is read by, and the extension identity is not a substitute. Pinned here
+    // because the value is shared and must not drift back to `cline-sdk`.
     const { fetcher, seen } = capturingFetcher();
     await fetchClineQuota("workos:token", fetcher);
     expect(seen()?.["x-client-type"]).toBe("cline-cli");
@@ -110,14 +113,14 @@ describe("Cline quota headers", () => {
     // The user's report was that the quota path did not follow the version
     // pooler. It does read the resolver; this is what proves it — seeding a
     // discovered version changes what is sent.
-    _resetClineClientVersionCache("9.9.9");
+    _resetClineCliVersionCache("9.9.9");
     try {
       const { fetcher, seen } = capturingFetcher();
       await fetchClineQuota("workos:token", fetcher);
       expect(seen()?.["x-client-version"]).toBe("9.9.9");
       expect(seen()?.["user-agent"]).toBe("Cline/9.9.9");
     } finally {
-      _resetClineClientVersionCache();
+      _resetClineCliVersionCache();
     }
   });
 

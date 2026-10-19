@@ -3,7 +3,7 @@ import { createClientVersionResolver } from "../../src/providers/operations/clie
 import {
   _resetCodeBuddyCnVersionCache,
   _resetCodeBuddyVersionCache,
-  _resetClineClientVersionCache,
+  _resetClineCliVersionCache,
   _resetWorkBuddyCnClientVersionCache,
   buildCodeBuddyUserAgent,
   buildKiroAmzUserAgent,
@@ -113,11 +113,11 @@ describe("pinnedClientVersions", () => {
   test("a seeded version reads as latest and leaves the report", () => {
     // Discovery succeeded: nothing to warn about. This is the healthy answer,
     // and it is what stops the report from crying wolf on every client.
-    _resetClineClientVersionCache("4.1.23");
+    _resetClineCliVersionCache("3.0.73");
     try {
-      expect(pinnedClientVersions().some((p) => p.client === "cline")).toBe(false);
+      expect(pinnedClientVersions().some((p) => p.client === "cline-cli")).toBe(false);
     } finally {
-      _resetClineClientVersionCache();
+      _resetClineCliVersionCache();
     }
   });
 
@@ -125,9 +125,9 @@ describe("pinnedClientVersions", () => {
     // Resetting to null restores discovery behaviour, so the resolver is on its
     // fallback until the next background refresh — exactly the state an
     // operator must be able to see, with the number requests are carrying.
-    _resetClineClientVersionCache(null);
-    const entry = pinnedClientVersions().find((p) => p.client === "cline");
-    expect(entry?.version).toBe(VERSION_SOURCES.clineClient.fallback);
+    _resetClineCliVersionCache(null);
+    const entry = pinnedClientVersions().find((p) => p.client === "cline-cli");
+    expect(entry?.version).toBe(VERSION_SOURCES.clineCli.fallback);
   });
 
   test("the floor travels with a pinned fallback, because it explains which of two things happened", () => {
@@ -135,8 +135,11 @@ describe("pinnedClientVersions", () => {
     // with something below `minVersion` and was discarded. The second is the
     // interesting one — an artifact the provider does not gate on — and it is
     // indistinguishable from the first unless the floor is reported with it.
-    _resetClineClientVersionCache(null);
-    const entry = pinnedClientVersions().find((p) => p.client === "cline");
-    expect(entry?.minVersion).toBe("4.1.23");
+    // The CLI identity carries no floor: the upstream accepted an arbitrary
+    // version when probed, so there is no minimum to report.
+    _resetClineCliVersionCache(null);
+    const entry = pinnedClientVersions().find((p) => p.client === "cline-cli");
+    expect(entry?.version).toBe(VERSION_SOURCES.clineCli.fallback);
+    expect(entry?.minVersion).toBeUndefined();
   });
 });
