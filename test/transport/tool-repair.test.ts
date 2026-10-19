@@ -89,24 +89,50 @@ describe("repairMissingToolResponses", () => {
     ]);
   });
 
-  test("a long history with one orphan stays linear, not quadratic", () => {
-    // 1 000 assistant turns, each answered, plus one orphan up front. The old
-    // implementation sliced and rescanned the tail per assistant turn, so its
-    // cost grew with the square of this length; the ceiling below is far above
-    // the linear cost but far below the quadratic one.
-    const history: CanonicalMessage[] = [assistantTurn(["orphan"])];
-    for (let index = 0; index < 1000; index += 1) {
-      history.push(assistantTurn([`k${index}`]));
-      history.push(toolTurn(`k${index}`));
-    }
+  test("a long history scales linearly, not quadratically", () => {
+    // The complexity guard, not a micro-benchmark. The repair used to slice
+    // the remaining history per assistant turn and scan it per call id, so
+    // its cost grew with the square of the history length. Comparing a short
+    // history against a 4x longer one separates the two: quadratic work would
+    // cost ~16x, linear ~4x.
+    //
+    // The ratio is compared rather than an absolute duration because a
+    // wall-clock ceiling is flaky on a loaded CI machine, and the property
+    // under test is the growth rate, not the machine's speed.
+    const build = (turns: number): CanonicalMessage[] => {
+      const history: CanonicalMessage[] = [assistantTurn(["orphan"])];
+      for (let index = 0; index < turns; index += 1) {
+        history.push(assistantTurn([`k${index}`]));
+        history.push(toolTurn(`k${index}`));
+      }
+      return history;
+    };
 
-    // Warm the JIT so the measurement is not a first-call compile.
-    repairMissingToolResponses(history);
-    const startedAt = performance.now();
-    const repaired = repairMissingToolResponses(history);
-    const elapsedMs = performance.now() - startedAt;
+    const base = build(250);
+    const quadruple = build(1000);
 
-    expect(synthesized(repaired)).toEqual([{ callId: "orphan", isError: true }]);
-    expect(elapsedMs).toBeLessThan(50);
+    // Warm both so neither measurement includes first-call JIT compilation.
+    repairMissingToolResponses(base);
+    repairMissingToolResponses(quadruple);
+
+    const time = (messages: readonly CanonicalMessage[]): number => {
+      const startedAt = performance.now();
+      repairMissingToolResponses(messages);
+      return performance.now() - startedAt;
+    };
+
+    // Best of a few runs: the floor is the signal, a scheduling hiccup is not.
+    const baseMs = Math.min(time(base), time(base), time(base));
+    const quadrupleMs = Math.min(time(quadruple), time(quadruple), time(quadruple));
+
+    // 4x the input at linear growth is ~4x the time; allow generous slack for
+    // allocation and GC, but far below the ~16x a quadratic pass would show.
+    const ratio = quadrupleMs / Math.max(baseMs, 0.001);
+    expect(ratio).toBeLessThan(10);
+
+    // The behaviour is unchanged regardless of timing.
+    expect(synthesized(repairMissingToolResponses(quadruple))).toEqual([
+      { callId: "orphan", isError: true },
+    ]);
   });
 });

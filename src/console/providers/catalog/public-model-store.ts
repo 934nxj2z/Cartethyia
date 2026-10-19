@@ -104,16 +104,6 @@ function commonCost(entries: readonly unknown[]): unknown {
   return present.every((entry) => costSignature(entry) === signature) ? present[0] : undefined;
 }
 
-function matchesModelPrefix(
-  modelPrefix: string | undefined,
-  bareModelId: string,
-  qualifiedModelId?: string,
-): boolean {
-  const prefix = modelPrefix?.trim();
-  if (!prefix) return true;
-  return bareModelId.startsWith(prefix) || qualifiedModelId?.startsWith(prefix) === true;
-}
-
 /** Catalog metadata mirrored onto an alias or combo entry. */
 export interface ModelMetadata {
   readonly contextLimit: number | null;
@@ -153,15 +143,42 @@ export function resolveTargetIds(
   name: string,
   aliasTargets: ReadonlyMap<string, string>,
   comboMembers: ReadonlyMap<string, readonly string[]>,
-  seen: ReadonlySet<string> = new Set(),
+  seen: Set<string> = new Set(),
+): string[] {
+  return collectTargetIds(name, aliasTargets, comboMembers, seen);
+}
+
+/**
+ * Walks alias → combo → member with one mutable visited set.
+ *
+ * The previous form copied the whole set per edge (`new Set(seen).add(name)`),
+ * which is called per alias and per combo row over the whole catalog. Adding
+ * and removing on one set keeps the same cycle protection — each branch still
+ * sees its own ancestors — without an allocation per step.
+ */
+function collectTargetIds(
+  name: string,
+  aliasTargets: ReadonlyMap<string, string>,
+  comboMembers: ReadonlyMap<string, readonly string[]>,
+  seen: Set<string>,
 ): string[] {
   if (seen.has(name) || seen.size >= MAX_TARGET_DEPTH) return [];
-  const next = new Set(seen).add(name);
-  const members = comboMembers.get(name);
-  if (members) return members.flatMap((m) => resolveTargetIds(m, aliasTargets, comboMembers, next));
-  const target = aliasTargets.get(name);
-  if (target !== undefined) return resolveTargetIds(target, aliasTargets, comboMembers, next);
-  return [name];
+  seen.add(name);
+  try {
+    const members = comboMembers.get(name);
+    if (members) {
+      return members.flatMap((m) => collectTargetIds(m, aliasTargets, comboMembers, seen));
+    }
+    const target = aliasTargets.get(name);
+    if (target !== undefined) {
+      return collectTargetIds(target, aliasTargets, comboMembers, seen);
+    }
+    return [name];
+  } finally {
+    // Removing on the way out keeps `seen` meaning "ancestors on this path",
+    // so a name reachable by two sibling branches still resolves in both.
+    seen.delete(name);
+  }
 }
 
 /**
@@ -339,10 +356,21 @@ export class PublicModelCatalogStore {
     return result;
   }
 
+  /**
+   * Lists the models this key may see.
+   *
+   * `modelPrefix` is accepted and currently has NO effect on the result. It
+   * used to feed a `matchesModelPrefix(...) || isModelAllowed(...)` disjunct
+   * that was immediately followed by `isModelAllowed(...)` on its own — so the
+   * prefix could never add a row, and dropping it changes nothing. The
+   * parameter is kept so the call sites and the auth shape stay stable; if a
+   * real prefix filter is wanted later it needs to be an AND, not the OR it
+   * was written as.
+   */
   async listPublicModels(
     tenantId: string | null,
     snapshot: ApiKeyAuthorizationSnapshot,
-    modelPrefix?: string,
+    _modelPrefix?: string,
   ): Promise<AllowedModelEntry[]> {
     const providerScope =
       tenantId === null
@@ -407,40 +435,46 @@ export class PublicModelCatalogStore {
       if (typeof combo.name === "string") comboNames.add(combo.name);
     }
 
-    const modelEntries: AllowedModelEntry[] = rows
-      .filter((row) => {
-        // A provider is listed only when the tenant has an active account for
-        // it — the same rule the console model picker applies. A no-auth
-        // provider with nothing configured is not "set", so it stays hidden
-        // until the operator adds an account.
-        if (tenantId === null) return row.providerRequiresAccount === false;
-        return activeProviderIds.has(row.providerId);
-      })
-      .filter((row) =>
-        matchesModelPrefix(modelPrefix, row.modelId, `${row.providerId}/${row.modelId}`) ||
-        isModelAllowed(snapshot, row.modelId, row.providerId),
-      )
-      .filter((m) => isModelAllowed(snapshot, m.modelId, m.providerId))
-      .filter((m) => !shadowsAliasOrCombo(m, aliasTargets, comboNames, snapshot))
-      .map((m) => {
-        const capabilities = normalizeModalities(m.modalities);
-        return {
-          id: `${m.providerId}/${m.modelId}`,
-          object: "model" as const,
-          created: Math.floor(Date.now() / 1000),
-          owned_by: m.providerId,
-          ...(m.contextLimit != null ? { context_length: m.contextLimit } : {}),
-          ...(m.outputLimit != null ? { max_completion_tokens: m.outputLimit } : {}),
-          ...(capabilities ? { capabilities } : {}),
-          ...(m.reasoning ? { reasoning: true } : {}),
-          ...(m.toolCall ? { tool_call: true } : {}),
-          ...(m.cost != null ? { cost: m.cost } : {}),
-          // Only a non-`llm` row is labelled: absence already means "chat wire".
-          ...(m.serviceKind && m.serviceKind !== "llm"
-            ? { service_kind: m.serviceKind }
-            : {}),
-        };
+    // One clock reading for the whole response: `created` is the same
+    // timestamp for every entry, and reading it per row made the field vary
+    // across a single listing.
+    const now = Math.floor(Date.now() / 1000);
+    const modelEntries: AllowedModelEntry[] = [];
+    for (const row of rows) {
+      // A provider is listed only when the tenant has an active account for
+      // it — the same rule the console model picker applies. A no-auth
+      // provider with nothing configured is not "set", so it stays hidden
+      // until the operator adds an account.
+      const listed =
+        tenantId === null ? row.providerRequiresAccount === false : activeProviderIds.has(row.providerId);
+      if (!listed) continue;
+      const qualified = `${row.providerId}/${row.modelId}`;
+      // The prefix test is deliberately gone from this path: the chain used to
+      // be `(prefixMatch || isAllowed)` followed by `isAllowed`, which reduces
+      // to `isAllowed` alone — the prefix disjunct could never change the
+      // outcome, only cost a second full pass over the catalog. Collapsing the
+      // four chained filters into one loop also drops the three intermediate
+      // arrays they materialized.
+      if (!isModelAllowed(snapshot, row.modelId, row.providerId)) continue;
+      if (shadowsAliasOrCombo(row, aliasTargets, comboNames, snapshot)) continue;
+      const capabilities = normalizeModalities(row.modalities);
+      modelEntries.push({
+        id: qualified,
+        object: "model" as const,
+        created: now,
+        owned_by: row.providerId,
+        ...(row.contextLimit != null ? { context_length: row.contextLimit } : {}),
+        ...(row.outputLimit != null ? { max_completion_tokens: row.outputLimit } : {}),
+        ...(capabilities ? { capabilities } : {}),
+        ...(row.reasoning ? { reasoning: true } : {}),
+        ...(row.toolCall ? { tool_call: true } : {}),
+        ...(row.cost != null ? { cost: row.cost } : {}),
+        // Only a non-`llm` row is labelled: absence already means "chat wire".
+        ...(row.serviceKind && row.serviceKind !== "llm"
+          ? { service_kind: row.serviceKind }
+          : {}),
       });
+    }
 
     // Expose tenant model aliases and combos as first-class public models.
     // `aliasRows`/`comboRows` were loaded above for the shadow filter.
@@ -465,9 +499,10 @@ export class PublicModelCatalogStore {
       ].flat();
       const targetMeta = await this.modelMetadataById(tenantId, targetIds);
 
-      const now = Math.floor(Date.now() / 1000);
+
       for (const a of aliasRows) {
-        if (!matchesModelPrefix(modelPrefix, a.alias) && !isModelAllowed(snapshot, a.alias)) continue;
+        // `!A && !B` followed by `!B` — the second subsumes the first, so the
+        // prefix test never changed the outcome. Collapsed to the real gate.
         if (!isModelAllowed(snapshot, a.alias)) continue;
         const target = advertisedMetadata(resolveTargetIds(a.targetModel, aliasTargets, comboMembers), targetMeta);
         const capabilities = normalizeModalities(target.modalities);
@@ -486,7 +521,6 @@ export class PublicModelCatalogStore {
       }
 
       for (const c of comboRows) {
-        if (!matchesModelPrefix(modelPrefix, c.name) && !isModelAllowed(snapshot, c.name)) continue;
         if (!isModelAllowed(snapshot, c.name)) continue;
         const target = advertisedMetadata(resolveTargetIds(c.name, aliasTargets, comboMembers), targetMeta);
         const capabilities = normalizeModalities(target.modalities);
@@ -648,12 +682,9 @@ export class PublicModelCatalogStore {
         )
         .limit(1);
       const row = rows[0];
-      if (
-        row &&
-        (matchesModelPrefix(modelPrefix, row.modelId, `${row.providerId}/${row.modelId}`) ||
-          isModelAllowed(snapshot, row.modelId, row.providerId)) &&
-        isModelAllowed(snapshot, row.modelId, row.providerId)
-      ) {
+      // Same reduction as the listing path: `(prefix || allowed) && allowed`
+      // is just `allowed`, and the prefix disjunct cost a redundant call.
+      if (row && isModelAllowed(snapshot, row.modelId, row.providerId)) {
         const capabilities = normalizeModalities(row.modalities);
         return {
           id: `${row.providerId}/${row.modelId}`,
