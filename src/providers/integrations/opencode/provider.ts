@@ -6,6 +6,7 @@ import type { ProviderDispatchContext } from "../../provider-contracts";
 import { PROVIDER_COMPATIBILITY_PROFILES } from "../../provider-metadata";
 import { defineModel } from "../../provider-model-definition";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
+import { resolveOpenCodeUnavailableFree } from "../../../config/providers";
 import { buildOpenCodeHeaders } from "./fingerprint";
 import { OPENCODE_TOOL_DEFINITIONS } from "./tool-definitions";
 /**
@@ -66,6 +67,28 @@ const UNAVAILABLE_FREE_ZEN_IDS: readonly string[] = [
 ];
 
 /**
+ * The unavailable list, overridable without a code change.
+ *
+ * These ids are what upstream *currently* refuses, measured 2026-10-14 — and
+ * the reference gateway takes the opposite approach entirely: it trusts
+ * metadata (`pricing.go` marks a model free when its cost is 0 and it is not
+ * deprecated) and hardcodes no ids at all. Ours is more precise while the
+ * measurements hold, and worse the moment upstream changes, because a new
+ * refusal needs a deploy.
+ *
+ * `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE` lets an operator correct that
+ * immediately: a comma-separated list that *replaces* the bundled one, or the
+ * single token `none` to trust the listing completely. The bundled ids remain
+ * the default so an unconfigured install behaves exactly as it does today.
+ */
+function unavailableFreeZenIds(): readonly string[] {
+  const override = resolveOpenCodeUnavailableFree();
+  if (override === undefined) return UNAVAILABLE_FREE_ZEN_IDS;
+  if (override === "none") return [];
+  return override;
+}
+
+/**
  * Zen ids served by the native System One decision endpoint, not the chat wire.
  *
  * These are the `kind: "systemone"` models of the Zen catalog. They carry the
@@ -93,7 +116,7 @@ export function isSystemoneZenModel(modelId: string): boolean {
  * fail a probe.
  */
 export function isFreeTierZenModel(modelId: string): boolean {
-  if (UNAVAILABLE_FREE_ZEN_IDS.includes(modelId)) return false;
+  if (unavailableFreeZenIds().includes(modelId)) return false;
   return modelId.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(modelId);
 }
 
@@ -107,6 +130,17 @@ export function isFreeTierZenModel(modelId: string): boolean {
  * value, so it lives here rather than in the shared fingerprint.
  */
 const ANONYMOUS_ZEN_BEARER = "public";
+
+/**
+ * The `Accept` a free-tier dispatch advertises.
+ *
+ * What OpenCode 2.x's AI SDK puts on the wire, and what the reference gateway
+ * sends (`upstream.go:1293`). The gate has only ever been seen accepting the
+ * narrower `text/event-stream`, so nothing here fixes a live failure — this is
+ * the value a real client produces, which is the only defensible choice when
+ * the gate tightens.
+ */
+const FREE_TIER_ACCEPT = "application/json, text/event-stream";
 
 function opencodeDesktopHeaders(
   context: ProviderDispatchContext,
@@ -124,8 +158,13 @@ function opencodeDesktopHeaders(
     ...(freeModel ? { authorization: `Bearer ${ANONYMOUS_ZEN_BEARER}` } : {}),
     // The free-tier gate refuses non-streaming dispatches with 403
     // FreeTierError, so free models always advertise SSE regardless of the
-    // client's own Accept; billed models keep the JSON default.
-    ...(freeModel ? { accept: "text/event-stream" } : {}),
+    // client's own Accept; billed models keep the JSON default. The value is
+    // what OpenCode 2.x's AI SDK sends, not the narrower
+    // `text/event-stream` we used to claim — the gate always accepted the
+    // narrow one, so this is alignment with the real client rather than a
+    // fix for a live failure. It costs nothing: `stream: true` is forced on
+    // the body either way, so the upstream answers SSE regardless.
+    ...(freeModel ? { accept: FREE_TIER_ACCEPT } : {}),
   };
 }
 /**

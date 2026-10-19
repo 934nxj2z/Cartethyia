@@ -4,7 +4,7 @@
  * callback URL builders built on the public origin.
  */
 
-import { CONFIG_SPEC, readRequired, readText } from "./spec";
+import { CONFIG_SPEC, readList, readRequired, readText } from "./spec";
 
 /** Reads and normalizes the public OAuth origin. */
 export function requirePublicOrigin(): string {
@@ -46,6 +46,32 @@ export function resolveKimiQuotaBaseUrl(): string {
     "CARTETHYIA_KIMI_QUOTA_BASE_URL",
     CONFIG_SPEC.CARTETHYIA_KIMI_QUOTA_BASE_URL,
   );
+}
+
+/**
+ * Operator override for the OpenCode free-tier ids upstream refuses, or
+ * `undefined` when unset — meaning the bundled, measured list stands.
+ *
+ * The single token `none` is distinct from unset and from an empty string: it
+ * means "trust the listing completely", which is the reference gateway's whole
+ * approach. Collapsing it into "no override" would silently re-block models
+ * the operator just asked to unblock.
+ */
+export function resolveOpenCodeUnavailableFree():
+  | readonly string[]
+  | "none"
+  | undefined {
+  const raw = process.env.CARTETHYIA_OPENCODE_UNAVAILABLE_FREE?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  if (raw.toLowerCase() === "none") return "none";
+  const parsed = readList(
+    "CARTETHYIA_OPENCODE_UNAVAILABLE_FREE",
+    CONFIG_SPEC.CARTETHYIA_OPENCODE_UNAVAILABLE_FREE,
+  );
+  // Separators only: readList drops the empties and yields nothing. Treating
+  // that as "trust everything" would un-block every refused model on a typo,
+  // so it falls back to the bundled list instead.
+  return parsed === undefined || parsed.length === 0 ? undefined : parsed;
 }
 
 /**

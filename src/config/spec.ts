@@ -225,6 +225,17 @@ export const CONFIG_SPEC = {
    * an operator on one has no other way to point the login at it.
    */
   CARTETHYIA_GITHUB_ENTERPRISE_DOMAIN: { kind: "text", default: "" },
+  /**
+   * Free-tier OpenCode ids the listing still advertises but upstream refuses.
+   * Replaces the bundled list outright; the single token `none` trusts the
+   * listing completely.
+   *
+   * The bundled ids were measured, not declared — upstream can start serving
+   * a refused id or start refusing a served one at any time, and either way
+   * the correct answer stopped being the one compiled in. This is the escape
+   * hatch that needs no deploy.
+   */
+  CARTETHYIA_OPENCODE_UNAVAILABLE_FREE: { kind: "list" },
 } as const satisfies Readonly<Record<string, ConfigEntry>>;
 
 // ─── Spec readers ───────────────────────────────────────────────────────────
