@@ -324,7 +324,10 @@ export const PROVIDER_CAPABILITIES = {
   },
   kilo: {
     loadAdapter: async () => (await import("./integrations/kilo/kilo")).kiloAdapter,
-    loadModels: async () => (await import("./integrations/kilo/kilo")).KILO_MODELS,
+    loadModels: async () => {
+      const spec = await import("./integrations/kilo/kilo");
+      return [...spec.KILO_MODELS, ...spec.KILO_FREE_MODELS];
+    },
     // No `withRefresher`: Kilo Code has no refresh grant, so this client
     // declares no refresher and the stored token is used exactly as issued.
     // Registering one would make the 401 retry path call a method that always
