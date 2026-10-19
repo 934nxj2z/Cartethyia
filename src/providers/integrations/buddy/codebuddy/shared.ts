@@ -71,8 +71,8 @@ export async function codebuddyHeaders(
     "x-requested-with": "XMLHttpRequest",
     "x-codebuddy-request": "1",
     // Same family WorkBuddy sends: the upstream's channel check reads the
-    // turn-level aggregation key, and a chat request without it is refused with
-    // `400 · 11-128 "conversation id missing"`.
+    // turn-level aggregation key, and a chat request without it is refused for a
+    // missing conversation id.
     ...conversation,
     ...(deviceToken === undefined ? {} : { "X-Device-Token": deviceToken }),
   };

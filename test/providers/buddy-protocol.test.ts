@@ -296,10 +296,11 @@ describe("Buddy upstream protocol alignment", () => {
     expect(cnHeaders["origin"]).toBe("https://www.workbuddy.cn");
     expect(cnHeaders["referer"]).toBe("https://www.workbuddy.cn/");
     expect(cnHeaders["x-domain"]).toBe("www.workbuddy.cn");
-    expect(cnHeaders["user-agent"]).toMatch(
-      /^WorkBuddy\/5\.7\.7\.40774747 WorkBuddy AI\/5\.7\.7\.40774747 CLI\/\S+$/,
-    );
-    expect(cnHeaders["user-agent"]).toContain("5.7.7.40774747");
+    // The WorkBuddy profile: brand, WorkBuddy AI, then the CLI suffix, with the
+    // version the monitor carries rather than a pinned build.
+    expect(cnHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
+    // CN and international differ only in host identity, so the profile is the same.
+    expect(intlHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
     expect(cnHeaders["x-product"]).toBe(intlHeaders["x-product"]);
   });
 
@@ -431,7 +432,8 @@ describe("Buddy upstream protocol alignment", () => {
     // the domain recorded at login, so changing the host must not move it.
     expect(capturedUrl).toBe("https://www.codebuddy.cn/v2/billing/meter/get-user-resource");
     expect(capturedHeaders?.get("x-domain")).toBe("www.workbuddy.cn");
-    expect(capturedHeaders?.get("user-agent")).toContain("WorkBuddy/5.8.3.41334564");
+    // WorkBuddy profile shape; the version comes from the monitor, not a pin.
+    expect(capturedHeaders?.get("user-agent")).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
   });
 
   test("classifies refill and bonus packages into the same spendable credit pool", async () => {

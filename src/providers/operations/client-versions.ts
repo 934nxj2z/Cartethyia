@@ -513,9 +513,16 @@ export const getWorkBuddyCnClientVersion = accessor("workbuddyCnClient").get;
 export const getWorkBuddyCliVersion = accessor("workbuddyCli").get;
 
 export function buildWorkBuddyUserAgent(
+  identity = "WB",
   clientVersion = getWorkBuddyClientVersion(),
   cliVersion = getWorkBuddyCliVersion(),
 ): string {
+  // 1:1 with codebuddy2api. The CLI profile is `CLI/<v> CodeBuddy/<v>` and the
+  // WorkBuddy profile is `WorkBuddy/<wb> WorkBuddy AI/<wb> CLI/<cli>`, which
+  // sends NO SDK headers — two separate profiles, not one string with a switch.
+  // Whether SDK headers ride along is decided by `workbuddyHeaders`, not here, so
+  // this builder only decides the UA text.
+  if (identity === "CLI") return `CLI/${cliVersion} CodeBuddy/${cliVersion}`;
   return `WorkBuddy/${clientVersion} WorkBuddy AI/${clientVersion} CLI/${cliVersion}`;
 }
 
@@ -538,8 +545,14 @@ export const getCodeBuddyCnVersion = accessor("codebuddyCn").get;
 export function buildCodeBuddyUserAgent(
   identity: "IDE" | "CLI",
   version = getCodeBuddyVersion(),
+  cnVersion = getCodeBuddyCnVersion(),
 ): string {
-  return `${identity}/${version} CodeBuddy/${version}`;
+  // 1:1 with codebuddy2api's identity_headers(): the CLI profile uses ONE version
+  // (the npm CLI package pin) for both halves, and the IDE profile uses the other
+  // product's version. This previously always used `version`, so "CLI" produced
+  // `CLI/<ide> CodeBuddy/<ide>` — a CLI claiming the desktop build.
+  const resolved = identity === "CLI" ? cnVersion : version;
+  return `${identity}/${resolved} CodeBuddy/${resolved}`;
 }
 
 export const _resetCodeBuddyVersionCache = accessor("codebuddy").reset;

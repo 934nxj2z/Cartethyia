@@ -117,9 +117,9 @@ export async function workbuddyHeaders(
     "x-no-enterprise-id": "1",
   };
   // The conversation/tracing family the upstream's channel check looks for. A
-  // live request answered `400 · 11-128 "conversation id missing"` while carrying
-  // only `x-session-id`; the aggregation key below is the one the reference
-  // marks mandatory.
+  // live request carrying only `x-session-id` was refused for a missing
+  // conversation id; the aggregation key below is the one the reference marks
+  // mandatory.
   Object.assign(headers, conversation);
   if (accountId) {
     headers["x-user-id"] = accountId;

@@ -17,6 +17,7 @@ import type { ModelDefinition } from "../../../provider-model-definition";
 import type { DiscoveryInput } from "../../../discovery/discovery-types";
 import {
   WORKBUDDY_CHAT_PATH,
+  WORKBUDDY_DOMAIN,
   workbuddyAdapterConfig,
   workbuddyHeaders,
 } from "./shared";
@@ -198,7 +199,8 @@ export function createWorkBuddyAdapter(fetchImpl?: typeof fetch): ProviderAdapte
       variant: "IDE",
       systemPrompt: WORKBUDDY_SYSTEM_PROMPT,
       baseUrl: WORKBUDDY_BASE_URL,
-      buildHeaders: (context, request) => workbuddyHeaders(context, request),
+      buildHeaders: (context, request) =>
+        workbuddyHeaders(context, request, WORKBUDDY_DOMAIN, undefined, true),
     },
   );
 }

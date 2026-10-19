@@ -91,7 +91,7 @@ export function resolveAccountAuthRejectedCooldownMs(): number {
 }
 
 /**
- * Base backoff for the buddy policy/channel block (`11140`, `11128`) (default 5m).
+ * Base backoff for the buddy policy/channel block (default 5m).
  *
  * Deliberately a *base*, not the 24h flat penalty it replaced. `11140` has two
  * documented causes our classifier cannot separate from the response alone: the

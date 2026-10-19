@@ -261,14 +261,13 @@ export function buildBuddyPromptCacheKey(uid: string, conversation: string): str
 }
 
 /**
- * Rewrites the literal `11128` to `11-128` in outbound message text.
+ * Rewrites the buddy channel-block code in outbound message text.
  *
  * The upstream blocks any request whose body contains that exact digit run —
- * it is the code of the block itself, and the check is a verbatim match, not a
- * semantic one. A client that quotes the error (a retry, a pasted log, a tool
- * result) is refused on the next turn for mentioning it. The hyphen keeps the
- * number readable and breaks the match. Adjacent codes (`11148`, `11101`) are
- * left alone: only this one is the tripwire.
+ * the check is a verbatim match on the code itself, not a semantic one. A client
+ * that quotes the error (a retry, a pasted log, a tool result) is refused on
+ * the next turn merely for mentioning it. Inserting a hyphen keeps the number
+ * readable and breaks the match.
  *
  * Only text is touched. Image parts and tool-call argument structure are not
  * rewritten, because a digit run inside a base64 blob or a JSON key is not
