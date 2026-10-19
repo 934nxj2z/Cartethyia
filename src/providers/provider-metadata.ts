@@ -308,9 +308,16 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     // (`x-command-code-version`, `x-cli-environment`, `x-session-id`) and never
     // reads the route User-Agent, so the Routing Strategy panel must not offer
     // a custom User-Agent for it — the field would be silently ignored.
+    //
+    // The base is the Provider API origin, not `/alpha/generate`. Command Code
+    // serves three wires from `/provider/v1` — `/chat/completions`,
+    // `/responses` and `/messages` — and `/alpha/generate` is the CLI's own
+    // NDJSON surface. Pointing the base at one endpoint made the other two
+    // unroutable, which is why every `claude-*` id (served on `/messages`
+    // only) could not be dispatched at all.
     id: "commandcode",
     displayName: "Command Code",
-    baseUrl: "https://api.commandcode.ai/alpha/generate",
+    baseUrl: "https://api.commandcode.ai/provider/v1",
     hasAdapterUserAgent: true,
     credentialUrl: "https://commandcode.ai/studio",
     credentialHint: "Use the API key from the Command Code CLI, or create one in the studio.",

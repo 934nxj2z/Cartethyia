@@ -342,6 +342,14 @@ export const PROVIDER_CAPABILITIES = {
   commandcode: {
     loadAdapter: async () => (await import("./integrations/commandcode/commandcode")).createCommandCodeAdapter(),
     loadModels: async () => (await import("./integrations/commandcode/commandcode")).COMMANDCODE_MODELS,
+    // The Provider API publishes the real roster with each model's wire, so the
+    // static seed above is the offline floor rather than the catalog.
+    loadModelDiscovery: async () => async (input) =>
+      (await import("./integrations/commandcode/discovery")).discoverCommandCodeModels(input),
+    loadQuotaCollector: quotaCapability(
+      () => import("./integrations/commandcode/quota"),
+      "fetchCommandCodeQuota",
+    ),
   },
   qoder: {
     loadAdapter: async () => (await import("./integrations/qoder/qoder")).createQoderAdapter(),
