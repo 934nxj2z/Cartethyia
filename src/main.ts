@@ -1,3 +1,6 @@
+// Must run before any module that registers a route: it wires Elysia's TypeBox
+// bridge statically, which the source-run path needs under NODE_ENV=production.
+import "./boot/elysia-typebox-bridge";
 import { createGatewayApp, createGatewayShell } from "./boot/app";
 import { bootstrap } from "./boot/lifecycle";
 import type { CartethyiaBoot } from "./boot/lifecycle";
