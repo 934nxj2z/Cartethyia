@@ -281,9 +281,7 @@ export class CodexStreamFrameProcessor {
   // output_index routing + `output_item.added` registration.
   readonly #openItems = new Map<string, OpenItemEntry>();
   readonly #openItemsByOutputIndex = new Map<number, OpenItemEntry>();
-  // Track tool call argument accumulation, retained for diagnostics and
-  // future reconciliation of streamed arguments against authoritative ones.
-  readonly #toolCallArgs = new Map<string, string[]>();
+
   // Whitespace-loop guard: a model stuck emitting only whitespace tool-call
   // argument deltas would otherwise hang the dispatch loop forever.
   readonly #whitespaceDeltaTracking = new Map<
@@ -427,9 +425,6 @@ export class CodexStreamFrameProcessor {
           : undefined;
       const key = itemId ?? callId;
       this.#checkWhitespaceLoopGuard(key, json["delta"] as string);
-      const chunks = this.#toolCallArgs.get(key) ?? [];
-      chunks.push(json["delta"] as string);
-      this.#toolCallArgs.set(key, chunks);
       events.push({
         type: "tool_call_delta",
         sequence_number: this.#seq++,
@@ -443,14 +438,7 @@ export class CodexStreamFrameProcessor {
       typeof json["delta"] === "string"
     ) {
       const { callId, name } = this.#resolveToolIdentity(json);
-      const itemId =
-        typeof json["item_id"] === "string"
-          ? (json["item_id"] as string)
-          : undefined;
-      const key = itemId ?? callId;
-      const chunks = this.#toolCallArgs.get(key) ?? [];
-      chunks.push(json["delta"] as string);
-      this.#toolCallArgs.set(key, chunks);
+
       events.push({
         type: "tool_call_delta",
         sequence_number: this.#seq++,
@@ -505,37 +493,13 @@ export class CodexStreamFrameProcessor {
         },
       });
     } else if (t === "response.function_call_arguments.done") {
-      const rawCallId =
-        (json["call_id"] as string | undefined) ??
-        (json["item_id"] as string | undefined);
-      const itemId =
-        typeof json["item_id"] === "string"
-          ? (json["item_id"] as string)
-          : undefined;
-      let key: string | undefined;
-      if (itemId !== undefined) key = itemId;
-      else if (rawCallId !== undefined) key = decodeCodexToolCallId(rawCallId);
-      else {
-        const outputIndex = readOutputIndex(json);
-        if (outputIndex !== undefined) key = `idx_${outputIndex}`;
-      }
-      const finalArgs = (json as Record<string, unknown>)["arguments"];
-      if (typeof finalArgs === "string" && key !== undefined) {
-        this.#toolCallArgs.set(key, [finalArgs]);
-      }
+      // The arguments themselves are emitted by the delta events above; the
+      // `.done` event only marks the call complete.
+
       this.hasToolCall = true;
     } else if (t === "response.custom_tool_call_input.done") {
-      const itemId =
-        typeof json["item_id"] === "string"
-          ? (json["item_id"] as string)
-          : undefined;
-      const rawCallId = (json["call_id"] as string | undefined) ?? itemId;
-      let key: string | undefined;
-      if (itemId !== undefined) key = itemId;
-      else if (rawCallId !== undefined) key = decodeCodexToolCallId(rawCallId);
-      const finalInput = (json as Record<string, unknown>)["input"];
-      if (typeof finalInput === "string" && key !== undefined)
-        this.#toolCallArgs.set(key, [finalInput]);
+      // As above: the input arrives as deltas, so `.done` only completes it.
+
       this.hasToolCall = true;
     } else if (t === "response.output_item.done") {
       const item = json["item"];
@@ -598,43 +562,13 @@ export class CodexStreamFrameProcessor {
         }
         if (outputItem["type"] === "function_call") {
           this.hasToolCall = true;
-          const callIdRaw =
-            typeof outputItem["call_id"] === "string"
-              ? (outputItem["call_id"] as string)
-              : undefined;
-          const decodedCallId =
-            callIdRaw !== undefined
-              ? decodeCodexToolCallId(callIdRaw)
-              : undefined;
-          const authoritative =
-            typeof outputItem["arguments"] === "string"
-              ? (outputItem["arguments"] as string)
-              : undefined;
-          if (authoritative !== undefined && decodedCallId !== undefined) {
-            const key = outputItemId ?? decodedCallId;
-            this.#toolCallArgs.set(key, [authoritative]);
-          }
+
           if (outputItemId !== undefined) this.#openItems.delete(outputItemId);
           if (outputIndex !== undefined)
             this.#openItemsByOutputIndex.delete(outputIndex);
         } else if (outputItem["type"] === "custom_tool_call") {
           this.hasToolCall = true;
-          const callIdRaw =
-            typeof outputItem["call_id"] === "string"
-              ? (outputItem["call_id"] as string)
-              : undefined;
-          const decodedCallId =
-            callIdRaw !== undefined
-              ? decodeCodexToolCallId(callIdRaw)
-              : undefined;
-          const authoritative =
-            typeof outputItem["input"] === "string"
-              ? (outputItem["input"] as string)
-              : undefined;
-          if (authoritative !== undefined && decodedCallId !== undefined) {
-            const key = outputItemId ?? decodedCallId;
-            this.#toolCallArgs.set(key, [authoritative]);
-          }
+
           if (outputItemId !== undefined) this.#openItems.delete(outputItemId);
           if (outputIndex !== undefined)
             this.#openItemsByOutputIndex.delete(outputIndex);
