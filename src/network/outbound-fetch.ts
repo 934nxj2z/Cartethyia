@@ -9,6 +9,7 @@ import type { SsrfPolicy } from "../config/network";
 import { isProxyAgentPair, type ProxyAgentPair } from "./pool/agent";
 import { metrics } from "../observability/metrics";
 import { trackNetworkCall } from "../observability/performance-metrics";
+import { bunClientHelloOptions } from "./tls/bun-client-hello";
 import { stripResponseHeaders } from "./response-headers";
 // Validated fetch — single egress with ProxyAgent support
 export interface ValidatedFetchOptions {
@@ -17,6 +18,14 @@ export interface ValidatedFetchOptions {
   readonly maxRedirects?: number;
   readonly resolveFn?: (hostname: string, signal: AbortSignal) => Promise<readonly string[]>;
   readonly agent?: HttpAgent | HttpsAgent | ProxyAgentPair;
+  /**
+   * Handshake with Bun's cipher list, curve list and ALPN instead of
+   * OpenSSL's defaults. Opt-in, and off by default: see
+   * `network/tls/bun-client-hello.ts` — ciphers and curves match exactly, but
+   * the extension list cannot be shaped from Node, so this is a closer hello
+   * rather than an identical one.
+   */
+  readonly bunClientHello?: boolean;
 }
 export type ValidatedFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -99,10 +108,12 @@ function decompressBody(
   return { stream: body.pipe(decoder), encoding: undefined };
 }
 
-async function pinnedFetch(  url: URL,
+async function pinnedFetch(
+  url: URL,
   init: RequestInit,
   resolvedAddress: string | undefined,
   agent?: HttpAgent | HttpsAgent,
+  useBunHello = false,
 ): Promise<Response> {
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
   const headers = new Headers(init.headers);
@@ -159,6 +170,15 @@ async function pinnedFetch(  url: URL,
         signal: init.signal ?? undefined,
         ...(agent ? { agent } : { lookup }),
         ...(url.protocol === "https:" ? { servername: url.hostname } : {}),
+        // Bun's cipher list, curve list, ALPN and version span, when this
+        // request opted into it. See `network/tls/bun-client-hello.ts` for
+        // what this does and does not match: ciphers and curves land exactly;
+        // the extension list cannot be shaped from Node at all.
+        //
+        // Opt-in, and off by default. It changes the TLS handshake of every
+        // request it touches, and no provider needs it until the free-tier
+        // gate is shown to reject the default hello.
+        ...(useBunHello && url.protocol === "https:" ? bunClientHelloOptions() : {}),
       },
       (response) => {
         const responseHeaders = stripResponseHeaders(response.headers);
@@ -263,7 +283,13 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
         response = await options.fetchFn(url, requestInit);
       } else {
         const agent = agentForTarget(configuredAgent, url.protocol);
-        response = await pinnedFetch(url, requestInit, resolvedAddress!, agent);
+        response = await pinnedFetch(
+          url,
+          requestInit,
+          resolvedAddress!,
+          agent,
+          options.bunClientHello === true,
+        );
       }
       if (response.status < 300 || response.status >= 400) {
         trackNetworkCall(url.hostname, performance.now() - startedAt);

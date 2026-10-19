@@ -241,26 +241,49 @@ So the real obstacle is only #1 (SSRF pinning) plus the cost of a bridge.
 
 | # | Approach | Keeps SSRF? | Keeps SOCKS5 egress? | Cost |
 |---|---|---|---|---|
-| A | CONNECT bridge in-process for `opencode` free dispatch | Yes — bridge owns the dial, `SocksProxyAgent` keeps its `lookup` | Yes | ~1 new module + wiring |
+| A | CONNECT bridge in-process for `opencode` free dispatch | Yes | Yes | **Attempted, failed** — the SOCKS5 agent cannot be driven via `createConnection` |
 | B | Ask for a `socks5`/`lookup` option in Bun | Yes | Yes | External; upstream timeline |
-| C | Node TLS with a custom ClientHello via native addon | Yes | Yes | New native dep, per-platform build |
+| C | Node TLS with Bun's cipher/curve list (`network/tls/bun-client-hello.ts`) | Yes | Yes | **Built** — but only 11 of 13 extensions; not a match |
 
-**A is the one worth doing.** It is the only option that is ours to ship, and
-it needs no new dependency: `node:http` already provides the CONNECT server and
-`socks-proxy-agent` is already a dependency.
+**A was attempted and does not work.** A loopback CONNECT listener that hands
+the tunnel to the pool's `SocksProxyAgent` was built and deleted: it never
+answered a CONNECT, because `SocksProxyAgent.createConnection` throws
+`No socket was returned in the connect() function` instead of invoking its
+callback, and the egress was never touched. The earlier `origin reached: true`
+used a plain TCP relay standing in for SOCKS5, so it proved the CONNECT *shape*
+works — not that our agent can be driven that way.
 
-Two things A must get right, and they are the whole risk:
+**C was built and shipped** (`src/network/tls/bun-client-hello.ts`, opt-in via
+`createValidatedFetch({ bunClientHello: true })`), because it is cheap and it
+keeps SSRF and SOCKS5 in the one combination Bun cannot do. Measured:
 
-- **Only `opencode` free dispatch uses it.** Every other provider keeps the
-  Node path exactly as it is. The blast radius is one lane.
-- **The bridge still validates.** SOCKS5 pools already apply SSRF through the
-  socket `lookup` (`agent.ts:436`), and the *target* is resolved by the proxy,
-  not locally — which is the same posture `outbound-fetch.ts` already accepts
-  for pool-owned dials. A adds nothing new here; it inherits it.
+```
+default (off)  : 18 ciphers  ext 0,23,65281,10,11,35,13,51,45,43
+bunClientHello : 17 ciphers  ext 0,23,65281,10,11,35,16,13,51,45,43
+Bun target     : 17 ciphers  ext 0,23,65281,10,11,35,16,5,13,18,51,45,43
+```
 
-**Not yet proven:** that the gate actually rejects a non-Bun hello from a
-*working* egress. That is still the A/B in §6, and it is worth doing before
-building A — if the gate does not check, A solves nothing.
+Ciphers and curves land exactly. Extensions do not: **11 of 13**, missing
+`status_request` (5, OCSP) and `signed_certificate_timestamp` (18, SCT), with no
+Node option that adds either — an `openssl.cnf` `Options` override does not move
+the order either. The first seven match, then it diverges.
+
+That gap is decisive if the gate hashes the extension list, and the reference's
+own comment names JA4 `t13d1713h1`, which is computed from exactly that list.
+**C is a closer hello, not a matching one**, so it ships off by default.
+
+### What is actually left
+
+Bun's hello only leaves through Bun's `fetch`, and Bun's `fetch` cannot use our
+SOCKS5 egress. Every route to "both at once" is now closed by measurement:
+
+- `fetch({ proxy: "socks5://…" })` -> `UnsupportedProxyProtocol`.
+- CONNECT bridge -> the SOCKS5 agent cannot be driven via `createConnection`.
+- Node TLS shaping -> ciphers and curves yes, extension order never.
+
+The remaining option is **B**: ask Bun for a SOCKS5 or address-pinning option in
+`fetch`. That is upstream and outside this repo. Until it lands, the free tier
+keeps OpenSSL's hello — and works today, which is the point.
 
 ---
 
@@ -343,7 +366,7 @@ the TLS ClientHello — is still open with a workable path.
 
 | Gap | Outcome |
 |---|---|
-| 1 — TLS ClientHello | **Open.** Not "impossible" — §3. Bun keeps its full hello through a CONNECT tunnel, so a CONNECT→SOCKS5 bridge gets both. Blocked on the A/B that proves the gate checks. |
+| 1 — TLS ClientHello | **Open, and no route left in this repo.** §3: A (CONNECT bridge) was attempted and fails; C is built but reaches 11 of 13 extensions. Only B — an upstream Bun option — remains. |
 | 2 — Go-plan quota | **Shipped.** `opencode-go-quota.ts`, registered on `opencode-go`. |
 | 3 — `Accept` value | **Shipped.** Now `application/json, text/event-stream`. |
 | 4 — Refused-model list | **Shipped.** `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE`, `none` to trust the listing. |
