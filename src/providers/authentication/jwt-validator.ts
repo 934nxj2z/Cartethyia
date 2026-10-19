@@ -13,46 +13,45 @@
  * Only asymmetric algorithms are accepted. `none` and HMAC (`HS*`) are
  * rejected so a token cannot downgrade to a shared-secret or unsigned form.
  */
-import { constants, createPublicKey, verify as cryptoVerify } from "node:crypto";
-import type { KeyObject } from "node:crypto";
+import {
+  compactVerify,
+  createRemoteJWKSet,
+  customFetch,
+  decodeJwt,
+  decodeProtectedHeader,
+} from "jose";
+import type { JSONWebKeySet, RemoteJWKSet } from "jose";
 import { TtlCache } from "../../persistence/ttl-cache";
 import { resolveRedisClient } from "../../persistence/redis";
 
+/**
+ * Algorithms this module will verify.
+ *
+ * `jose` performs the cryptography, so the entry is now only the key type —
+ * the digest, RSA-PSS padding and salt length were implementation details of
+ * the hand-rolled `cryptoVerify` call this replaced. The allowlist itself is
+ * unchanged: asymmetric only, so `none` and the HMAC (`HS*`) family can never
+ * be negotiated down to.
+ */
 interface AlgorithmSpec {
-  readonly hash: string;
   readonly kty: "RSA" | "EC";
-  /** RSA-PSS padding, when the algorithm is PS*; RSA-PKCS1 is the default. */
-  readonly padding?: number;
-  readonly saltLength?: number;
 }
 
-/** Algorithms this module will verify, mapped to their digest and key type. */
 const SUPPORTED_ALGORITHMS: Readonly<Record<string, AlgorithmSpec>> = Object.freeze({
-  RS256: { hash: "sha256", kty: "RSA" },
-  RS384: { hash: "sha384", kty: "RSA" },
-  RS512: { hash: "sha512", kty: "RSA" },
-  PS256: {
-    hash: "sha256",
-    kty: "RSA",
-    padding: constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
-  },
-  PS384: {
-    hash: "sha384",
-    kty: "RSA",
-    padding: constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
-  },
-  PS512: {
-    hash: "sha512",
-    kty: "RSA",
-    padding: constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
-  },
-  ES256: { hash: "sha256", kty: "EC" },
-  ES384: { hash: "sha384", kty: "EC" },
-  ES512: { hash: "sha512", kty: "EC" },
+  RS256: { kty: "RSA" },
+  RS384: { kty: "RSA" },
+  RS512: { kty: "RSA" },
+  PS256: { kty: "RSA" },
+  PS384: { kty: "RSA" },
+  PS512: { kty: "RSA" },
+  ES256: { kty: "EC" },
+  ES384: { kty: "EC" },
+  ES512: { kty: "EC" },
 });
+
+/** Fetch timeout for a JWKS document, matching jose's own default. */
+const JWKS_FETCH_TIMEOUT_MS = 5_000;
+
 
 interface ParsedJwt {
   readonly header: Record<string, unknown>;
@@ -61,23 +60,17 @@ interface ParsedJwt {
   readonly signedInput: string;
 }
 
-function decodeJsonObject(segment: string): Record<string, unknown> | undefined {
-  if (segment.length === 0 || !/^[A-Za-z0-9_-]+$/.test(segment)) return undefined;
-  try {
-    const value = JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as unknown;
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Strictly parses a compact JWS. Returns `undefined` for anything that is not a
  * three-part token with JSON header/payload objects, a non-empty `alg`, and a
  * non-empty signature — so `alg: none` and structurally broken tokens are never
  * treated as JWTs.
+ *
+ * Header and payload decoding delegates to `jose`, which enforces the same
+ * strictness the hand-rolled decoder did (compact three-part shape, base64url
+ * decoding to a JSON *object* — never an array or a scalar) and is the same
+ * decoder the verification path uses, so what is inspected is exactly what is
+ * later verified.
  */
 export function parseJwt(token: string): ParsedJwt | undefined {
   if (typeof token !== "string") return undefined;
@@ -86,9 +79,14 @@ export function parseJwt(token: string): ParsedJwt | undefined {
   const headerSegment = parts[0] ?? "";
   const payloadSegment = parts[1] ?? "";
   const signature = parts[2] ?? "";
-  const header = decodeJsonObject(headerSegment);
-  const payload = decodeJsonObject(payloadSegment);
-  if (!header || !payload) return undefined;
+  let header: Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    header = decodeProtectedHeader(token) as Record<string, unknown>;
+    payload = decodeJwt(token) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
   if (typeof header.alg !== "string" || header.alg.length === 0) return undefined;
   if (header.alg === "none" || signature.length === 0) return undefined;
   return { header, payload, signature, signedInput: `${headerSegment}.${payloadSegment}` };
@@ -167,14 +165,6 @@ export function validateJwtClaims(
   return undefined;
 }
 
-interface Jwk {
-  readonly kty?: unknown;
-  readonly kid?: unknown;
-  readonly use?: unknown;
-  readonly alg?: unknown;
-  readonly [key: string]: unknown;
-}
-
 interface JwksVerifierOptions {
   readonly url: string;
   readonly fetch?: typeof fetch;
@@ -186,189 +176,142 @@ interface JwksVerifierOptions {
 
 const DEFAULT_JWKS_CACHE_TTL_MS = 5 * 60 * 1_000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30_000;
-const MAX_JWKS_KEYS = 64;
 
 /** Shared JWKS window, matching the local verifier cache so peers reuse fetched keys. */
 const JWKS_SHARED_TTL_SECONDS = 300;
 const JWKS_SHARED_KEY_PREFIX = "jwks:v1:";
 
-/** Parses a cached JWKS value into keys, or `undefined` when it is unusable. */
-function parseSharedJwks(raw: string): readonly Jwk[] | undefined {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return undefined;
-    const keys = parsed.filter((key): key is Jwk => key !== null && typeof key === "object");
-    return keys.length > 0 ? keys : undefined;
-  } catch {
-    return undefined;
-  }
+
+/**
+ * A JWKS document shared with peer instances, with the timestamp it was
+ * fetched at. Redis-backed so a fleet does not each re-fetch the issuer.
+ */
+interface SharedJwks {
+  readonly jwks: JSONWebKeySet;
+  readonly uat: number;
 }
 
-/** Reads a peer instance's cached JWKS. Never throws; a miss falls through to fetch. */
-async function readSharedJwks(url: string): Promise<readonly Jwk[] | undefined> {
+async function readSharedJwksDocument(url: string): Promise<SharedJwks | undefined> {
   const redis = resolveRedisClient();
   if (!redis) return undefined;
   try {
     const hit = await redis.get(`${JWKS_SHARED_KEY_PREFIX}${url}`);
-    return hit === null ? undefined : parseSharedJwks(hit);
+    if (hit === null) return undefined;
+    const parsed = JSON.parse(hit) as unknown;
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const { uat, jwks } = parsed as { uat?: unknown; jwks?: unknown };
+    if (typeof uat !== "number" || !Number.isFinite(uat)) return undefined;
+    if (jwks === null || typeof jwks !== "object") return undefined;
+    return { jwks: jwks as JSONWebKeySet, uat };
   } catch {
     return undefined;
   }
 }
 
-/** Publishes fetched keys for peer instances. Best-effort: a failure is not a request failure. */
-async function writeSharedJwks(url: string, keys: readonly Jwk[]): Promise<void> {
+/** Publishes a fetched document for peer instances. Best-effort: never throws. */
+async function writeSharedJwksDocument(url: string, jwks: JSONWebKeySet): Promise<void> {
   const redis = resolveRedisClient();
   if (!redis) return;
   try {
     await redis.set(
       `${JWKS_SHARED_KEY_PREFIX}${url}`,
-      JSON.stringify(keys),
+      JSON.stringify({ uat: Date.now(), jwks } satisfies SharedJwks),
       "EX",
       JWKS_SHARED_TTL_SECONDS,
     );
   } catch {
-    // Shared visibility only; the local cache stays authoritative.
+    // Shared visibility only; each instance's own cache stays authoritative.
   }
 }
 
-interface CachedJwks {
-  readonly keys: readonly Jwk[];
-  readonly fetchedAt: number;
-}
-
-function publicKeyFromJwk(jwk: Jwk): KeyObject | undefined {
-  try {
-    return createPublicKey({ key: jwk as unknown as JsonWebKey, format: "jwk" });
-  } catch {
-    return undefined;
-  }
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 /**
- * Verifies compact-JWS signatures against a provider's JWKS endpoint. Keys are
- * cached with a TTL and bounded count; an unknown `kid` triggers at most one
- * rate-limited refresh so key rotation is picked up without hammering the
- * issuer.
+ * Verifies compact-JWS signatures against a provider's JWKS endpoint.
+ *
+ * Key fetching, caching, in-flight deduplication, the minimum refresh interval
+ * on an unknown `kid`, and `kid`-rotation pickup are all delegated to
+ * `jose`'s `createRemoteJWKSet` — the same algorithm this class used to
+ * reimplement by hand. `jose` additionally honours each JWK's `use` and
+ * `key_ops`, so an encryption key published alongside the signing keys cannot
+ * be selected for verification.
+ *
+ * The algorithm is checked against `SUPPORTED_ALGORITHMS` *before* any key is
+ * resolved, so the asymmetric-only allowlist (no `none`, no HMAC) is
+ * unchanged by the migration.
  */
 export class JwksVerifier {
-  readonly #url: string;
-  readonly #fetch: typeof fetch;
-  readonly #clock: () => number;
-  readonly #cacheTtlMs: number;
-  readonly #minRefreshIntervalMs: number;
-  #cache: CachedJwks | undefined;
-  #inflight: Promise<readonly Jwk[]> | undefined;
-  #lastRefreshAt = 0;
+  readonly #keys: RemoteJWKSet;
+  /** Whether this instance has fetched from the issuer yet. */
+  #fetched = false;
 
   constructor(options: JwksVerifierOptions) {
-    this.#url = options.url;
-    this.#fetch = options.fetch ?? globalThis.fetch;
-    this.#clock = options.clock ?? (() => Date.now());
-    this.#cacheTtlMs = options.cacheTtlMs ?? DEFAULT_JWKS_CACHE_TTL_MS;
-    this.#minRefreshIntervalMs = options.minRefreshIntervalMs ?? DEFAULT_MIN_REFRESH_INTERVAL_MS;
-  }
-
-  async #fetchKeysRemote(): Promise<readonly Jwk[]> {
-    const response = await this.#fetch(this.#url, {
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(5_000),
+    const fetchFn = options.fetch ?? globalThis.fetch;
+    const url = options.url;
+    const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_JWKS_CACHE_TTL_MS;
+    this.#keys = createRemoteJWKSet(new URL(url), {
+      timeoutDuration: JWKS_FETCH_TIMEOUT_MS,
+      cacheMaxAge: cacheTtlMs,
+      cooldownDuration: options.minRefreshIntervalMs ?? DEFAULT_MIN_REFRESH_INTERVAL_MS,
+      [customFetch]: async (target, init) => {
+        // First resolution only: a peer's copy saves an issuer round-trip.
+        // A later fetch is a rotation reload, which must reach the issuer
+        // rather than re-read the set that just failed to match the `kid`.
+        if (!this.#fetched) {
+          const shared = await readSharedJwksDocument(url);
+          if (shared !== undefined && Date.now() - shared.uat < cacheTtlMs) {
+            this.#fetched = true;
+            return jsonResponse(shared.jwks);
+          }
+        }
+        const response = await fetchFn(target, init as RequestInit);
+        if (response.ok) {
+          try {
+            const body = (await response.clone().json()) as unknown;
+            if (body !== null && typeof body === "object" && Array.isArray((body as { keys?: unknown }).keys)) {
+              void writeSharedJwksDocument(url, body as JSONWebKeySet);
+            }
+          } catch {
+            // Publishing is best-effort.
+          }
+          return response;
+        }
+        return response;
+      },
     });
-    if (!response.ok) throw new Error(`JWKS request failed (${response.status})`);
-    const body = (await response.json()) as unknown;
-    const keys = body !== null && typeof body === "object" ? (body as { keys?: unknown }).keys : undefined;
-    if (!Array.isArray(keys)) throw new Error("JWKS response missing keys array");
-    return keys.slice(0, MAX_JWKS_KEYS).filter(
-      (key): key is Jwk => key !== null && typeof key === "object",
-    );
   }
 
   /**
-   * Resolves keys for this URL, reading a peer instance's shared copy first on a
-   * normal read. A forced refresh — the unknown-`kid` retry that picks up
-   * rotation — skips the shared copy and fetches the issuer, then republishes,
-   * so rotation is not delayed by the shared TTL.
+   * Verifies `token`'s signature and returns the parsed token on success.
+   *
+   * Returns `undefined` for anything unverifiable — a non-JWT, an algorithm
+   * outside the allowlist, a JWKS fetch failure, or a bad signature. A JWKS
+   * outage therefore fails closed rather than trusting an unverified token.
    */
-  async #fetchKeys(useSharedCache: boolean): Promise<readonly Jwk[]> {
-    if (useSharedCache) {
-      const shared = await readSharedJwks(this.#url);
-      if (shared !== undefined) return shared;
-    }
-    const keys = await this.#fetchKeysRemote();
-    await writeSharedJwks(this.#url, keys);
-    return keys;
-  }
-
-  async #getKeys(forceRefresh: boolean): Promise<readonly Jwk[]> {
-    const now = this.#clock();
-    if (!forceRefresh && this.#cache && now - this.#cache.fetchedAt < this.#cacheTtlMs) {
-      return this.#cache.keys;
-    }
-    if (this.#inflight) return this.#inflight;
-    const request = this.#fetchKeys(!forceRefresh)
-      .then((keys) => {
-        this.#cache = { keys, fetchedAt: this.#clock() };
-        this.#lastRefreshAt = this.#clock();
-        return keys;
-      })
-      .finally(() => {
-        this.#inflight = undefined;
-      });
-    this.#inflight = request;
-    return request;
-  }
-
-  /** Verifies `token`'s signature and returns the parsed token on success. */
   async verify(token: string): Promise<ParsedJwt | undefined> {
     const parsed = parseJwt(token);
     if (!parsed) return undefined;
     const algorithm = SUPPORTED_ALGORITHMS[parsed.header.alg as string];
     if (!algorithm) return undefined;
-
-    const kid = typeof parsed.header.kid === "string" ? parsed.header.kid : undefined;
-    let keys: readonly Jwk[];
     try {
-      keys = await this.#getKeys(false);
+      // `compactVerify` checks the signature only. Registered claims stay the
+      // responsibility of `validateJwtClaims`, whose failure vocabulary
+      // ("expired", "issuer_mismatch", …) the console surfaces verbatim;
+      // `jwtVerify` would replace it with its own, and requires `iss`/`aud`
+      // that an OAuth access token need not carry.
+      await compactVerify(token, this.#keys, {
+        algorithms: [parsed.header.alg as string],
+      });
+      return parsed;
     } catch {
       return undefined;
     }
-    let candidates = selectKeys(keys, kid, algorithm.kty);
-    if (candidates.length === 0 && this.#clock() - this.#lastRefreshAt >= this.#minRefreshIntervalMs) {
-      try {
-        candidates = selectKeys(await this.#getKeys(true), kid, algorithm.kty);
-      } catch {
-        return undefined;
-      }
-    }
-    if (candidates.length === 0) return undefined;
-
-    const data = Buffer.from(parsed.signedInput, "utf8");
-    const signature = Buffer.from(parsed.signature, "base64url");
-    for (const jwk of candidates) {
-      const key = publicKeyFromJwk(jwk);
-      if (!key) continue;
-      const verifyOptions =
-        algorithm.kty === "EC"
-          ? { key, dsaEncoding: "ieee-p1363" as const }
-          : algorithm.padding === undefined || algorithm.saltLength === undefined
-            ? { key }
-            : { key, padding: algorithm.padding, saltLength: algorithm.saltLength };
-      try {
-        if (cryptoVerify(algorithm.hash, data, verifyOptions, signature)) return parsed;
-      } catch {
-        continue;
-      }
-    }
-    return undefined;
   }
-}
-
-function selectKeys(keys: readonly Jwk[], kid: string | undefined, kty: "RSA" | "EC"): readonly Jwk[] {
-  return keys.filter((jwk) => {
-    if (jwk.kty !== kty) return false;
-    if (kid !== undefined && jwk.kid !== kid) return false;
-    return true;
-  });
 }
 
 /**

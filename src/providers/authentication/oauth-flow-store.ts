@@ -1,6 +1,7 @@
 // OAuth client contracts, registries, PKCE state, and ephemeral flow storage.
 
 import { createHash, randomBytes } from "node:crypto";
+import { base64url, decodeJwt } from "jose";
 import type { RedisClient } from "../../persistence/redis";
 import { TtlCache } from "../../persistence/ttl-cache";
 
@@ -286,8 +287,14 @@ interface PkcePair {
   readonly codeChallenge: string;
 }
 
+/**
+ * Base64url without padding, via `jose`.
+ *
+ * Shared so PKCE verifiers/challenges and provider-specific encoders cannot
+ * drift apart on padding or alphabet handling.
+ */
 export function base64UrlEncode(input: Buffer): string {
-  return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return base64url.encode(input);
 }
 
 /** Generates a fresh PKCE verifier/challenge pair using the S256 transform. */
@@ -398,17 +405,17 @@ export function expiryFromSeconds(value: unknown, fallbackSec = 3600): Date {
 
 /**
  * Decodes a JWT payload without verifying (OAuth metadata only — the trust
- * boundary stays at TLS + issuer). Strict 3-part shape with an object
- * (non-array) payload; anything else yields `undefined`.
+ * boundary stays at TLS + issuer).
+ *
+ * Delegates to `jose`'s `decodeJwt`, which enforces exactly the contract
+ * callers rely on: compact three-part shape, a base64url payload decoding to
+ * UTF-8 JSON that is an object (not an array, not a scalar). Anything else
+ * yields `undefined` rather than throwing — a credential that is simply not a
+ * JWT (an opaque token) is a normal outcome here, not an error.
  */
 export function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
-  const parts = token.split(".");
-  if (parts.length !== 3) return undefined;
   try {
-    const value = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as unknown;
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
+    return decodeJwt(token) as Record<string, unknown>;
   } catch {
     return undefined;
   }

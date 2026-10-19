@@ -17,6 +17,7 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  base64UrlEncode,
   nonEmptyTrimmedString,
   record,
 } from "../../authentication/oauth-flow-store";
@@ -58,13 +59,6 @@ export function parseQoderOAuthState(value: unknown): QoderOAuthState | undefine
   return { userId, machineId };
 }
 
-function base64Url(buffer: Buffer): string {
-  return buffer
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
 
 /**
  * Converts the upstream's expiry hint into a Unix-millisecond timestamp.
@@ -131,8 +125,8 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
   override async startDeviceAuth(
     _context?: OAuthDeviceFlowContext,
   ): Promise<OAuthDeviceStartResult> {
-    const verifier = base64Url(randomBytes(32));
-    const challenge = base64Url(createHash("sha256").update(verifier).digest());
+    const verifier = base64UrlEncode(randomBytes(32));
+    const challenge = base64UrlEncode(createHash("sha256").update(verifier).digest());
     const nonce = randomUUID();
     const machineId = randomUUID();
     const params = new URLSearchParams({
