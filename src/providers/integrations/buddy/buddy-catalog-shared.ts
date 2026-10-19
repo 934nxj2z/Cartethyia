@@ -213,7 +213,11 @@ export function makeBuddyModel(
   if (!entry[0]) throw new GatewayError("invalid_request", 400, "invalid model");
   const image = BUDDY_IMAGE_MODEL_ID_SET.has(entry[0]);
   const efforts = (realm === "cn" ? BUDDY_CN_EFFORTS : BUDDY_INTL_EFFORTS)[entry[0].toLowerCase()];
-  const proOnly = BUDDY_PRO_ONLY_MODEL_IDS.has(entry[0].toLowerCase());
+  // Refused on free is only a question for the intl realm. cbcn serves every
+  // model on its free plan (none of the six ids here is refused there), so
+  // the same set applied to a CN row would publish a tier fact that nobody
+  // measured and that the CN account would simply disagree with on dispatch.
+  const proOnly = realm === "intl" && BUDDY_PRO_ONLY_MODEL_IDS.has(entry[0].toLowerCase());
   return defineModel({
     id: entry[0],
     providerId,
