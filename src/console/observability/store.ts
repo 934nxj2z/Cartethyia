@@ -747,16 +747,54 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       async () => {
         const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
         const labels = await this.apiKeyLabels(tenantId, keyIds);
+        // One indexed read for the whole page, not one per row: presence lives
+        // on the payload row so the list can render it without inflating a
+        // frame for every row it shows.
+        const requestIds = [...new Set(rows.map((row) => row.requestId).filter((id): id is string => id !== null))];
+        const stages = await this.payloadStages(tenantId, requestIds);
         return {
           items: rows.map((row) => {
             const item = mapUsageRequestItem(row, hideClientIp);
             const label = row.apiKeyId ? labels.get(row.apiKeyId) : undefined;
-            return label === undefined ? item : { ...item, apiKeyLabel: label };
+            const labeled = label === undefined ? item : { ...item, apiKeyLabel: label };
+            const stage = stages.get(row.requestId);
+            // Omitted rather than zero when the row is unknown: absence means
+            // "no payload was captured", and 0 would say the same thing while
+            // claiming it had been measured.
+            return stage === undefined ? labeled : { ...labeled, payloadStages: stage };
           }),
         };
       },
     );
   }
+
+  /**
+   * Captured-stage bitmask per request, newest payload row winning.
+   * One indexed read for a whole page. Presence is on the payload row
+   * specifically so the list never has to inflate a frame to answer "does this
+   * panel have content".
+   */
+  private async payloadStages(tenantId: string, requestIds: readonly string[]): Promise<Map<string, number>> {
+    if (requestIds.length === 0) return new Map();
+    const rows = await this.db
+      .select({ requestId: telemetryPayloads.requestId, stages: telemetryPayloads.stages })
+      .from(telemetryPayloads)
+      .where(
+        and(
+          eq(telemetryPayloads.tenantId, tenantId),
+          inArray(telemetryPayloads.requestId, [...requestIds]),
+        ),
+      )
+      .orderBy(desc(telemetryPayloads.capturedAt));
+    const byRequest = new Map<string, number>();
+    for (const row of rows) {
+      if (row.requestId === null || row.stages === null) continue;
+      // Ordered newest-first, so the first hit is the one the drawer reads.
+      if (!byRequest.has(row.requestId)) byRequest.set(row.requestId, row.stages);
+    }
+    return byRequest;
+  }
+
   async usageRequestDetail(
     tenantId: string,
     requestId: string,

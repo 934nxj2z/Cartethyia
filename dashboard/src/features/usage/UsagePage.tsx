@@ -21,13 +21,9 @@ import {
   Image as ImageIcon,
   LogIn,
   Maximize2,
-  MessageSquare,
-  MessagesSquare,
   Minimize2,
-  CircleDashed,
   Paperclip,
   Radio,
-  Reply,
   Route,
   Scaling,
   Server,
@@ -242,24 +238,20 @@ export function surfaceFamilyLabel(surface: string | undefined): string {
 }
 
 /**
- * Glyph for the protocol family in the status cell. A known wire family gets
- * its own icon in the accent color; an unknown surface gets a greyed dashed
- * circle — the row still needs a marker, it just must not look like a family
- * the gateway recognises.
+ * The four payload stages, in the order the detail drawer shows them.
+ *
+ * One bit each, matching the `stages` bitmask the payload row carries: a stage
+ * is accented when its body was captured and greyed when it was not. That
+ * distinction is the point — a request that failed before reaching the
+ * upstream has no provider response, and an operator should see that on the
+ * row instead of opening four blank panels to find out.
  */
-export function surfaceFamilyIcon(surface: string | undefined): ReactNode {
-  switch (surface) {
-    case "chat":
-    case "completion":
-      return <MessageSquare size={11} aria-hidden="true" />;
-    case "messages":
-      return <MessagesSquare size={11} aria-hidden="true" />;
-    case "responses":
-      return <Reply size={11} aria-hidden="true" />;
-    default:
-      return <CircleDashed size={11} aria-hidden="true" />;
-  }
-}
+const CAPTURE_STAGES = [
+  { key: "request", bit: 1, label: "Client request", icon: LogIn },
+  { key: "providerRequest", bit: 2, label: "Provider request", icon: Route },
+  { key: "providerResponse", bit: 4, label: "Provider response", icon: Server },
+  { key: "clientResponse", bit: 8, label: "Client response", icon: CheckCircle2 },
+] as const;
 
 /**
  * Relative age of a request start for the time cell's second line:
@@ -1949,20 +1941,22 @@ export default function Usage(): ReactNode {
                           httpStatus={row.httpStatus}
                         />
                       </div>
-                      <div
-                        className="truncate font-mono text-badge mt-px max-w-110 inline-flex items-center gap-1.5"
-                        title={surfaceFamilyLabel(row.surface)}
-                      >
-                        <span
-                          className={
-                            row.surface && ["chat", "completion", "messages", "responses"].includes(row.surface)
-                              ? "text-accent shrink-0"
-                              : "text-text-tertiary shrink-0 opacity-60"
-                          }
-                        >
-                          {surfaceFamilyIcon(row.surface)}
-                        </span>
-                        <span className="truncate">{surfaceFamilyLabel(row.surface)}</span>
+                      <div className="flex items-center gap-2.5 mt-px" aria-label="Captured payload stages">
+                        {CAPTURE_STAGES.map(({ key, bit, label, icon: Icon }) => {
+                          const captured = row.payloadStages !== undefined && (row.payloadStages & bit) !== 0;
+                          return (
+                            <span
+                              key={key}
+                              title={captured ? `${label} · captured` : `${label} · not captured`}
+                              className={captured ? "text-accent" : "text-text-tertiary opacity-45"}
+                            >
+                              <Icon size={11} aria-hidden="true" />
+                            </span>
+                          );
+                        })}
+                      </div>
+                      <div className="truncate font-mono text-badge text-text-tertiary mt-px max-w-110" title={surfaceFamilyLabel(row.surface)}>
+                        {surfaceFamilyLabel(row.surface)}
                       </div>
                     </td>
                     <td className="font-mono text-badge whitespace-nowrap text-right tabular-nums">

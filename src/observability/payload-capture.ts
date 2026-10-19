@@ -130,6 +130,13 @@ export interface StoredPayload {
   client_response_body: unknown;
   provider_request_body: unknown;
   provider_response_body: unknown;
+  /**
+   * Bitmask of the stages whose body was kept: 1 request, 2 provider request,
+   * 4 provider response, 8 client response. Written to its own column so the
+   * Usage list can show which panels have content without inflating a frame
+   * per row.
+   */
+  stages: number;
   signals: PayloadSignals;
 }
 
@@ -260,6 +267,14 @@ export function buildPayloadRecord(
     client_response_body: stored.client_response_body ?? null,
     provider_request_body: stored.provider_request_body ?? null,
     provider_response_body: stored.provider_response_body ?? null,
+    // Presence, not size: a stage counts as captured when a body was kept for
+    // it. `response_body` is the legacy alias of the client response, so it
+    // folds into that stage — it never names a panel of its own.
+    stages:
+      (stored.request_body != null ? 1 : 0) |
+      (stored.provider_request_body != null ? 2 : 0) |
+      (stored.provider_response_body != null ? 4 : 0) |
+      (stored.client_response_body != null || stored.response_body != null ? 8 : 0),
     signals: payloadSignals(kept),
     _serialized: serialized,
   };
@@ -305,6 +320,11 @@ export class TelemetryPayloadCapture {
       length: reference.length,
       checksum: reference.checksum,
       version: reference.version,
+      // Presence travels with the row so the Usage list can read it without
+      // inflating the frame. Built by `buildPayloadRecord`, which always sets
+      // it; the guard keeps the insert honest if a caller supplies a record
+      // from before the field existed.
+      ...(Number.isInteger(record.stages) ? { stages: record.stages } : {}),
     });
   }
 

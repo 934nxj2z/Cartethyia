@@ -1203,6 +1203,17 @@ export const telemetryPayloads = pgTable(
     length: integer("length").notNull(),
     checksum: text("checksum").notNull(),
     version: integer("version").notNull(),
+    /**
+     * Which of the four payload stages were captured, as a bitmask. The Usage
+     * list shows one icon per stage; learning presence from the frame would
+     * cost one inflate per row, so the writer records it here and the list
+     * reads it off the indexed row.
+     *
+     * Bits: 1=request, 2=provider_request, 4=provider_response,
+     * 8=client_response. Nullable: NULL means the row predates this column,
+     * which renders as all icons greyed rather than inventing presence.
+     */
+    stages: integer("stages"),
   },
   (table) => [
     index("telemetry_payloads_request_id_idx").on(table.requestId),

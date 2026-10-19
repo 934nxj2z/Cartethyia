@@ -218,6 +218,15 @@ export interface UsageRequestItem {
    * written before the column existed.
    */
   payloadCaptureState?: string;
+  /**
+   * Bitmask of the payload stages captured for this request: 1 request,
+   * 2 provider request, 4 provider response, 8 client response. Read from the
+   * payload row so the list can mark each drawer panel without inflating a
+   * frame per row. Absent when nothing was captured for the request — the same
+   * state a pre-migration row reports, rendered as every stage uncaptured
+   * rather than as a measured zero.
+   */
+  payloadStages?: number;
 }
 export interface UsageRequestsResponse {
   items: UsageRequestItem[];
