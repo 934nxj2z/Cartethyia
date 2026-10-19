@@ -217,6 +217,9 @@
   --animate-message-in: message-in 150ms ease-out both;
   --animate-typing-bounce: typing-bounce 1.2s ease-in-out infinite;
   --animate-stream-caret: stream-caret 1.2s ease-in-out infinite;
+  /* `pulse-subtle` existed as a keyframe with no utility class, so nothing could
+     use it. The thinking pill's brain glyph pulses with it while reasoning. */
+  --animate-pulse-subtle: pulse-subtle 1.6s ease-in-out infinite;
   --leading-chat: 1.35;
   --container-bubble-narrow: 88%;
   --container-bubble-form: 70vw;

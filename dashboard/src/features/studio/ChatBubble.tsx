@@ -10,6 +10,36 @@ import { createSvgPreviewDocument } from "./svgPreview";
 
 
 
+/**
+ * Elapsed seconds since a turn's thinking started.
+ *
+ * The timer runs only while `active`, and holds its last value once the answer
+ * begins — a counter that kept climbing beside a finished "Thought" would be
+ * measuring the reader's attention, not the model. The turn's own timings
+ * (TTFT, total) belong to the completion stats, so this deliberately measures
+ * one thing: how long the reader has been waiting on reasoning.
+ */
+function useElapsedSeconds(active: boolean): number {
+  const [seconds, setSeconds] = useState(0);
+  const startedAt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      startedAt.current = null;
+      return;
+    }
+    startedAt.current = Date.now();
+    setSeconds(0);
+    const id = setInterval(() => {
+      if (startedAt.current === null) return;
+      setSeconds(Math.floor((Date.now() - startedAt.current) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  return seconds;
+}
+
 function modelName(model: string | undefined): string {
   if (model === undefined || model.length === 0) return "";
   const slash = model.lastIndexOf("/");
@@ -192,6 +222,9 @@ export function ChatBubble({
   const toolCalls = message.toolCalls ?? message.toolRounds?.flatMap((round) => round.toolCalls) ?? [];
   const live = message.pending === true && message.error !== true;
   const waiting = live && message.text.length === 0 && thinking.length === 0 && message.mediaPending === undefined;
+  // The reasoning phase: still arriving and no answer text yet.
+  const reasoning = live && thinking.length > 0 && message.text.length === 0;
+  const elapsed = useElapsedSeconds(reasoning);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.text);
   const [copied, setCopied] = useState(false);
@@ -260,8 +293,20 @@ export function ChatBubble({
             if (!current) thinkingAtBottomRef.current = true;
             return !current;
           })}>
-            <Brain size={12} />
-            <span>{live && message.text.length === 0 ? "Thinking" : "Thought"}</span>
+            <Brain size={12} className={reasoning ? "animate-pulse-subtle motion-reduce:animate-none" : undefined} />
+            {reasoning ? (
+              <span className="inline-flex items-baseline gap-1.5">
+                <span>Thinking</span>
+                <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+                  <span className="h-1 w-1 rounded-full bg-current animate-typing-bounce motion-reduce:animate-none" />
+                  <span className="h-1 w-1 rounded-full bg-current animate-typing-bounce motion-reduce:animate-none [animation-delay:0.15s]" />
+                  <span className="h-1 w-1 rounded-full bg-current animate-typing-bounce motion-reduce:animate-none [animation-delay:0.3s]" />
+                </span>
+                <span className="tabular-nums text-text-tertiary">{elapsed}s</span>
+              </span>
+            ) : (
+              <span>Thought</span>
+            )}
             <ChevronDown size={12} data-open={thinkingOpen ? "true" : "false"} />
           </button>
           {thinkingOpen ? (
