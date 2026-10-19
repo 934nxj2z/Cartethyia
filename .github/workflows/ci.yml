@@ -3,6 +3,14 @@
 # Runs the repo's own runners:
 # - backend job: typecheck.
 # - dashboard job: dashboard:typecheck.
+# - migrations job: the Drizzle schema and the committed SQL agree.
+#
+# The migrations job needs a real PostgreSQL server because the check builds two
+# throwaway databases -- one from the committed SQL, one from the DDL Drizzle
+# derives from schema.ts -- and diffs their catalogs. `drizzle-kit check` cannot
+# replace it: it compares against `migrations/**/meta/` snapshots, which this
+# project never generates because the migrations are hand-written, so it answers
+# "Everything's fine" for a schema change that has no migration at all.
 
 name: ci
 
@@ -24,6 +32,38 @@ jobs:
           bun-version: latest
       - run: bun install --linker isolated --frozen-lockfile
       - run: bun run typecheck
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cartethyia_drift
+          POSTGRES_PASSWORD: cartethyia_drift
+          POSTGRES_DB: cartethyia_drift
+        ports:
+          - 5432:5432
+        # Wait for the server to accept connections, not just for the container
+        # to start: `drizzle-kit`/`pg` race the socket otherwise.
+        options: >-
+          --health-cmd "pg_isready -U cartethyia_drift"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --linker isolated --frozen-lockfile
+      - run: bun run check:migrations
+        env:
+          # The check creates and drops its own scratch databases, so this
+          # connection only needs CREATEDB -- which the default superuser role
+          # has.
+          CARTETHYIA_DRIFT_DATABASE_URL: postgres://cartethyia_drift:cartethyia_drift@127.0.0.1:5432/cartethyia_drift
 
   dashboard:
     runs-on: ubuntu-latest

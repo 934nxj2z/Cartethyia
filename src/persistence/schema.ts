@@ -1,5 +1,5 @@
 /** Canonical Drizzle schema: every persistence table, enum, index, and shared type. */
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
   bigint, boolean, check, customType, index, integer, jsonb, numeric, pgEnum, pgTable,
   primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn,
@@ -487,7 +487,16 @@ export const healthEvents = pgTable(
   },
   (table) => [
     index("health_events_account_id_created_at_idx").on(table.accountId, table.createdAt),
-    index("health_events_account_model_created_idx").on(table.accountId, table.modelId, table.createdAt),
+    // Descending `created_at` is deliberate: health history is always read
+    // newest-first. The SQLite baseline drops the direction (see
+    // `scripts/generate/sqlite-ddl.ts` — SQLite scans an index either way),
+    // so this is a Postgres-only access-path choice, not a cross-backend
+    // disagreement.
+    index("health_events_account_model_created_idx").on(
+      table.accountId,
+      table.modelId,
+      desc(table.createdAt),
+    ),
     index("health_events_network_pool_id_created_at_idx").on(table.networkPoolId, table.createdAt),
     check(
       "health_events_entity_reference_check",
@@ -737,6 +746,21 @@ export const apiKeys = pgTable(
   },
   (table) => [
     uniqueIndex("api_keys_key_hash_idx").on(table.keyHash),
+    /**
+     * One *live* default key per tenant, enforced by the database.
+     *
+     * The baseline SQL has always created this; the schema never declared it,
+     * so the two descriptions disagreed and nothing noticed. It is the only
+     * database-level guarantee behind `isDefault`, and
+     * `test/persistence/sqlite-baseline.test.ts` pins it by name — so the
+     * schema was the incomplete side, not the migration.
+     *
+     * Partial on `revoked_at IS NULL` so a tenant can rotate its default key
+     * without the old, revoked row blocking the new one.
+     */
+    uniqueIndex("api_keys_one_default_per_tenant_uidx")
+      .on(table.tenantId)
+      .where(sql`${table.isDefault} = true AND ${table.revokedAt} IS NULL`),
     index("api_keys_tenant_id_idx").on(table.tenantId),
     index("api_keys_enabled_tenant_idx").on(table.tenantId).where(sql`${table.enabled} = true`),
     index("api_keys_parent_key_id_idx").on(table.parentKeyId),
