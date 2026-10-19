@@ -272,7 +272,7 @@ export class PrometheusRegistry {
   readonly cartethyia_ip_abuse_keys: GaugeMetric;
   readonly cartethyia_quota_cache_entries: GaugeMetric;
   readonly cartethyia_model_catalog_entries: GaugeMetric;
-  readonly cartethyia_proxy_dial_dns_fallback_total: CounterMetric;
+  readonly cartethyia_proxy_dial_proxy_resolved_total: CounterMetric;
   readonly proxy_provider_adapter_load_ms: HistogramMetric;
   readonly pool_cooldown_record_failed: CounterMetric;
   readonly quota_cache_invalidate_failed: CounterMetric;
@@ -353,9 +353,9 @@ export class PrometheusRegistry {
       "cartethyia_model_catalog_entries",
       "Entries in the per-provider model catalog cache (at the cap means eviction churn)",
     );
-    this.cartethyia_proxy_dial_dns_fallback_total = this.counter(
-      "cartethyia_proxy_dial_dns_fallback_total",
-      "Pool/relay-bound dials whose local DNS resolution failed and were downgraded to proxy-resolved egress",
+    this.cartethyia_proxy_dial_proxy_resolved_total = this.counter(
+      "cartethyia_proxy_dial_proxy_resolved_total",
+      "Pool/relay-bound dials whose target is resolved by the proxy or relay rather than by the local resolver, so local DNS for the target is advisory only",
     );
     this.proxy_provider_adapter_load_ms = this.histogram(
       "proxy_provider_adapter_load_ms",

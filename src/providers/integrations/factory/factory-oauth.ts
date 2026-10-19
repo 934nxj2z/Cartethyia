@@ -29,6 +29,7 @@ import type {
 } from "../../authentication/oauth-flow-store";
 import {
   devicePollBackoff,
+  decodeJwtPayload,
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
@@ -71,19 +72,14 @@ export type { FactoryDroidEnvelope } from "../../../security/credential-codec";
  * Repeating it on every refresh would add a JWKS fetch to the dispatch path for
  * no additional guarantee: the signature cannot change without the payload
  * changing, and the payload is what this reads.
+ *
+ * Delegates to the shared decoder rather than hand-rolling a base64url pass:
+ * `atob` decodes to a Latin-1 string, so a claim carrying multi-byte UTF-8
+ * came back as mojibake. `Buffer.from(segment, "base64url")` round-trips the
+ * original bytes.
  */
 function jwtClaims(token: string): Record<string, unknown> | undefined {
-  const segments = token.split(".");
-  const payload = segments[1];
-  if (segments.length < 2 || payload === undefined || payload.length === 0) return undefined;
-  try {
-    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
-    const parsed: unknown = JSON.parse(atob(padded));
-    return record(parsed);
-  } catch {
-    return undefined;
-  }
+  return decodeJwtPayload(token);
 }
 
 /** Expiry from the token's own `exp` claim, or the fallback when absent. */
