@@ -53,16 +53,20 @@ Supporting references, independent of shape:
 | Egress and DNS — **read this before blaming a payload** | [`references/egress-and-dns.md`](references/egress-and-dns.md) |
 | Host and runtime gotchas | [`references/gotchas.md`](references/gotchas.md) |
 | Proving a deployment, enrolling accounts | [`references/verification.md`](references/verification.md) |
+| One-shot install script | [`references/install-script.md`](references/install-script.md) |
 
 ## Order of work
 
 1. Identify the topology (Step 1).
-2. [`shared-provisioning.md`](references/shared-provisioning.md) — packages through
-   the systemd unit. Both bare-metal shapes share this.
-3. The shape reference — TLS ownership is the only real difference.
-4. [`egress-and-dns.md`](references/egress-and-dns.md) — before any upstream
+2. Prefer [`scripts/install/vps.sh`](../../../scripts/install/vps.sh) — it does
+   steps 3–5 and is idempotent. Read the manual references when it fails, or
+   when you need to change something it does not cover.
+3. [`shared-provisioning.md`](references/shared-provisioning.md) — what the
+   script does, step by step.
+4. The shape reference — TLS ownership is the only real difference.
+5. [`egress-and-dns.md`](references/egress-and-dns.md) — before any upstream
    dispatch.
-5. [`verification.md`](references/verification.md) — prove it with a real request.
+6. [`verification.md`](references/verification.md) — prove it with a real request.
 
 ## Non-negotiables
 

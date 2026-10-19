@@ -1,23 +1,20 @@
 /**
  * Wires Elysia's TypeBox bridge statically, for a source-run process.
  *
- * Elysia's compiled-route path reaches TypeBox through
- * `import.meta.require("typebox/value")`. That works when `NODE_ENV` is not
- * `production`, because the validator defers compilation and never takes the
- * synchronous-loader branch. Under `NODE_ENV=production` it compiles eagerly,
- * the lazy require resolves to a partial namespace, and the process dies at
- * the first route with:
+ * Elysia reaches TypeBox through a lazy `require("typebox/schema")` that
+ * resolves to a partial namespace outside a bundler. The bridge supplies all
+ * five namespaces explicitly so the lookup never has to happen.
  *
- *   TypeError: undefined is not an object (evaluating 'this.tb.buildResult.external')
+ * This is necessary but **not sufficient** for `NODE_ENV=production`: it does
+ * not stop the eager validator branch from reading
+ * `this.tb.buildResult.external`, which is still absent on a source run. That
+ * half is owned by `resolveElysiaPrecompile()`, which turns precompilation off
+ * for a source run. Keep both — wiring the bridge without the precompile guard
+ * still crashes, and the guard without the bridge leaves the lazy require in
+ * place for anything else that needs it.
  *
- * The bundled binary does not hit this because `scripts/binary/aot.ts` patches
- * Elysia's `SchemaCompile(this.schema)` call and bundles the namespaces
- * statically. A server running `bun run src/main.ts` has neither, so it needs
- * the same wiring done explicitly — which is what `setupTypebox` is for.
- *
- * Verified: without this, `NODE_ENV=production` fails at boot; with it, the
- * gateway serves 200 on /health. Keep this import first in `main.ts` so it runs
- * before any module builds a route.
+ * Keep this import first in `main.ts` so it runs before any module builds a
+ * route.
  */
 import { setupTypebox } from "elysia";
 import * as typeboxType from "typebox";

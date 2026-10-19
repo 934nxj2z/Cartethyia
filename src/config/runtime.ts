@@ -51,10 +51,26 @@ export function resolveDrainToken(): string | undefined {
 }
 
 /**
- * Whether Elysia precompiles route handlers at startup (AOT). On in production,
- * off in development, where just-in-time compilation keeps `--hot` reloads
- * fast. The standalone `bun run build:aot` artifact is unaffected.
+ * Whether Elysia precompiles route handlers at startup (AOT).
+ *
+ * Precompilation takes the eager validator branch, which calls TypeBox's
+ * `SchemaCompile(schema)` and then reads `.buildResult.external` off the
+ * result. In a source-run process that field is absent — the lazy
+ * `require("typebox/schema")` resolves to a namespace that does not carry it —
+ * and the process dies at the first schema-bearing route with
+ * `undefined is not an object (evaluating 'this.tb.buildResult.external')`.
+ * `scripts/binary/aot.ts` avoids this by rewriting the call site and bundling
+ * the namespaces statically, so only the built artifact can actually take the
+ * eager path.
+ *
+ * So: precompilation is on for production *builds*, and off for a source run
+ * even when `NODE_ENV=production`. A deployment that runs
+ * `bun run src/main.ts` must not be pushed onto the eager branch.
+ *
+ * `CARTETHYIA_SOURCE_RUN` marks a source run explicitly. It is set by
+ * `scripts/deploy/*.sh`, which are the only supported way to run from source.
  */
 export function resolveElysiaPrecompile(): boolean {
+  if (process.env.CARTETHYIA_SOURCE_RUN === "1") return false;
   return process.env.NODE_ENV === "production";
 }

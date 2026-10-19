@@ -21,9 +21,13 @@ import {
   Image as ImageIcon,
   LogIn,
   Maximize2,
+  MessageSquare,
+  MessagesSquare,
   Minimize2,
+  CircleDashed,
   Paperclip,
   Radio,
+  Reply,
   Route,
   Scaling,
   Server,
@@ -60,7 +64,8 @@ import {
   useUsageSummary,
 } from "../../hooks/system";
 import { requestProviderId } from "./request-provider";
-import { usageApiKeyLabel, usageClientLabel } from "./usage-labels";
+import { usageApiKeyLabel, usageClientLabel, maskClientIp } from "./usage-labels";
+import { useMaskIp } from "../../lib/privacy-mode";
 
 import { useProviderAccounts, useProviders } from "../../hooks/providers";
 import { useInFlight, type InFlightState } from "../../hooks/live";
@@ -233,6 +238,26 @@ export function surfaceFamilyLabel(surface: string | undefined): string {
       return "OpenAI Completions";
     default:
       return surface ? surface : "—";
+  }
+}
+
+/**
+ * Glyph for the protocol family in the status cell. A known wire family gets
+ * its own icon in the accent color; an unknown surface gets a greyed dashed
+ * circle — the row still needs a marker, it just must not look like a family
+ * the gateway recognises.
+ */
+export function surfaceFamilyIcon(surface: string | undefined): ReactNode {
+  switch (surface) {
+    case "chat":
+    case "completion":
+      return <MessageSquare size={11} aria-hidden="true" />;
+    case "messages":
+      return <MessagesSquare size={11} aria-hidden="true" />;
+    case "responses":
+      return <Reply size={11} aria-hidden="true" />;
+    default:
+      return <CircleDashed size={11} aria-hidden="true" />;
   }
 }
 
@@ -1461,6 +1486,9 @@ export default function Usage(): ReactNode {
     setter((prev) => toggleInSet(prev, key));
   };
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Client IPs on the request rows follow the same privacy switch as the proxy
+  // page's egress addresses.
+  const { enabled: maskIpEnabled, setEnabled: setMaskIpEnabled } = useMaskIp();
   const [hideProviderName, setHideProviderName] = useState(() => {
     try {
       return localStorage.getItem("cartethyia:usage:hide-provider") === "true";
@@ -1478,26 +1506,9 @@ export default function Usage(): ReactNode {
     });
   };
   /**
-   * Whether the model the upstream reported is shown beside the one we asked
-   * for. Off by default: it is a diagnostic, and a third line on every row
-   * would bury the two that matter.
+   * The model the upstream reported is always shown beside the one we asked
+   * for when they differ: it is evidence, not a diagnostic to hide.
    */
-  const [showReported, setShowReported] = useState(() => {
-    try {
-      return localStorage.getItem("cartethyia:usage:show-reported") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const toggleShowReported = () => {
-    setShowReported((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("cartethyia:usage:show-reported", String(next));
-      } catch {}
-      return next;
-    });
-  };
   const summaryQuery = useUsageSummary(period);
   const providersQuery = useProviders();
   const providerNames = useMemo(
@@ -1797,16 +1808,12 @@ export default function Usage(): ReactNode {
               <Button
                 variant="ghost"
                 size="sm"
-                icon={<Cog size={13} />}
-                onClick={toggleShowReported}
-                title={
-                  showReported
-                    ? "Hide the model each upstream reported"
-                    : "Show the model each upstream reported"
-                }
-                className={`text-badge h-13 px-4 py-0 ${showReported ? "text-accent" : "text-text-secondary"}`}
+                icon={maskIpEnabled ? <EyeOff size={13} /> : <Eye size={13} />}
+                onClick={() => setMaskIpEnabled(!maskIpEnabled)}
+                title={maskIpEnabled ? "Show client addresses" : "Hide client addresses"}
+                className="text-badge h-13 px-4 py-0 text-text-secondary"
               >
-                {showReported ? "Hide reported" : "Show reported"}
+                {maskIpEnabled ? "IP masked" : "Mask IP"}
               </Button>
               <LiveInFlightPill />
             </Inline>
@@ -1892,7 +1899,7 @@ export default function Usage(): ReactNode {
                           ? row.model.slice(row.model.indexOf("/") + 1)
                           : row.model ?? "—"}
                       </div>
-                      {showReported && row.reportedModel ? (
+                      {row.reportedModel ? (
                         // Verbatim, exactly as the upstream wrote it: no prefix
                         // stripping, no comparison. A provider answering with a
                         // different model than the one asked for is the finding,
@@ -1916,6 +1923,17 @@ export default function Usage(): ReactNode {
                       <div className="truncate font-mono text-badge text-text-tertiary mt-px" title={usageClientLabel(row)}>
                         {usageClientLabel(row)}
                       </div>
+                      {/* The caller's address, one line under the client identity.
+                          Masked by the same switch as the proxy page's egress
+                          IPs, so one privacy decision covers both surfaces. */}
+                      <div
+                        className="truncate font-mono text-badge text-text-tertiary mt-px"
+                        title={maskIpEnabled && row.clientIp ? "Client IP masked" : row.clientIp ?? "—"}
+                      >
+                        {row.clientIp
+                          ? (maskIpEnabled ? maskClientIp(row.clientIp) : row.clientIp)
+                          : "—"}
+                      </div>
                     </td>
                     <td className="whitespace-nowrap text-badge">
                       <div>
@@ -1931,8 +1949,20 @@ export default function Usage(): ReactNode {
                           httpStatus={row.httpStatus}
                         />
                       </div>
-                      <div className="truncate font-mono text-badge text-text-tertiary mt-px max-w-110" title={surfaceFamilyLabel(row.surface)}>
-                        {surfaceFamilyLabel(row.surface)}
+                      <div
+                        className="truncate font-mono text-badge mt-px max-w-110 inline-flex items-center gap-1.5"
+                        title={surfaceFamilyLabel(row.surface)}
+                      >
+                        <span
+                          className={
+                            row.surface && ["chat", "completion", "messages", "responses"].includes(row.surface)
+                              ? "text-accent shrink-0"
+                              : "text-text-tertiary shrink-0 opacity-60"
+                          }
+                        >
+                          {surfaceFamilyIcon(row.surface)}
+                        </span>
+                        <span className="truncate">{surfaceFamilyLabel(row.surface)}</span>
                       </div>
                     </td>
                     <td className="font-mono text-badge whitespace-nowrap text-right tabular-nums">

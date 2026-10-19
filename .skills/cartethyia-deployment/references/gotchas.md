@@ -2,26 +2,34 @@
 
 Verified on real hosts. Each of these cost time once; none should cost it twice.
 
-## `NODE_ENV=production` breaks Elysia's route compiler
+## `NODE_ENV=production` once broke a source run — now guarded
 
-With an unbundled, source-run service (`bun run src/main.ts`) Elysia takes an
-eager TypeBox branch and dies at the first schema-bearing route with:
+A source run (`bun run src/main.ts`) used to die at boot with:
 
 ```
 undefined is not an object (evaluating 'this.tb.buildResult.external')
 ```
 
-A/B-verified: `NODE_ENV=production` → boot fails; variable unset → serves 200.
-The bundled binary is unaffected because `scripts/binary/aot.ts` patches the
-`SchemaCompile(...)` call at build time.
+The chain, confirmed by A/B on elysia 2.0.0-beta.16 + typebox 1.3.27:
 
-**Verified NOT to fix it:** calling `setupTypebox({ typebox: {...} })` before any
-route module. Tested on elysia 2.0.0-beta.16 + typebox 1.3.27 — the crash
-persisted. Do not reach for it as the cure.
+1. `NODE_ENV=production` made `resolveElysiaPrecompile()` return true.
+2. `precompile: true` sets `eager` on the route validator.
+3. The eager branch calls TypeBox's `SchemaCompile(schema)` and reads
+   `.buildResult.external`, which **does not exist** outside a bundler.
 
-What works today is simply **leaving `NODE_ENV` unset**. Check what actually
-depends on it before setting it: pino's pretty transport only attaches on a TTY
-anyway, so unsetting costs little.
+Only the built artifact can take that branch: `scripts/binary/aot.ts` rewrites
+the call site and bundles the namespaces statically.
+
+**`setupTypebox(...)` does not fix it.** It wires the namespaces but does not
+stop the eager branch from reading the missing field — tested, crash persisted.
+`src/boot/elysia-typebox-bridge.ts` still exists and is still needed, but it is
+necessary and not sufficient.
+
+**Current fix:** `resolveElysiaPrecompile()` returns false when
+`CARTETHYIA_SOURCE_RUN=1`, so a source run never takes the eager branch. Set
+that variable whenever you start from source with `NODE_ENV=production`.
+[`scripts/install/vps.sh`](../references/install-script.md) sets it, and also
+builds the AOT binary so production keeps its precompilation where it is safe.
 
 ## `ProtectHome=true` blocks `/root/.bun/bin/bun`
 

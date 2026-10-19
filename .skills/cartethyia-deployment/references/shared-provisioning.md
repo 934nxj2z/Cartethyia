@@ -75,9 +75,10 @@ Notes:
 
 - `CARTETHYIA_PUBLIC_ORIGIN` must carry the same scheme the browser uses. An
   `http://` origin behind an HTTPS front door makes OAuth redirect URIs wrong.
-- Do **not** set `NODE_ENV=production` on a source-run service — see
-  [`gotchas.md`](gotchas.md). The logger already emits JSON whenever stdout is
-  not a TTY, so nothing is lost by leaving it unset.
+- Do **not** set `NODE_ENV=production` on a source-run service unless you also
+  set `CARTETHYIA_SOURCE_RUN=1` — see [`gotchas.md`](gotchas.md). The bundled
+  binary is unaffected. The logger already emits JSON whenever stdout is not a
+  TTY, so leaving `NODE_ENV` unset costs little.
 - `CARTETHYIA_DB_MODE=full` reads `DATABASE_URL`; migrations run at boot from
   `migrations/full-postgres/`.
 - A duplicated `PORT` makes the last one win silently. After editing,
