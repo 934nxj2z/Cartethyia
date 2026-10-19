@@ -134,25 +134,38 @@ const UNKNOWN_COST: ModelsDevModelCost = {
 };
 
 /**
- * Decoded once, at module load.
+ * The packed catalog, decompressed on first use and memoized.
  *
  * Brotli + base64, not `JSON.parse`: the blob is columnar, so this allocates
  * one buffer and takes typed-array views over it rather than materialising
  * 8900 objects. `CATALOG_BLOB_BYTES` is the decompressed length, checked here
- * so a consumer paired with a half-regenerated blob fails at boot rather than
- * resolving a truncated catalog.
+ * so a consumer paired with a half-regenerated blob fails on first access
+ * rather than resolving a truncated catalog.
+ *
+ * The decode is lazy on purpose. It is ~105 KB of base64 that expands to a
+ * much larger buffer, and it used to run at module load — so every process,
+ * including the ones that never resolve a model (a CLI subcommand, a migration
+ * run, a test that only touches the console), paid it on the boot path.
+ * Deferring it moves that cost to the first catalog lookup and pays it once.
  */
-const CATALOG_BYTES = brotliDecompressSync(Buffer.from(CATALOG_BLOB_BROTLI_BASE64, "base64"));
-if (CATALOG_BYTES.byteLength !== CATALOG_BLOB_BYTES) {
-  throw new Error(
-    `The packed model catalog is ${CATALOG_BYTES.byteLength} B, expected ` +
-      `${CATALOG_BLOB_BYTES} B — regenerate it.`,
-  );
-}
+let catalogCache: PackedCatalog | undefined;
 
-// `PackedCatalog` copies into a 4-byte-aligned buffer of its own, so the
-// decompressed buffer is dropped here rather than held beside the copy.
-const CATALOG = new PackedCatalog(CATALOG_BYTES);
+function catalog(): PackedCatalog {
+  const cached = catalogCache;
+  if (cached !== undefined) return cached;
+  const bytes = brotliDecompressSync(Buffer.from(CATALOG_BLOB_BROTLI_BASE64, "base64"));
+  if (bytes.byteLength !== CATALOG_BLOB_BYTES) {
+    throw new Error(
+      `The packed model catalog is ${bytes.byteLength} B, expected ` +
+        `${CATALOG_BLOB_BYTES} B — regenerate it.`,
+    );
+  }
+  // `PackedCatalog` copies into a 4-byte-aligned buffer of its own, so the
+  // decompressed buffer is dropped here rather than held beside the copy.
+  const packed = new PackedCatalog(bytes);
+  catalogCache = packed;
+  return packed;
+}
 
 /**
  * Resolves model metadata and pricing exclusively from the packed base catalog
@@ -160,9 +173,13 @@ const CATALOG = new PackedCatalog(CATALOG_BYTES);
  */
 export class ModelsDevCatalog {
   /** When the generator fetched the upstream catalogs. */
-  readonly fetchedAt: string = CATALOG.fetchedAt;
+  get fetchedAt(): string {
+    return catalog().fetchedAt;
+  }
   /** Every provider key the catalog files. */
-  readonly providers: readonly string[] = CATALOG.providers;
+  get providers(): readonly string[] {
+    return catalog().providers;
+  }
 
   /**
    * Metadata for an exact `(providerIndex, idLower)` pair, or `undefined`.
@@ -172,19 +189,19 @@ export class ModelsDevCatalog {
    * matches exactly keeps winning.
    */
   private exactMetadata(providerLower: string, idLower: Uint8Array): ModelsDevModelMetadata | undefined {
-    const direct = CATALOG.exactIndex(CATALOG.providerIndex(providerLower), idLower);
-    if (direct >= 0) return CATALOG.metadataAt(direct);
+    const direct = catalog().exactIndex(catalog().providerIndex(providerLower), idLower);
+    if (direct >= 0) return catalog().metadataAt(direct);
     const mapped = CATALOG_PROVIDER_IDS[providerLower];
     if (mapped === undefined) return undefined;
-    return CATALOG.metadataAt(CATALOG.exactIndex(CATALOG.providerIndex(mapped), idLower));
+    return catalog().metadataAt(catalog().exactIndex(catalog().providerIndex(mapped), idLower));
   }
 
   /** Metadata rows whose *bare* id equals `bare`, in catalog order. */
   private metadataForBare(bare: Uint8Array): ModelsDevModelMetadata[] {
-    const [start, end] = CATALOG.bareRange(bare);
+    const [start, end] = catalog().bareRange(bare);
     const out: ModelsDevModelMetadata[] = [];
     for (let position = start; position < end; position += 1) {
-      const metadata = CATALOG.metadataAt(CATALOG.bareOrderAt(position));
+      const metadata = catalog().metadataAt(catalog().bareOrderAt(position));
       if (metadata !== undefined) out.push(metadata);
     }
     return out;
@@ -327,8 +344,8 @@ export class ModelsDevCatalog {
       return own;
     }
     const idLower = lowerAscii(modelId);
-    const row = CATALOG.globalCostRow(bareBytes(idLower));
-    const global = row >= 0 ? CATALOG.rowCost(row) : undefined;
+    const row = catalog().globalCostRow(bareBytes(idLower));
+    const global = row >= 0 ? catalog().rowCost(row) : undefined;
     if (global !== undefined && global.pricing_model !== "unknown") return global;
     return own ?? global ?? UNKNOWN_COST;
   }
