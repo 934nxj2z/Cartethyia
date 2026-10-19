@@ -156,7 +156,7 @@ every skill for every task. The committed skill source lives under `.skills/`.
 | Account health, cooldowns, retries, leases, or routing | `.skills/cartethyia-health-routing/SKILL.md` |
 | Console API domain or contract | `.skills/cartethyia-console-api/SKILL.md` |
 | Dashboard, React, layout, or browser behavior | `.skills/cartethyia-dashboard/SKILL.md` |
-| Deploying to a server, especially a NAT VPS behind the provider's Caddy | `.skills/cartethyia-nat-vps-deploy/SKILL.md` |
+| Deploying to a server — regular VPS, NAT VPS, or Docker | `.skills/cartethyia-deployment/SKILL.md` |
 
 Use the task-relevant skill's procedure and references where they help. Skills
 may define stricter domain-specific requirements than this general guide, such
