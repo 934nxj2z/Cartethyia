@@ -177,7 +177,7 @@ export const VERSION_SOURCES = {
   },
   qoder: {
     key: "qoder",
-    fallback: "1.1.73",
+    fallback: "1.1.74",
     sources: [
       {
         url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest",
@@ -257,7 +257,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCli: {
     key: "workbuddy",
-    fallback: "2.168.2",
+    fallback: "2.169.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -284,7 +284,7 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.168.2",
+    fallback: "2.169.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -536,7 +536,7 @@ export const getCodeBuddyCnVersion = accessor("codebuddyCn").get;
  * The CodeBuddy User-Agent.
  *
  * Both identities share the CLI *package* version, which is why `codebuddy`
- * (the npm `@tencent-ai/codebuddy-code` pin, `2.168.2` — the value both
+ * (the npm `@tencent-ai/codebuddy-code` pin, `2.169.0` — the value both
  * references use for CLI) is the version for each. `codebuddyCn` is the CN
  * *desktop* build (`4.12.2.…`), and using it here produced
  * `CLI/4.12.2.41207131 CodeBuddy/4.12.2.41207131` — a CLI claiming a desktop
