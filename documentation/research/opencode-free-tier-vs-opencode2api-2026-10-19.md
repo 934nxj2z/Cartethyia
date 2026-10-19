@@ -56,7 +56,8 @@ OpenSSL's 52-cipher hello — the one fingerprint we cannot fix by adding a
 header, and the one the reference gateway judged worth an entire hand-written
 transport to get right.
 
-That is the finding. Everything else below is smaller.
+That is the finding. Everything else below is smaller. §3 has the way through —
+it is blocked on a measurement, not on what Bun can do.
 
 ---
 
@@ -200,40 +201,66 @@ there for reasons that are not about TLS:
 That is the honest trade — not "Bun can't do TLS", but "our Node path carries
 SSRF + proxy behaviour that Bun's fetch does not expose".
 
-### Options, cheapest first
-
-1. **Route only free-tier opencode dispatch through `fetch()`.** Narrowest
-   change: the one lane where the ClientHello is load-bearing. SSRF still needs
-   solving — pre-resolve the host and pin it, or accept `fetch` for a
-   known-static host (`opencode.ai`) whose address we validate once.
-2. **Keep Node TLS but match what we can.** Header order and `Accept` are
-   fixable without touching TLS. Does nothing for the hello.
-3. **Do nothing.** The gate accepts us today.
-
-### Measured, after writing this: option 1 does not work
-
-I tried it and backed it out. Three measurements killed it:
+### What blocks it, measured
 
 1. **Bun `fetch` cannot pin the connect address.** It always resolves the URL
    hostname itself: `fetch("https://nonexistent-host-zzz.invalid/")` fails with
    `getaddrinfo ENOTFOUND` even with `tls.serverName` set. So the SSRF guard —
    resolve, validate, then connect to the *validated* address — has no hook.
-   (Node's `lookup` option is exactly the hook; Bun has no equivalent.)
+   (Node's `lookup` option is exactly that hook; Bun has no equivalent.)
 2. **Bun `fetch` does not speak SOCKS5.** `proxy: "socks5://…"` returns
-   `UnsupportedProxyProtocol`; only HTTP CONNECT is accepted. Our pools are
+   `UnsupportedProxyProtocol`. Only HTTP CONNECT is accepted, and our pools are
    `SocksProxyAgent` (`agent.ts:428`).
-3. **A pool is what makes the free tier reachable at all.** `opencode` is the
-   only `ipScopedRateLimit` provider, and `.skills/cartethyia-trace-replay`
-   states it plainly: a datacenter IP is refused, and "cannot be fixed in
-   `provider.ts` — it needs an egress proxy". Routing through Bun would trade
-   a correct ClientHello for an egress the gate blocks *before* TLS matters.
+3. **A pool is what makes the free tier reachable.** `opencode` is the only
+   `ipScopedRateLimit` provider, and `.skills/cartethyia-trace-replay` says a
+   datacenter IP is refused and "it needs an egress proxy".
+4. **Setting Node's `ciphers` to Bun's list makes it worse.** OpenSSL kept 3 of
+   the 17 (the rest are unavailable to it) and rejected `X25519MLKEM768` in
+   `ecdhCurve`. Further from Bun than the default, not closer.
 
-A fourth attempt — setting Node's `ciphers` to Bun's list — made it worse, not
-better: OpenSSL kept only 3 of the 17 (the rest are unavailable to it) and
-rejected `X25519MLKEM768` in `ecdhCurve`. The result was further from Bun than
-the default.
+### But #2 is a schema problem, not a wall — measured
 
-So GAP1 is closed as **won't do, with a reason**, not silently skipped.
+**Bun `fetch` through an HTTP CONNECT proxy still sends the full Bun hello.** I
+measured it through a real CONNECT tunnel:
+
+```
+Bun fetch DIRECT            -> 17 ciphers, 13 extensions, SNI opencode.ai
+Bun fetch via CONNECT proxy -> 17 ciphers, 13 extensions, SNI opencode.ai
+```
+
+Identical. Bun tunnels first and does TLS itself against the real target, so
+the hello is never the proxy's. That kills objection #2 **if** the SOCKS5
+egress can be reached through a CONNECT front door — and it can: I built a
+CONNECT listener that hands the socket to a `SocksProxyAgent` and the origin
+was reached (`origin reached: true`). The chain is
+`Bun fetch → CONNECT bridge → SOCKS5 → upstream`.
+
+So the real obstacle is only #1 (SSRF pinning) plus the cost of a bridge.
+
+### Three ways through, cheapest first
+
+| # | Approach | Keeps SSRF? | Keeps SOCKS5 egress? | Cost |
+|---|---|---|---|---|
+| A | CONNECT bridge in-process for `opencode` free dispatch | Yes — bridge owns the dial, `SocksProxyAgent` keeps its `lookup` | Yes | ~1 new module + wiring |
+| B | Ask for a `socks5`/`lookup` option in Bun | Yes | Yes | External; upstream timeline |
+| C | Node TLS with a custom ClientHello via native addon | Yes | Yes | New native dep, per-platform build |
+
+**A is the one worth doing.** It is the only option that is ours to ship, and
+it needs no new dependency: `node:http` already provides the CONNECT server and
+`socks-proxy-agent` is already a dependency.
+
+Two things A must get right, and they are the whole risk:
+
+- **Only `opencode` free dispatch uses it.** Every other provider keeps the
+  Node path exactly as it is. The blast radius is one lane.
+- **The bridge still validates.** SOCKS5 pools already apply SSRF through the
+  socket `lookup` (`agent.ts:436`), and the *target* is resolved by the proxy,
+  not locally — which is the same posture `outbound-fetch.ts` already accepts
+  for pool-owned dials. A adds nothing new here; it inherits it.
+
+**Not yet proven:** that the gate actually rejects a non-Bun hello from a
+*working* egress. That is still the A/B in §6, and it is worth doing before
+building A — if the gate does not check, A solves nothing.
 
 ---
 
@@ -262,15 +289,16 @@ Not "keep by default" — each of these is ours being *better*:
 
 ## 5. Gaps (real, ranked)
 
-1. **TLS ClientHello** (§2.1) — we send OpenSSL's, not Bun's. Unknown whether
-   the gate checks it *today*; the reference gateway bet ~900 lines that it
-   matters.
-2. **No Go-plan quota collector** (§2.7) — `GET /v1/usage` is a documented,
-   simple endpoint and we return "not available" for `opencode-go`.
-3. **`Accept` value** (§2.2) — one-line fix, matches the real client.
-4. **Free-model blocklist is hand-kept** (§2.6) — will drift as upstream adds
-   and removes models.
-5. **No `/zen` (v1) fallback lane** (§2.5) — costs a second client shape.
+Status as of §7; three of the five are closed.
+
+1. **TLS ClientHello** (§2.1) — **open.** We send OpenSSL's, not Bun's. The
+   reference bet ~900 lines that this matters, and §3 now has a workable path
+   (CONNECT bridge); blocked only on proving the gate actually checks.
+2. **No Go-plan quota collector** (§2.7) — **closed.**
+3. **`Accept` value** (§2.2) — **closed.**
+4. **Free-model blocklist is hand-kept** (§2.6) — **closed**, now a knob.
+5. **No `/zen` (v1) fallback lane** (§2.5) — **open, deliberately.** It costs a
+   second client identity and our own records show that lane answering 429.
 
 ---
 
@@ -279,29 +307,43 @@ Not "keep by default" — each of these is ours being *better*:
 - ClientHello: raw TCP server + `tls.connect` (Node) and `fetch` (Bun), parsing
   ciphers/extensions/curves/ALPN out of the handshake bytes. Both probes run
   locally, deleted after use.
+- **Through a CONNECT tunnel** (the measurement that reopened §3): a real
+  `node:http` CONNECT listener in front of the origin, with Bun fetching
+  through it. Result `17 ciphers / 13 extensions / SNI opencode.ai` — identical
+  to the direct path, so Bun tunnels first and does TLS itself.
+- **CONNECT→SOCKS5 reachability**: a CONNECT listener handing the socket to a
+  `SocksProxyAgent`; the origin was reached (`origin reached: true`).
+- **Negative results, also measured**: `proxy: "socks5://…"` →
+  `UnsupportedProxyProtocol`; `fetch` to an unresolvable host → `getaddrinfo
+  ENOTFOUND` even with `tls.serverName`; Node `ciphers` set to Bun's 17 →
+  OpenSSL kept 3, `ecdhCurve` rejected `X25519MLKEM768`.
 - Reference claims: read `bun_dial.go`, `bun.go`, `upstream.go`,
   `identity/request.go`, `catalog.go`, `pricing.go`, `config.go`, `pool.go`,
   `rotation/state.go`, `model_quotas.go` and quoted `file:line`.
 - Ours: read `provider.ts`, `fingerprint.ts`, `tool-definitions.ts`,
-  `outbound-fetch.ts`, `default-registry.ts`.
+  `outbound-fetch.ts`, `default-registry.ts`, `agent.ts`.
 - Seven parallel research agents; three read the wrong repo (ours instead of the
   Go one) and were re-run with the absolute path. Their output was used only
   where I confirmed it against source myself.
 
-**Not verified:** whether `opencode.ai` currently rejects a non-Bun ClientHello.
-That needs a live A/B from the same egress IP — one request via `node:https`,
-one via `fetch`, same headers. Everything in §3 depends on that answer, so it
-should be measured before anything is changed.
+**Still not verified, and it is the one that matters:** whether `opencode.ai`
+rejects a non-Bun hello from a *working* egress. Everything in §3 hinges on it.
+The A/B: from the same pool egress, one free-tier dispatch via `node:https`
+(today's path) and one via the CONNECT bridge, identical headers otherwise.
+If both answer the same, the bridge buys nothing and should not be built. If
+the Node one 403s and the bridge one does not, it is the last unclosed gap and
+worth shipping.
 
 ---
 
 ## 7. What was actually implemented (2026-10-19)
 
-Of the five gaps, three shipped and two were declined with reasons.
+Of the five gaps, three shipped, one was declined with a reason, and one —
+the TLS ClientHello — is still open with a workable path.
 
 | Gap | Outcome |
 |---|---|
-| 1 — TLS ClientHello | **Declined.** §3 — would break the egress proxy the free tier depends on. |
+| 1 — TLS ClientHello | **Open.** Not "impossible" — §3. Bun keeps its full hello through a CONNECT tunnel, so a CONNECT→SOCKS5 bridge gets both. Blocked on the A/B that proves the gate checks. |
 | 2 — Go-plan quota | **Shipped.** `opencode-go-quota.ts`, registered on `opencode-go`. |
 | 3 — `Accept` value | **Shipped.** Now `application/json, text/event-stream`. |
 | 4 — Refused-model list | **Shipped.** `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE`, `none` to trust the listing. |
