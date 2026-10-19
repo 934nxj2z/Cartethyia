@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { isNewerRelease } from "../../../src/console/updates/version-compare";
 import { resolvePackagePath } from "../../../src/config/package-paths";
 import { resolvePort } from "../../../src/config/runtime";
@@ -7,7 +10,7 @@ import { startGateway } from "../gateway/spawn";
 import { stopGateway } from "../gateway/stop";
 import { ENV_PATH, readEnvFile } from "../support/env";
 import { readInstalledVersion, readLatestPublishedVersion } from "../support/version";
-import { launchBackground, openUrl } from "../ui/background";
+import { launchBackgroundWithStatus, openUrl } from "../ui/background";
 import { chooseFromMenu, confirmByTyping, confirmStep } from "../ui/prompt";
 import { renderWordmark } from "../ui/wordmark";
 import { exportBackup, resetConsoleAccount } from "./admin";
@@ -185,20 +188,36 @@ export async function startMenu(): Promise<void> {
         return;
       },
       async () => {
-        // Start a detached `tray` process that owns the gateway from scratch,
-        // then drain this one so the new process can claim the port. This is
-        // the pattern 9router uses and it is simpler than handing a live
-        // gateway between processes: the tray is a normal first-class run, not
-        // an adopted orphan, so Exit and update behave the same whether the
-        // gateway was started here or from `carte --tray`.
-        console.log("Starting the tray in the background…");
-        launchBackground(["run", resolvePackagePath("scripts", "cli", "main.ts"), "tray"]);
+        // Drain first, then start the tray.
+        //
+        // The tray's own startup probe refuses to boot when the port is busy,
+        // so starting it before this process has let go made it fail with
+        // "already running on port" every time — while the menu still printed
+        // that everything was running, because a detached child with no stdio
+        // cannot report anything back. Releasing the port first is the fix, and
+        // waiting on the child's signal is what stops the menu from claiming
+        // success for a child that died.
+        console.log("Stopping the gateway to free the port…");
         running = false;
         stopping = true;
         handedOff = true;
         await shutDown();
-        console.log(`Cartethyia is running in the background at ${dashboardUrl}.`);
-        console.log("The tray icon owns it; use Exit there to stop it.");
+        console.log("Starting the tray in the background…");
+        const signalPath = join(tmpdir(), `cartethyia-tray-menu-${process.pid}-${randomUUID()}.json`);
+        try {
+          const url = await launchBackgroundWithStatus(
+            ["run", resolvePackagePath("scripts", "cli", "main.ts"), "tray"],
+            { signalPath },
+          );
+          console.log(`Cartethyia is running in the background at ${url || dashboardUrl}.`);
+          console.log("The tray icon owns it; use Exit there to stop it.");
+        } catch (error) {
+          handedOff = false;
+          console.error(
+            `Could not hand off to the tray: ${error instanceof Error ? error.message : "unknown error"}`,
+          );
+          console.error("Cartethyia is stopped. Start it again from this menu.");
+        }
       },
       async () => {
         running = false;
