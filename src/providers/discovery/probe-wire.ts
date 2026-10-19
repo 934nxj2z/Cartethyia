@@ -172,17 +172,41 @@ export function staticEndpointForWire(
   return catalog.get(providerId)?.find((def) => def.wireFamily === wireFamily)?.endpointPath;
 }
 
+/**
+ * Compiled-pattern memo.
+ *
+ * `matchModelWireFamily` runs per model on every discovery pass and on every
+ * manual registration, and it used to compile each rule's `RegExp` inside that
+ * loop — so the same handful of patterns were recompiled once per model per
+ * pass. Keyed by the pattern source, which is exactly what `new RegExp(source)`
+ * derives from.
+ *
+ * A pattern that fails to compile is not memoized; the tolerance stays at read
+ * time because an invalid pattern is rejected at write time, and a stored one
+ * must not throw during a listing.
+ */
+const compiledPatternCache = new Map<string, RegExp>();
+
+function compilePattern(pattern: string): RegExp | undefined {
+  const cached = compiledPatternCache.get(pattern);
+  if (cached !== undefined) return cached;
+  try {
+    const compiled = new RegExp(pattern);
+    compiledPatternCache.set(pattern, compiled);
+    return compiled;
+  } catch {
+    return undefined;
+  }
+}
+
 function matchModelWireFamily(
   modelId: string,
   rules: ReadonlyArray<{ pattern: string; wire_family: WireFamily }> | undefined,
 ): WireFamily | undefined {
   if (!rules?.length) return undefined;
   for (const rule of rules) {
-    try {
-      if (new RegExp(rule.pattern).test(modelId)) return rule.wire_family as WireFamily;
-    } catch {
-      // Invalid pattern is rejected at write time; be tolerant at read time.
-    }
+    const pattern = compilePattern(rule.pattern);
+    if (pattern !== undefined && pattern.test(modelId)) return rule.wire_family as WireFamily;
   }
   return undefined;
 }

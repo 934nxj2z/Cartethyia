@@ -53,17 +53,44 @@ function installIdDirectories(): readonly string[] {
  * process so a request does not see a different identity than the one before
  * it, which is the least surprising behaviour available when persistence is
  * impossible.
+ *
+ * Both maps are bounded: the key is derived from the install-id *path*, so an
+ * unbounded map would grow with every directory an operator ever pointed
+ * `CARTETHYIA_INSTALL_ID_DIR` at. The cap matches the other per-process
+ * identity caches (`qoderMachineIds`, `MAX_SESSION_STATES` in antigravity):
+ * oldest-first eviction, which for an identity cache only costs a fresh uuid.
  */
+const MAX_IN_MEMORY_IDS = 1024;
 const inMemoryIds = new Map<string, string>();
 const warnedPaths = new Set<string>();
+
+/** Evicts oldest-first once the cap is exceeded. */
+function boundMapInsert<K, V>(map: Map<K, V>, key: K, value: V): void {
+  map.set(key, value);
+  while (map.size > MAX_IN_MEMORY_IDS) {
+    const oldest = map.keys().next();
+    if (oldest.done === true) break;
+    map.delete(oldest.value);
+  }
+}
+
+/** Evicts oldest-first once the cap is exceeded. */
+function boundSetInsert(set: Set<string>, value: string): void {
+  set.add(value);
+  while (set.size > MAX_IN_MEMORY_IDS) {
+    const oldest = set.values().next();
+    if (oldest.done === true) break;
+    set.delete(oldest.value);
+  }
+}
 
 function fallbackId(key: string, path: string, reason: unknown): string {
   const existing = inMemoryIds.get(key);
   if (existing !== undefined) return existing;
   const id = randomUUID();
-  inMemoryIds.set(key, id);
+  boundMapInsert(inMemoryIds, key, id);
   if (!warnedPaths.has(key)) {
-    warnedPaths.add(key);
+    boundSetInsert(warnedPaths, key);
     const message = reason instanceof Error ? reason.message : String(reason);
     log.warn(
       `[install-id] could not persist "${path}" (${message}); using an id that ` +
