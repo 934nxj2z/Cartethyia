@@ -251,7 +251,7 @@ describe("Trae browser authorization", () => {
     expect(calls[0]?.path).toContain("GetLoginGuidance");
   });
 
-  test("the authorize URL carries the trace id and callback", async () => {
+  test("the authorize URL carries a UUID trace id and the callback", async () => {
     const { fetchFn } = oauthStub(GUIDANCE);
     const client = new TraeOAuthClient(fetchFn, "intl");
     const prepared = await client.prepareAuthorize({
@@ -261,9 +261,37 @@ describe("Trae browser authorization", () => {
     });
     const url = new URL(client.buildAuthorizeUrl(prepared));
     expect(url.pathname).toBe("/authorization");
-    expect(url.searchParams.get("login_trace_id")).toBe("trace-abc");
+    // Upstream validates this field as a UUID; the console's flow state is
+    // base64url and is refused, so the trace id is minted separately.
+    expect(url.searchParams.get("login_trace_id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
     expect(url.searchParams.get("auth_callback_url")).toBe("http://127.0.0.1:1455/callback");
     expect(url.searchParams.get("client_id")).toBe("ono9krqynydwx5");
+  });
+
+  test("the authorize URL carries the parameters a real client sends", async () => {
+    // Every one of these was missing or wrong when the login page rejected the
+    // flow: PKCE is required to get a refresh token back, and the device fields
+    // are the fingerprint the login is correlated with.
+    const { fetchFn } = oauthStub(GUIDANCE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const prepared = await client.prepareAuthorize({
+      state: "trace-abc",
+      codeChallenge: "challenge-1",
+      redirectUri: "http://127.0.0.1:1455/callback",
+    });
+    const url = new URL(client.buildAuthorizeUrl(prepared));
+    const param = (key: string) => url.searchParams.get(key);
+    expect(param("code_challenge")).toBe("challenge-1");
+    expect(param("code_challenge_method")).toBe("S256");
+    expect(param("channel_name")).toBe("common");
+    expect(param("plugin_version")).toBe("2.3.93439");
+    expect(param("x_device_type")).toBe("windows");
+    expect(param("machine_id")).toMatch(/^[0-9a-f]{64}$/);
+    expect(param("device_id")).toMatch(/^\d{19}$/);
+    expect(param("device_id")).toBe(param("x_device_id"));
+    expect(param("machine_id")).toBe(param("x_machine_id"));
   });
 
   test("building the URL before resolving the host fails loudly", () => {

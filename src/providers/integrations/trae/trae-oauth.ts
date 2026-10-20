@@ -22,6 +22,7 @@
 // Sourced from the donor hub `Public/trae2api-hub` (`_refresh_account_request`
 // in `trae_client.py`).
 
+import { randomUUID } from "node:crypto";
 import { OAuthClient } from "../../authentication/oauth-client";
 import type { OAuthExchangeResult, OAuthImportInput } from "../../authentication/oauth-flow-store";
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
@@ -142,8 +143,20 @@ export class TraeOAuthClient extends OAuthClient {
     readonly redirectUri: string;
     readonly parameters?: Readonly<Record<string, string>>;
   }): Promise<{ readonly state: string; readonly codeChallenge: string; readonly redirectUri: string; readonly parameters?: Readonly<Record<string, string>> }> {
-    const host = await this.loginHost(request.state);
-    return { ...request, parameters: { ...(request.parameters ?? {}), loginHost: host } };
+    /**
+     * `login_trace_id` is a UUID, not the flow state.
+     *
+     * Upstream's page validates it as one — a base64url state (what the console
+     * generates) is not accepted. The flow state still has to reach the
+     * callback to match it to a pending login, so it rides along in
+     * `parameters` and is appended to the redirect as a query parameter.
+     */
+    const traceId = randomUUID();
+    const host = await this.loginHost(traceId);
+    return {
+      ...request,
+      parameters: { ...(request.parameters ?? {}), loginHost: host, loginTraceId: traceId },
+    };
   }
 
   /**
@@ -168,7 +181,7 @@ export class TraeOAuthClient extends OAuthClient {
      * matches the pending flow against. A separate random trace id would leave
      * the callback with no correlation key.
      */
-    const traceId = request.state;
+    const traceId = request.parameters?.["loginTraceId"] ?? request.state;
     const device = traeLoginDevice(traceId);
     const url = new URL(host.startsWith("http") ? host : `https://${host.replace(/^\/+/, "")}`);
     url.pathname = TRAE_AUTHORIZATION_PATH;

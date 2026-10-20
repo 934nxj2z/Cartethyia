@@ -25,6 +25,7 @@
  * already spent.
  */
 import { log } from "../../../observability/logger";
+import { ConsoleDomainError } from "../../shared/errors";
 
 /** A loopback endpoint a callback can actually be delivered to. */
 export interface LoopbackCallbackEndpoint {
@@ -224,10 +225,15 @@ export class OAuthCallbackListener {
     try {
       servers.push(this.#serve({ hostname: "127.0.0.1", port: endpoint.port, fetch: handler }));
     } catch (cause) {
-      throw new Error(
+      // A domain error, not a bare Error: the console route maps an untyped
+      // failure to a generic `internal_error`, which hid an actionable "free
+      // the port" message behind "Failed to start OAuth".
+      throw new ConsoleDomainError(
+        "oauth_callback_port_unavailable",
+        409,
         `OAuth callback port ${endpoint.port} is in use, so the login redirect to ${endpoint.path} cannot be delivered. ` +
           `Free port ${endpoint.port} and retry.`,
-        { cause },
+        { port: endpoint.port, path: endpoint.path },
       );
     }
     try {
@@ -253,7 +259,16 @@ export class OAuthCallbackListener {
     }
     const error = url.searchParams.get("error");
     const state = url.searchParams.get("state") ?? "";
-    const code = url.searchParams.get("code") ?? "";
+    /**
+     * Not every authorization server hands back a `code`. Trae's page redirects
+     * with the refresh token already in the query (`?isRedirect=true&
+     * refreshToken=…`), and the client's parser reads the whole query. So an
+     * absent `code` falls back to the query itself — the client decides whether
+     * it can redeem it, and one that cannot still fails with its own message
+     * rather than a bare 400 here.
+     */
+    const codeParam = url.searchParams.get("code") ?? "";
+    const code = codeParam.length > 0 ? codeParam : url.search.slice(1);
     if (error !== null) {
       // A denial carries the state only when the server echoes one; clear it
       // when present so a retry starts a fresh flow.
