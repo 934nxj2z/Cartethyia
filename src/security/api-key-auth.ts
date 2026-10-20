@@ -42,6 +42,28 @@ const authCacheByKeyId = new Map<string, Set<string>>();
 const authNegativeCache = new Map<string, number>();
 
 /**
+ * Short circuit after a credential-store failure.
+ *
+ * An overloaded or down database fails every lookup, and each failure costs a
+ * connection attempt. Without this, a saturated backend received one query per
+ * inbound request — load the operator sees as traffic, on top of the load that
+ * caused the outage. For the window, lookups answer "unavailable" instead.
+ *
+ * Deliberately short: this is an auth path, and a brief outage must not lock
+ * out valid keys for long.
+ */
+const AUTH_FAILURE_COOLDOWN_MS = 1_000;
+let authFailureUntil = 0;
+
+/** Thrown when the credential store could not be reached at all. */
+export class ApiKeyStoreUnavailableError extends Error {
+  constructor() {
+    super("The credential store is unavailable.");
+    this.name = "ApiKeyStoreUnavailableError";
+  }
+}
+
+/**
  * Source for lifetime-usage deltas recorded but not yet flushed.
  *
  * Injected rather than imported: this module is on the auth path and must not
@@ -358,8 +380,19 @@ export async function resolveApiKeyAuthorization(
       // A malformed or schema-drifted entry is ignored and re-resolved.
     }
   }
+  // Answered from the cooldown before any I/O: during a store outage the
+  // query is the expensive part, and it is also the part that fails.
+  if (now < authFailureUntil) throw new ApiKeyStoreUnavailableError();
   const store = new DrizzleApiKeyStore(db);
-  const row = await store.findActiveByHash(hash);
+  let row: Awaited<ReturnType<typeof store.findActiveByHash>>;
+  try {
+    row = await store.findActiveByHash(hash);
+  } catch (error) {
+    // Any failure here is the store's, not the key's — a revoked key is a
+    // normal empty result, so this only runs on a real fault.
+    authFailureUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+    throw error;
+  }
   if (!row) {
     authNegativeCache.set(hash, now);
     evictAuthNegativeOldest();

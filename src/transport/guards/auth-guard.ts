@@ -1,3 +1,4 @@
+import { log } from "../../observability/logger";
 // API-key authentication guard for `/v1/*`: token resolution, scope check,
 // client-router denylist, and the model-abuse ban gate.
 import { Elysia } from "elysia";
@@ -39,7 +40,31 @@ export function createApiKeyAuthenticationMiddleware(deps: {
       const pathname = fastPathname(request.url);
       if (!pathname.startsWith("/v1/")) return;
       const token = requestToken(request.headers);
-      const authorization = await resolveApiKeyAuthorization(deps.db, token);
+      // A database failure here is not "the key is bad". Left to propagate it
+      // surfaced as a 500 whose log line carried the whole statement and its
+      // bound parameters — including the key hash — once per request. Under an
+      // overloaded database that is a credential leak written at request rate.
+      //
+      // It is also the wrong answer: the caller cannot fix it by sending a
+      // different key, so it is a capacity signal, not an auth one.
+      const authorization = await resolveApiKeyAuthorization(deps.db, token).catch((error: unknown) => {
+        // Only the error's identity is logged, never its message: a drizzle
+        // query error carries the full statement and its bound parameters, and
+        // on this path one of those parameters is the key hash.
+        // A sanitized stand-in, not the original: a drizzle query error's
+        // message is the statement plus its bound parameters, and one of those
+        // parameters is the key hash.
+        const safe = new Error("[redacted: credential-store query failed]");
+        safe.name = error instanceof Error ? error.name : "Error";
+        log.error("[auth] key lookup failed; treating as unavailable", safe);
+        throw new GatewayError(
+          "accounts_unavailable",
+          503,
+          "The gateway could not verify this API key because its credential store is unavailable. Retry shortly.",
+          {},
+          "cartethyia",
+        );
+      });
       if (!authorization)
         throw new GatewayError("invalid_request", 401, "This API key is unknown, revoked, or expired. Issue a new key and send it as: Authorization: Bearer <key>.");
       const decision = createAccessDecision({
