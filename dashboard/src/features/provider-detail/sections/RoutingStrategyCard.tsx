@@ -231,7 +231,7 @@ export function RoutingStrategyCard({
               )}
               <div className="text-badge text-text-tertiary mt-2">
                 {userAgentEditable
-                  ? "Sent when the provider has no identity of its own."
+                  ? "None sends the request as-is — whatever the runtime or egress sets, with no identity stamped by the gateway. A chosen value overrides it."
                   : "Set by the provider. It cannot be changed."}
               </div>
             </div>

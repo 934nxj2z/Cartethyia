@@ -294,7 +294,23 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
     credentialUrl: "https://bailian.console.aliyun.com/",
   },
-  { id: "hermes", displayName: "Nous Research", baseUrl: "https://inference-api.nousresearch.com/v1", credentialUrl: "https://portal.nousresearch.com" },
+  // Egress pool traffic is refused here: the origin sits behind Cloudflare,
+  // which answers the pool's addresses with `403 Attention Required!` while the
+  // same request from the host answers 200. The credential is a per-account API
+  // key, so rotating the egress address buys nothing and only invites the
+  // challenge — the same reason InferHub and Cline skip the pool.
+  {
+    id: "hermes",
+    displayName: "Nous Research",
+    baseUrl: "https://inference-api.nousresearch.com/v1",
+    credentialUrl: "https://portal.nousresearch.com",
+    defaultSkipProxy: true,
+    // The adapter stamps its own identity (`hermes-agent/<version>`), which it
+    // also needs: Cloudflare in front of the origin refuses a request with no
+    // User-Agent. Letting the operator overwrite it would let them break the
+    // provider, so the console locks the control.
+    hasAdapterUserAgent: true,
+  },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1", credentialUrl: "https://b.ai" },
   { id: "inferhub", displayName: "InferHub", baseUrl: "https://api.inferhub.dev/v1", defaultSkipProxy: true },
   { id: "aihubmix", displayName: "AiHubMix", baseUrl: "https://aihubmix.com/v1", credentialUrl: "https://aihubmix.com/token" },

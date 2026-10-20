@@ -694,6 +694,9 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "meta",
   "deepseek",
   "commandcode",
+  // Alibaba's OpenAI-compatible DashScope: a household-enough name that an
+  // operator looks for beside the other majors rather than in "Other".
+  "dashscope",
 ]);
 
 function hasInteractiveOAuth(provider: ProviderResponse): boolean {

@@ -3,6 +3,7 @@ import type { ProviderDispatchTarget } from "../provider-contracts";
 import type { ApiKeyProviderSpec } from "../configured-provider";
 import { isRecord } from "../../protocol/codecs";
 import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../provider-sanitize";
+import { getHermesVersion } from "../operations/client-versions";
 
 const HERMES_PROVIDER_ID = "hermes" as const;
 
@@ -31,18 +32,28 @@ const HERMES_PROVIDER_ID = "hermes" as const;
  * Hermes does not publish a semver, so the `0.13.0` this used to claim was not
  * a version Hermes ever had.
  */
-const HERMES_PORTAL_TAGS = [
-  "product=hermes-agent",
-  "client=hermes-client-v2026.9.24",
-  "user=hermes-agent",
-] as const;
+/**
+ * Builds the portal tags for one dispatch.
+ *
+ * `client=` carries the version in the shape the released tag used
+ * (`v<version>`), but the version itself is now the resolved one: the previous
+ * constant named a date tag (`v2026.9.24`) that was neither a release nor the
+ * version the project publishes. `getHermesVersion()` tracks the real release.
+ */
+function hermesPortalTags(): readonly string[] {
+  return [
+    "product=hermes-agent",
+    `client=hermes-client-v${getHermesVersion()}`,
+    "user=hermes-agent",
+  ];
+}
 
 function injectHermesTags(
   payload: Record<string, unknown>,
   _request: CanonicalRequest,
   _candidate: ProviderDispatchTarget,
 ): void {
-  payload["tags"] = [...HERMES_PORTAL_TAGS];
+  payload["tags"] = hermesPortalTags();
 }
 
 
@@ -66,18 +77,23 @@ import type { ModelDefinition } from "../provider-model-definition";
  */
 export const HERMES_MODELS: readonly ModelDefinition[] = [
   // The live `/models` free rows, with the limits the catalog states. Verified
-  // against the API: every id here answers 200 except
-  // `stepfun/step-5-preview:free`, which reports 429 "temporarily at capacity
-  // upstream" — a capacity fact, not a roster one, so the row stays.
+  // against the API: every id here answers 200.
   //
   // `meituan/longcat-2.0:free` is gone: the catalog still lists the id, but
   // dispatching it answers 404 "This model is no longer free", so keeping it
   // would be a card that can only ever fail. `meituan/longcat-2.5-preview:free`
   // replaces it and answers 200.
+  //
+  // `stepfun/step-5-preview:free` is gone: it is absent from the live catalog
+  // entirely and dispatching it answers 404 "This model's free period has
+  // ended" — a retired row, not a capacity blip, so it cannot be left in.
+  //
+  // Output caps are the catalog's own `top_provider.max_completion_tokens`,
+  // which differ per row: `poolside/laguna-xs-2.1:free` is 32768 while its
+  // sibling `laguna-s` is 131072, so a uniform value overstates one of them.
   defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
-  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 32768, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true, free: true, freeTier: true }),
-  defineModel({ id: "stepfun/step-5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
@@ -93,6 +109,16 @@ export const HERMES_SPEC: ApiKeyProviderSpec = {
   provider_id: HERMES_PROVIDER_ID,
   endpoint_paths_by_wire_family: {},
   prePayload: injectHermesTags,
+  // The origin sits behind Cloudflare, which answers a request carrying no
+  // `user-agent` with 403 "Attention Required!" while the same request with any
+  // non-empty UA answers 200 — measured directly against the API: an empty UA
+  // is 403, and `curl`, `node`, `python-requests`, `undici` and Bun's own
+  // default are all accepted.
+  //
+  // The value names this client as Hermes rather than claiming to be the
+  // gateway: the upstream meters by the product tag, and the version is the
+  // resolved release so a stale pin cannot drift into a mismatch.
+  extra_headers: { "user-agent": `hermes-agent/${getHermesVersion()}` },
 };
 
 /**

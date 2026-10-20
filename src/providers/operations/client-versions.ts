@@ -391,6 +391,20 @@ export const VERSION_SOURCES = {
       },
     ],
   },
+  hermes: {
+    key: "hermes",
+    // Hermes DOES publish a semver: the GitHub release tag is `v0.22.2`. The
+    // comment this replaced claimed no semver existed and pinned a date tag
+    // (`v2026.9.24`) as the version — a tag, not a release, and not the
+    // identity the client sends.
+    fallback: "0.22.2",
+    sources: [
+      {
+        url: "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
+        extract: githubReleaseVersion,
+      },
+    ],
+  },
   zcode: {
     key: "zcode",
     fallback: "3.14.3",
@@ -406,6 +420,7 @@ export const VERSION_SOURCES = {
 const resolvers = {
   antigravity: createClientVersionResolver({ ...VERSION_SOURCES.antigravity, client: "antigravity" }),
   qoder: createClientVersionResolver({ ...VERSION_SOURCES.qoder, client: "qoder" }),
+  hermes: createClientVersionResolver({ ...VERSION_SOURCES.hermes, client: "hermes" }),
   trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
@@ -441,6 +456,7 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   cline: resolvers.clineCli,
   codex: resolvers.codex,
   qoder: resolvers.qoder,
+  hermes: resolvers.hermes,
   trae: resolvers.trae,
   traecn: resolvers.trae,
   commandcode: resolvers.commandcode,
@@ -540,6 +556,7 @@ function accessor<K extends keyof typeof resolvers>(name: K): {
 }
 
 export const getQoderVersion = accessor("qoder").get;
+export const getHermesVersion = accessor("hermes").get;
 export const getTraeVersion = accessor("trae").get;
 export const getAntigravityVersion = accessor("antigravity").get;
 
