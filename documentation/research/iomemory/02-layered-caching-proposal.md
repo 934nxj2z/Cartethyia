@@ -229,7 +229,49 @@ bounding, not L1/L2. If it is a few MB, it is the per-request state above.
 
 ---
 
-## 6. What is still unknown
+## 6. Implementation status (2026-10-20)
+
+All six recommendations are implemented and committed. Two landed differently
+from the original text, for reasons found while implementing:
+
+**3.1 — done as written.** Classification carries `routesVisible`; the
+model-scoped path reports false. The proposal also named pool health; that was
+wrong — `pool-health-machine.ts:151` already gated on `statusChanged` and was
+left alone.
+
+**3.2 — done as written.** OAuth caches with `min(window, expiry - 30s)`.
+
+**3.3 — done as written.** Resolved once per request, memoized on request state.
+
+**3.4 — done, but only partly as written.** Seeding `sumChildrenConsumed` from
+the buffer needs a parent→children map in memory, which does not exist and
+which is not worth adding. What landed instead is better: the aggregate is
+skipped entirely unless the key is a `share` parent, since no other key can have
+children. That removes the query rather than making it cheaper. The pending
+delta is added to the persisted total, which closes the accuracy gap the
+proposal only noted.
+
+**3.5 — done, with one change.** The route snapshot uses the broadcast channel,
+as proposed. Auth uses the shared value cache keyed by **token hash**, not by key
+id: a lookup only has the hash, and invalidation travels by broadcast because a
+console mutation names a key id and cannot enumerate that key's hashes in
+another process. Preferences use the broadcast channel (revision) rather than a
+value cache — the reader is already revision-keyed and 5 s TTL'd, so a value
+cache would add serialization for nothing.
+
+**3.6 — done, decomposed.** The proposal said "defer account health and pool
+health writes". Deferring the *status* UPDATE is unsafe: routing reads it, so a
+following request would pick an account that had just failed — worse under
+exactly the failure wave this targets. Only the `health_events` INSERT moved off
+the request path; the status write stays synchronous and transactional.
+
+### Not measured
+
+No load test was run. Every number in §4 remains an estimate from the census.
+The correctness of each change is pinned by tests, but the *impact* on DB load
+and latency is still unverified against a real deployment.
+
+## 7. What is still unknown
 
 1. **Real per-request footprint under load.** The ~3.6–4.1 KB figure is from a
    synthetic decode-path measurement, not a live request. A real request adds
