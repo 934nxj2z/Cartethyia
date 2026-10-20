@@ -383,12 +383,32 @@ export function createOAuthLoginOperations(config: OAuthLoginConfig) {
         }
         const state = generateOAuthState();
         const { codeVerifier, codeChallenge } = generatePkcePair();
+        /**
+         * A client whose authorize URL depends on an upstream discovery runs it
+         * here, before the URL is built: `buildAuthorizeUrl` is synchronous by
+         * contract, so a client cannot fetch inside it.
+         *
+         * Trae is the reason this is wired up: its login host comes from
+         * `GetLoginGuidance`, and without this step the URL was built with no
+         * host and the login failed at the first click. Kiro declares the hook
+         * as a no-op, so nothing that already worked changes.
+         */
+        const authorizeRequest = {
+          state,
+          codeChallenge,
+          redirectUri: client.browserRedirectUri ?? browserAuthorizeRedirectUri(),
+          ...(parameters === undefined ? {} : { parameters }),
+        };
+        const prepared =
+          typeof client.prepareAuthorize === "function"
+            ? await client.prepareAuthorize(authorizeRequest)
+            : authorizeRequest;
         // A client that names its own allowlisted redirect URI wins over the
         // gateway default: OpenAI registers exactly `http://localhost:1455/auth/callback`
         // for the Codex client and answers any other value with
         // `invalid_request` before consent, so the shared default cannot serve
         // every provider.
-        const redirectUri = client.browserRedirectUri ?? browserAuthorizeRedirectUri();
+        const redirectUri = authorizeRequest.redirectUri;
         // Bind the redirect's loopback port before the flow is recorded. The
         // advertised URI names the operator's own machine, so a login that only
         // advertises it leaves the browser on a dead page and the code stranded
@@ -412,12 +432,7 @@ export function createOAuthLoginOperations(config: OAuthLoginConfig) {
         // deliver itself; a non-loopback redirect (a custom scheme, a remote
         // host) returns false and keeps the manual path.
         return {
-          authorizeUrl: client.buildAuthorizeUrl({
-            state,
-            codeChallenge,
-            redirectUri,
-            ...(parameters === undefined ? {} : { parameters }),
-          }),
+          authorizeUrl: client.buildAuthorizeUrl(prepared),
           state,
         };
       },

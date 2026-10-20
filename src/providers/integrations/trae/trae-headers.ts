@@ -53,10 +53,10 @@ export function traeDeviceIdentity(uid: string): TraeDeviceIdentity {
  * Windows build to upstream. This gateway is not the operator's desktop, so a
  * fixed value of the same shape is both more private and more stable.
  */
-const TRAE_OS_VERSION = "Windows 11 Pro";
+export const TRAE_OS_VERSION = "Windows 11 Pro";
 
 /** Reported hardware brand, same reasoning as the OS string. */
-const TRAE_DEVICE_BRAND = "Default string";
+export const TRAE_DEVICE_BRAND = "Default string";
 
 /** Per-request correlation id. Random, not derived — decoupled from the device. */
 export function traeRequestId(): string {

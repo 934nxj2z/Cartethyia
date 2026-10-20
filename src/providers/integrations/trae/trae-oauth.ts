@@ -22,7 +22,6 @@
 // Sourced from the donor hub `Public/trae2api-hub` (`_refresh_account_request`
 // in `trae_client.py`).
 
-import { randomUUID } from "node:crypto";
 import { OAuthClient } from "../../authentication/oauth-client";
 import type { OAuthExchangeResult, OAuthImportInput } from "../../authentication/oauth-flow-store";
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
@@ -34,6 +33,8 @@ import {
   traeAccountCandidates,
   type TraeRealm,
 } from "./trae-realm";
+import { TRAE_DEVICE_BRAND, TRAE_OS_VERSION, traeDeviceIdentity } from "./trae-headers";
+import { getTraeVersion } from "../../operations/client-versions";
 
 /** Upstream client id. Constant across realms. */
 const TRAE_CLIENT_ID = "ono9krqynydwx5";
@@ -41,19 +42,30 @@ const TRAE_CLIENT_ID = "ono9krqynydwx5";
 /** UA for the login steps, distinct from the data-plane UA. */
 const TRAE_OAUTH_USER_AGENT = "Trae/1.0.0 antigravity-cockpit-tools";
 
-/** Client version advertised on the authorization page. */
-const TRAE_APP_VERSION = "3.5.54";
+/**
+ * Plugin version the desktop client reports.
+ *
+ * Observed in a real authorize URL as `2.3.93439`. The donor sent `local`,
+ * which is what the *web* build reports; the login page accepts it, but the
+ * value is part of the fingerprint upstream correlates, so the desktop shape
+ * is used here.
+ */
+const TRAE_PLUGIN_VERSION = "2.3.93439";
 
 /**
  * Device context for the login.
  *
- * Trae's own client reuses the account's numeric user id here; a gateway has no
- * IDE install to read, so a per-process pair is used instead. These identify the
- * browser session only — they are not the data-plane fingerprint the adapter
- * derives per account.
+ * Derived with the same function the data plane uses, so one account presents
+ * one device across login and requests. A per-process random pair — what the
+ * donor sends — made every gateway restart look like a brand new device to the
+ * risk-control surface that correlates them.
+ *
+ * The seed is the login trace id because no account identity exists yet: the
+ * authorize step is what produces the account.
  */
-const TRAE_MACHINE_ID = randomUUID();
-const TRAE_DEVICE_ID = "0";
+function traeLoginDevice(traceId: string): { machineId: string; deviceId: string } {
+  return traeDeviceIdentity(traceId);
+}
 
 /**
  * Upstream client secret.
@@ -142,6 +154,7 @@ export class TraeOAuthClient extends OAuthClient {
    */
   override buildAuthorizeUrl(request: {
     readonly state: string;
+    readonly codeChallenge?: string;
     readonly redirectUri: string;
     readonly parameters?: Readonly<Record<string, string>>;
   }): string {
@@ -149,28 +162,51 @@ export class TraeOAuthClient extends OAuthClient {
     if (host === undefined) {
       throw new Error("Trae login host is not resolved — the authorize step must run first");
     }
+    /**
+     * The trace id is the flow `state`, not a fresh UUID: the login page echoes
+     * it back on the callback, and that echo is what the loopback listener
+     * matches the pending flow against. A separate random trace id would leave
+     * the callback with no correlation key.
+     */
+    const traceId = request.state;
+    const device = traeLoginDevice(traceId);
     const url = new URL(host.startsWith("http") ? host : `https://${host.replace(/^\/+/, "")}`);
     url.pathname = TRAE_AUTHORIZATION_PATH;
+    /**
+     * Parameter set mirrored from a real client authorize URL. Three of these
+     * were missing and are not decoration:
+     *
+     * - `code_challenge`/`code_challenge_method`: the page runs PKCE and
+     *   refuses to issue a refresh token without them.
+     * - `channel_name`: selects the desktop distribution channel; without it
+     *   the page falls back to a build that does not hand back a refresh token.
+     * - the device fields: the login is correlated with the data-plane
+     *   fingerprint, so an `unknown`/`0` set is a device upstream has never
+     *   seen from this account.
+     */
     const params = new URLSearchParams({
       login_version: "1",
       auth_from: "trae",
       login_channel: "native_ide",
-      plugin_version: "local",
+      plugin_version: TRAE_PLUGIN_VERSION,
       auth_type: "local",
       client_id: TRAE_CLIENT_ID,
       redirect: "0",
-      login_trace_id: request.state,
+      login_trace_id: traceId,
       auth_callback_url: request.redirectUri,
-      machine_id: TRAE_MACHINE_ID,
-      device_id: TRAE_DEVICE_ID,
-      x_device_id: TRAE_DEVICE_ID,
-      x_machine_id: TRAE_MACHINE_ID,
-      x_device_brand: "unknown",
-      x_device_type: "unknown",
-      x_os_version: "unknown",
+      machine_id: device.machineId,
+      device_id: device.deviceId,
+      x_device_id: device.deviceId,
+      x_machine_id: device.machineId,
+      x_device_brand: TRAE_DEVICE_BRAND,
+      x_device_type: "windows",
+      x_os_version: TRAE_OS_VERSION,
       x_env: "",
-      x_app_version: TRAE_APP_VERSION,
+      x_app_version: getTraeVersion(),
       x_app_type: "stable",
+      code_challenge: request.codeChallenge ?? "",
+      code_challenge_method: "S256",
+      channel_name: "common",
     });
     url.search = params.toString();
     return url.toString();
