@@ -11,12 +11,11 @@ import { usageFromProvider, readReasoningText } from "../../provider-usage";
 import { readCredentialSecret, type ProviderDispatchTarget, type ProviderAdapter, type ProviderDispatchContext, type ProviderId } from "../../provider-contracts";
 import type { ModelDefinition } from "../../provider-model-definition";
 import { parseQoderOAuthState } from "./qoder-oauth";
-import { defineModel } from "../../provider-model-definition";
 import { getQoderVersion } from "../../operations/client-versions";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { qoderMachineOs } from "../../operations/cli-platform";
 import { qoderGatewayCandidates, QODER_CHAT_PATH, QODER_REALMS, type QoderRealm } from "./qoder-realm";
-import { QODER_CN_MODEL_CONFIGS, QODER_INTL_MODEL_CONFIGS } from "./qoder-catalog";
+import { QODER_CN_MODEL_CONFIGS, QODER_INTL_MODEL_CONFIGS, QODER_INTL_MODELS } from "./qoder-catalog";
 
 interface QoderModeProfile {
   readonly chatUrl: string;
@@ -668,9 +667,17 @@ async function* qoderBodyToCanonicalEvents(
 
 // Model catalog — maps QODER_MODEL_CONFIGS (provider) to Cartethyia ModelDefinition
 
-export const QODER_MODELS: readonly ModelDefinition[] = Object.entries(QODER_MODEL_CONFIGS).map(([id, cfg]) =>
-  defineModel({ id, endpoint: "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", ctx: cfg.max_input_tokens, out: cfg.max_output_tokens ?? 32768, vision: cfg.is_vl, reasoning: cfg.is_reasoning }),
-);
+/**
+ * The intl catalog this provider publishes.
+ *
+ * Previously built from the legacy `QODER_MODEL_CONFIGS`, which froze most
+ * rows at 180k while the upstream reports 1M for the same keys. That number is
+ * not cosmetic: it is sent upstream as `model_config.max_input_tokens`, so a
+ * stale low value told Qoder the conversation window was small and made it
+ * behave that way. Both the published catalog and the dispatched request now
+ * come from the realm's roster, which carries the upstream's own numbers.
+ */
+export const QODER_MODELS: readonly ModelDefinition[] = QODER_INTL_MODELS;
 
 // ProviderAdapter — manual dispatch preserving COSY encryption + envelope logic
 
