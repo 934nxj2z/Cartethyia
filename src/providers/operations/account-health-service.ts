@@ -457,6 +457,13 @@ export function classifyAccountError(
     !priceRefusal &&
     !deploymentInfraError &&
     (statusCode === 402 ||
+      // Qoder answers an exhausted credit balance with
+      // `{"code":"112","message":"{\"pricingUrl\":...}"}` — the body points at
+      // the pricing page, i.e. "buy more", which is a balance verdict, not an
+      // auth one. It fell through to `auth_invalidated` and the console showed
+      // "Re-login required" on an account whose credential was fine, sending
+      // operators to re-authenticate instead of topping up.
+      providerCode === "112" ||
       providerCode === "insufficient_quota" ||
       providerCode === "quota_exceeded" ||
       providerCode === "subscription:free-usage-exhausted" ||
@@ -489,7 +496,9 @@ export function classifyAccountError(
       lower.includes("insufficient balance") ||
       lower.includes("out of credits") ||
       lower.includes("credits exhausted") ||
-      lower.includes("spending limit"));
+      lower.includes("spending limit") ||
+      // Same Qoder family reached by body text when the code is not parsed out.
+      (lower.includes("pricingurl") && lower.includes("qoder.com/pricing")));
   // A deterministic content-policy rejection is NOT credential invalidation.
   // CodeBuddy returns HTTP 403 with provider code 11140 ("request illegal",
   // "did not pass the safety review") — refreshing the token cannot change

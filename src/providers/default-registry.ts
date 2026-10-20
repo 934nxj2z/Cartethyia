@@ -12,6 +12,7 @@ import { createAnthropicCompatibleAdapter } from "./integrations/anthropic";
 import { defineModel } from "./provider-model-definition";
 import type { ProviderModelDiscovery } from "./discovery/discovery-types";
 import type { ProviderDispatchContext } from "./provider-contracts";
+import type { QoderRealm } from "./integrations/qoder/qoder-realm";
 import type { WireFamily } from "../protocol/canonical-model";
 import type { CanonicalRequest } from "../protocol/canonical-model";
 
@@ -24,6 +25,47 @@ function configuredProvider(
     ...(loadModels === undefined ? {} : { loadModels }),
   };
 }
+
+/**
+ * Qoder's live model list for one realm.
+ *
+ * The request has to be signed with the account's COSY identity and has to
+ * carry the body that was signed — a bare GET is refused — so discovery cannot
+ * use the generic bearer helper. It resolves the same identity dispatch uses
+ * (PAT exchange or the persisted OAuth state) and then lists against the
+ * realm's own gateway hosts.
+ */
+function qoderDiscovery(
+  realm: QoderRealm,
+  providerId: string,
+): NonNullable<ProviderModuleCapabilities["loadModelDiscovery"]> {
+  return async () => async (request: Parameters<ProviderModelDiscovery>[0]) => {
+    const { discoverQoderModels } = await import("./integrations/qoder/qoder-catalog");
+    const { resolveQoderAuth, qoderSignerFor, qoderEncodeBody } = await import("./integrations/qoder/qoder");
+    const secret = request.credential.trim();
+    if (secret.length === 0) throw new Error("Qoder credential is required");
+    const fetcher = request.fetcher as unknown as typeof fetch | undefined;
+    // The discovery context carries only the secret plus the non-secret
+    // `authState` an OAuth login persisted; the account id lives there too, so
+    // an OAuth credential resolves to the same identity dispatch would use.
+    const auth = await resolveQoderAuth({
+      secret,
+      authState: request.authState,
+      signal: AbortSignal.timeout(15_000),
+      fetcher: (url: string, init: RequestInit) => (fetcher ?? globalThis.fetch)(url, init),
+    });
+    const signer = qoderSignerFor(auth);
+    return discoverQoderModels({
+      realm,
+      providerId,
+      credential: secret,
+      headers: (url: string, body: string) => Promise.resolve(signer(url, body)),
+      ...(fetcher === undefined ? {} : { fetcher }),
+      encode: qoderEncodeBody,
+    });
+  };
+}
+
 
 /**
  * Builds the `loadAdapter` + `loadModelDiscovery` pair every plain bearer
@@ -381,6 +423,22 @@ export const PROVIDER_CAPABILITIES = {
     // device flow, so the issued token is used exactly as issued until the
     // operator re-runs login — same shape as Kilo Code.
     loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderOAuthClient"),
+    // Discovery signed by the account's own COSY identity: the model list is
+    // per-account and per-realm, and a GET without the signed body is 403.
+    loadModelDiscovery: qoderDiscovery("intl", "qoder"),
+  },
+  // Separate provider, not a region flag: a CN account has its own gateway
+  // host, OAuth client id, and model roster, and is refused by the global host.
+  qodercn: {
+    loadAdapter: async () => (await import("./integrations/qoder/qoder")).createQoderCnAdapter(),
+    loadModels: async () => (await import("./integrations/qoder/qoder-catalog")).QODER_CN_MODELS,
+    // The CN client, not the intl one: a device login opened on
+    // `qoder.com/device/selectAccounts` polled `openapi.qoder.sh`, which a CN
+    // account is refused by. `qoderCnOAuthClient` is the same class bound to
+    // `QODER_REALMS.cn` — its own login/token/userinfo hosts, client id, and
+    // native redirect.
+    loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderCnOAuthClient"),
+    loadModelDiscovery: qoderDiscovery("cn", "qodercn"),
   },
   inferhub: {
     loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),
