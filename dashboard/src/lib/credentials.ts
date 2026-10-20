@@ -27,7 +27,16 @@ const CREDENTIAL_FIELD_PRIORITY = [
  * can be renewed. Expiry/id-token fields also occur on access-only JWT exports,
  * which must stay static and must not enter an OAuth refresh endpoint.
  */
-const OAUTH_SHAPE_FIELDS = ["refresh", "refreshToken", "refresh_token"] as const;
+/**
+ * Refresh-token fields.
+ *
+ * A refresh field is the unambiguous OAuth signal: nothing API-key-shaped
+ * carries one. Token fields alone are NOT sufficient — `{ access_token: "at" }`
+ * is how several providers export a plain key, so treating a lone token as
+ * OAuth turned a static export into a "refreshable" one that could never
+ * refresh.
+ */
+const OAUTH_REFRESH_FIELDS = ["refresh", "refreshToken", "refresh_token"] as const;
 
 /**
  * Fields whose presence identifies one record as a Cartethyia account export
@@ -113,10 +122,12 @@ function identityFromObject(obj: Record<string, unknown>): string | undefined {
 }
 
 function oauthShapeFromObject(obj: Record<string, unknown>): boolean {
-  const hasShape = (record: Record<string, unknown>) =>
-    OAUTH_SHAPE_FIELDS.some(
+  const present = (record: Record<string, unknown>, fields: readonly string[]) =>
+    fields.some(
       (field) => typeof record[field] === "string" || typeof record[field] === "number",
     );
+  const hasShape = (record: Record<string, unknown>) =>
+    present(record, OAUTH_REFRESH_FIELDS);
   if (hasShape(obj)) return true;
   const nested = nestedRecord(obj);
   return nested ? hasShape(nested) : false;
@@ -285,14 +296,17 @@ function entryFromObject(obj: Record<string, unknown>): ParsedCredentialEntry {
     const accessToken = obj["accessToken"];
     // The row's own refresh token is what makes it refreshable. Sending only
     // the access token drops it, and a JWT access token is then stored as a
-    // static credential that can never be refreshed.
-    const refreshable = exportKind === "oauth" && oauthShapeFromObject(obj);
+    // static credential that can never be refreshed. A row labelled `oauth`
+    // that carries no refresh field is therefore still stored as the bare
+    // access token: labelling it `oauth` would promise a refresh that has no
+    // token to run.
+    const isOAuthRow = exportKind === "oauth" && oauthShapeFromObject(obj);
     return {
-      value: refreshable ? JSON.stringify(obj) : accessToken,
+      value: isOAuthRow ? JSON.stringify(obj) : accessToken,
       // An exported row's persisted credential kind is authoritative. An
       // `api_key` export stays an API key even when its string happens to look
       // like a refresh-shaped JSON wrapper.
-      kind: refreshable ? "oauth" : "api_key",
+      kind: isOAuthRow ? "oauth" : "api_key",
       ...(label ? { identity: label } : {}),
     };
   }
@@ -362,7 +376,20 @@ export function parseCredentialBatch(raw: string): ParsedCredentialEntry[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
   if (lines.length === 0) return [];
-  if (lines.length === 1) return parseSingleLine(lines[0] as string);
+  if (lines.length === 1) {
+    // A single `key: value` line is a structured credential, not an opaque
+    // token. `parseSingleLine` cannot parse `apiKey: sk-...` as JSON, so it
+    // returned the line's literal text as the secret — the operator got an
+    // account whose stored credential was the string `"apiKey: sk-..."`, and
+    // the real key was gone. The multi-line path already consulted
+    // `parseKeyValueLines` first; the single-line path has to agree with it.
+    const asKeyValue = parseKeyValueLines(lines[0] as string);
+    // Any parseable `key: value` line is structured, not an opaque token —
+    // including one whose only field is a refresh token. Falling through to
+    // `parseSingleLine` there stored the literal line text as the secret.
+    if (asKeyValue) return [entryFromObject(asKeyValue)];
+    return parseSingleLine(lines[0] as string);
+  }
 
   // A `key: value` block is ONE structured credential, not a batch — and that
   // holds even when some of its lines do not parse as `key: value`. A comment
