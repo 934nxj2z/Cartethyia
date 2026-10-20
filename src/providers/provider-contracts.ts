@@ -5,7 +5,7 @@
 import type { CanonicalEvent, CanonicalRequest, WireFamily } from "../protocol/canonical-model";
 import { GatewayError } from "../protocol/gateway-error";
 import { BUNDLED_PROVIDER_METADATA, type BundledProviderId } from "./provider-metadata";
-import type { Http2BidiOpenOptions, ValidatedHttp2BidiStream } from "../network/http2-bidi";
+import type { ValidatedOutboundHttp2Bidi } from "../network/http2-bidi";
 
 /** Closed union of every shipped provider ID. */
 export const BUNDLED_PROVIDER_IDS = BUNDLED_PROVIDER_METADATA.map((definition) => definition.id) as readonly BundledProviderId[];
@@ -78,11 +78,13 @@ export type ValidatedOutboundWebSocket = (
  * keeps SSRF validation, DNS pinning, and pool byte attribution intact. A
  * provider adapter receives this closure and never dials a socket itself.
  */
-export type ValidatedOutboundHttp2Bidi = (
-  url: URL,
-  headers: Readonly<Record<string, string>>,
-  options?: Http2BidiOpenOptions,
-) => Promise<ValidatedHttp2BidiStream>;
+/**
+ * The dialer contract handed to a provider adapter.
+ *
+ * Declared in `network/http2-bidi.ts` — the transport owns the contract — and
+ * re-exported here so provider code keeps one import site.
+ */
+export type { ValidatedOutboundHttp2Bidi };
 
 /**
  * A provider session that outlives the HTTP request that created it.

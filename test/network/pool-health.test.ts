@@ -1,237 +1,209 @@
 /**
- * Network-pool dispatch health: which outcomes park a pool, and which do not.
+ * Pool block/cooldown flagging.
  *
- * A pool is an operator's egress proxy. When it cannot carry traffic the pool
- * must leave rotation — otherwise every request keeps routing through a proxy
- * that fails, and the failure is attributed to the provider instead. This
- * module owns that decision, and it was, measured before this file existed,
- * entirely uncovered: nothing asserted that a network failure parks a pool, nor
- * that an upstream's own error does *not*.
- *
- * That distinction is the whole point of the classifier. A pool is blamed only
- * for failures produced at the proxy/network boundary; an upstream that
- * answered `500` answered through a working pool, and parking the pool for it
- * would take a healthy egress route out of service. So the tests below are
- * organised around that line rather than around the happy path.
- *
- * The suite that motivated this file: `handleProviderProxyRequest`'s stream
- * error path built its completion context by hand and omitted `networkPoolId`,
- * so a pool that failed a *stream* was never parked. The recording function was
- * correct; nothing proved it was reached. These tests pin the function, and the
- * gateway-level tests in `streaming-contract.test.ts` pin that the field
- * reaches it.
+ * Both functions are fire-and-forget by design — dispatch must never wait on an
+ * audit write — so a failure inside them is invisible unless a test looks. The
+ * facts worth pinning are the ones that differ between the two paths: a 429
+ * refills (cooldown, `rate_limit_transient`), an egress refusal does not
+ * (block, `egress_blocked`). Merging those categories would make the console
+ * draw a retired address as a temporary throttle, and the pool would re-enter
+ * rotation only to be refused again.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
-import { getDb } from "../../src/persistence/boot";
-import { networkPools } from "../../src/persistence/schema";
-import { recordPoolDispatchOutcome } from "../../src/network/pool-health-machine";
-import { getTestPool, dbDescribe } from "../helpers/database";
-import { createWorld, type GatewayWorld } from "../helpers/fixtures";
+import { describe, expect, test } from "bun:test";
+import { flagPoolBlocked, flagPoolCooldown } from "../../src/network/pool-health";
+import { GatewayError } from "../../src/protocol/gateway-error";
 
-/** A pool row an outcome can be recorded against. */
-interface PoolFixture {
-  readonly id: string;
-  readonly cleanup: () => Promise<void>;
+/** One row the recorder is expected to insert into `health_events`. */
+interface AuditRow {
+  readonly entityKind: string;
+  readonly networkPoolId: string;
+  readonly toStatus: string;
+  readonly reason: string;
+  readonly errorCategory: string;
 }
 
-async function createPool(world: GatewayWorld): Promise<PoolFixture> {
-  const pool = await getTestPool();
-  const client = await pool.connect();
-  const id = crypto.randomUUID();
-  try {
-    // `endpoint_config` is the pool's transport descriptor; the recorder never
-    // reads it, so the minimal valid shape is enough to satisfy the column.
-    await client.query(
-      `insert into network_pools
-         (id, tenant_id, kind, endpoint_config, status, consecutive_failures, weight, max_inflight, created_at)
-       values ($1, $2, 'http', $3::jsonb, 'active', 0, 100, 10, now())`,
-      [id, world.tenantId, JSON.stringify({ url: "http://127.0.0.1:1" })],
-    );
-  } finally {
-    client.release();
-  }
-  return {
-    id,
-    cleanup: async () => {
-      const cleanupClient = await pool.connect();
-      try {
-        await cleanupClient.query("delete from network_pools where id = $1", [id]);
-      } finally {
-        cleanupClient.release();
-      }
+/** One call made on the pool selector. */
+interface SelectorCall {
+  readonly method: string;
+  readonly args: readonly unknown[];
+}
+
+/** The subset of the selector these two functions actually use. */
+interface FlagSelector {
+  flagProviderBlocked(poolId: string, providerId: string, reason: string): Promise<void>;
+  flagProviderCooldown(
+    poolId: string,
+    providerId: string,
+    retryAfterMs: number,
+    reason: string,
+  ): Promise<void>;
+}
+
+/** The subset of the database handle these two functions actually use. */
+interface AuditSink {
+  insert(table: unknown): { values(row: AuditRow): Promise<void> };
+}
+
+interface Harness {
+  readonly selector: FlagSelector;
+  readonly rows: AuditRow[];
+  readonly calls: SelectorCall[];
+  readonly db: AuditSink;
+  /** Resolves once `count` audit rows have been written. */
+  readonly settled: (count: number) => Promise<void>;
+}
+
+/**
+ * Builds the two collaborators and a way to await them.
+ *
+ * The production functions `void` their promises, so there is no handle to
+ * await. `settled` waits on the *condition* — a row landing — rather than a
+ * guessed duration, which is both faster and immune to load-induced flake.
+ */
+function harness(): Harness {
+  const rows: AuditRow[] = [];
+  const calls: SelectorCall[] = [];
+  let notify: (() => void) | undefined;
+  const selector: FlagSelector = {
+    flagProviderBlocked: async (poolId, providerId, reason) => {
+      calls.push({ method: "flagProviderBlocked", args: [poolId, providerId, reason] });
+    },
+    flagProviderCooldown: async (poolId, providerId, retryAfterMs, reason) => {
+      calls.push({ method: "flagProviderCooldown", args: [poolId, providerId, retryAfterMs, reason] });
     },
   };
+  const db: AuditSink = {
+    insert: () => ({
+      values: async (row: AuditRow): Promise<void> => {
+        rows.push(row);
+        notify?.();
+      },
+    }),
+  };
+  const settled = (count: number): Promise<void> =>
+    rows.length >= count
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          notify = () => {
+            if (rows.length >= count) resolve();
+          };
+        });
+  return { selector, rows, calls, db, settled };
 }
 
-/** The pool row as stored, or undefined when the fixture was removed. */
-async function readPool(id: string) {
-  const rows = await getDb().select().from(networkPools).where(eq(networkPools.id, id)).limit(1);
-  return rows[0];
+/**
+ * Coalescing state is module-global and keyed by (pool, provider), so every
+ * test needs its own pair. Reusing one would make the second call in the file
+ * a no-op — silently, and only when the suite is run in this order.
+ */
+let sequence = 0;
+function poolId(): string {
+  sequence += 1;
+  return `pool-${sequence}-${crypto.randomUUID()}`;
 }
 
-dbDescribe("network pool dispatch health", () => {
-  let world: GatewayWorld;
+function rateLimited(retryAfterMs?: number): GatewayError {
+  const error = new GatewayError("proxy_pool_cooldown", 429, "slow down");
+  if (retryAfterMs !== undefined) {
+    (error.details as Record<string, unknown>)["retryAfterMs"] = retryAfterMs;
+  }
+  return error;
+}
 
-  beforeAll(async () => {
-    world = await createWorld();
+function refused(providerCode?: string): GatewayError {
+  const error = new GatewayError("proxy_pool_blocked", 403, "refused");
+  if (providerCode !== undefined) {
+    (error.details as Record<string, unknown>)["providerCode"] = providerCode;
+  }
+  return error;
+}
+
+describe("flagPoolCooldown", () => {
+  test("flags the selector and writes a rate_limit_transient row", async () => {
+    const h = harness();
+    const pool = poolId();
+    flagPoolCooldown(h.selector as never, h.db as never, pool, "openai", rateLimited());
+    await h.settled(1);
+    expect(h.calls[0]?.method).toBe("flagProviderCooldown");
+    expect(h.rows[0]?.errorCategory).toBe("rate_limit_transient");
+    expect(h.rows[0]?.entityKind).toBe("pool");
+    expect(h.rows[0]?.networkPoolId).toBe(pool);
+    expect(h.rows[0]?.toStatus).toBe("cooldown");
   });
 
-  afterAll(async () => {
-    await world?.cleanup();
+  test("uses the upstream's retry-after when it named one", async () => {
+    const h = harness();
+    flagPoolCooldown(h.selector as never, h.db as never, poolId(), "openai", rateLimited(1_000));
+    await h.settled(1);
+    expect(h.calls[0]?.args[2]).toBe(1_000);
   });
 
-  describe("a failure at the network boundary parks the pool", () => {
-    test("a network-origin error moves the pool to cooldown", async () => {
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: new Error("connect ECONNREFUSED 127.0.0.1:8080"),
-          errorOrigin: "network",
-        });
-        const row = await readPool(pool.id);
-        expect(row?.status).toBe("cooldown");
-        expect(row?.consecutiveFailures).toBe(1);
-        expect(row?.lastErrorCategory).toBe("proxy_unreachable");
-        expect(row?.cooldownUntil).not.toBeNull();
-      } finally {
-        await pool.cleanup();
-      }
-    });
-
-    test("a typed proxy fault code is recorded as its own category", async () => {
-      // A tunnel that could not be set up is not the same fault as an
-      // unreachable proxy, and the console surfaces the category.
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: Object.assign(new Error("tunnel setup failed"), { code: "tunnel_setup_failed" }),
-          errorOrigin: "network",
-        });
-        expect((await readPool(pool.id))?.lastErrorCategory).toBe("tunnel_setup_failed");
-      } finally {
-        await pool.cleanup();
-      }
-    });
-
-    test("a gateway error whose code is a transport fault parks the pool", async () => {
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: Object.assign(new Error("transport closed"), { code: "transport_unavailable" }),
-        });
-        expect((await readPool(pool.id))?.status).toBe("cooldown");
-      } finally {
-        await pool.cleanup();
-      }
-    });
+  test("falls back to a default window when upstream named none", async () => {
+    const h = harness();
+    flagPoolCooldown(h.selector as never, h.db as never, poolId(), "openai", rateLimited());
+    await h.settled(1);
+    expect(h.calls[0]?.args[2]).toBe(15 * 60 * 1000);
   });
 
-  describe("an upstream's own failure leaves the pool alone", () => {
-    test("an upstream-origin error does not park the pool", async () => {
-      // The pool carried the request successfully; the provider answered with
-      // an error. Taking the pool out of rotation would remove a working egress
-      // route because a provider was broken.
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: new Error("upstream returned 500"),
-          errorOrigin: "upstream",
-        });
-        const row = await readPool(pool.id);
-        expect(row?.status).toBe("active");
-        expect(row?.consecutiveFailures).toBe(0);
-        expect(row?.lastErrorCategory).toBeNull();
-      } finally {
-        await pool.cleanup();
-      }
-    });
-
-    test("an unclassified failure with no origin does not park the pool", async () => {
-      // No evidence that the network was at fault means no evidence for
-      // parking a pool an operator may depend on.
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: new Error("something went wrong"),
-        });
-        expect((await readPool(pool.id))?.status).toBe("active");
-      } finally {
-        await pool.cleanup();
-      }
-    });
+  test("coalesces repeated cooldowns for the same pair", async () => {
+    const h = harness();
+    const pool = poolId();
+    flagPoolCooldown(h.selector as never, h.db as never, pool, "openai", rateLimited());
+    await h.settled(1);
+    flagPoolCooldown(h.selector as never, h.db as never, pool, "openai", rateLimited());
+    // One row per cooldown episode, not one per throttled request. Asserted
+    // without waiting: a second row would have to beat the first write, and
+    // the first has already landed.
+    expect(h.rows).toHaveLength(1);
   });
 
-  describe("a success restores the pool", () => {
-    test("a success resets the failure count and returns the pool to active", async () => {
-      const pool = await createPool(world);
-      try {
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: new Error("connect ECONNREFUSED"),
-          errorOrigin: "network",
-        });
-        expect((await readPool(pool.id))?.status).toBe("cooldown");
+  test("a different provider on the same pool is a separate episode", async () => {
+    const h = harness();
+    const pool = poolId();
+    flagPoolCooldown(h.selector as never, h.db as never, pool, "openai", rateLimited());
+    await h.settled(1);
+    flagPoolCooldown(h.selector as never, h.db as never, pool, "anthropic", rateLimited());
+    await h.settled(2);
+    expect(h.rows).toHaveLength(2);
+  });
+});
 
-        await recordPoolDispatchOutcome(getDb(), pool.id, { succeeded: true });
-        const row = await readPool(pool.id);
-        expect(row?.status).toBe("active");
-        expect(row?.consecutiveFailures).toBe(0);
-        expect(row?.cooldownUntil).toBeNull();
-        expect(row?.lastError).toBeNull();
-        expect(row?.lastErrorCategory).toBeNull();
-        expect(row?.lastSuccessAt).not.toBeNull();
-      } finally {
-        await pool.cleanup();
-      }
-    });
+describe("flagPoolBlocked", () => {
+  test("flags the selector and writes an egress_blocked row", async () => {
+    const h = harness();
+    flagPoolBlocked(h.selector as never, h.db as never, poolId(), "opencode", refused());
+    await h.settled(1);
+    expect(h.calls[0]?.method).toBe("flagProviderBlocked");
+    expect(h.rows[0]?.errorCategory).toBe("egress_blocked");
   });
 
-  describe("a disabled pool is never touched", () => {
-    test("an outcome against a disabled pool changes nothing", async () => {
-      // `disabled` is an operator decision; an automatic failure must not
-      // silently re-enable it, and a success must not either.
-      const pool = await createPool(world);
-      try {
-        const pgPool = await getTestPool();
-        const client = await pgPool.connect();
-        try {
-          await client.query("update network_pools set status = 'disabled' where id = $1", [pool.id]);
-        } finally {
-          client.release();
-        }
-        await recordPoolDispatchOutcome(getDb(), pool.id, {
-          succeeded: false,
-          error: new Error("connect ECONNREFUSED"),
-          errorOrigin: "network",
-        });
-        expect((await readPool(pool.id))?.status).toBe("disabled");
-        expect((await readPool(pool.id))?.consecutiveFailures).toBe(0);
-
-        await recordPoolDispatchOutcome(getDb(), pool.id, { succeeded: true });
-        expect((await readPool(pool.id))?.status).toBe("disabled");
-      } finally {
-        await pool.cleanup();
-      }
-    });
+  test("appends the upstream's own code so the row is actionable", async () => {
+    const h = harness();
+    flagPoolBlocked(
+      h.selector as never,
+      h.db as never,
+      poolId(),
+      "opencode",
+      refused("FREE_TIER_REFUSED"),
+    );
+    await h.settled(1);
+    expect(h.rows[0]?.reason).toContain("FREE_TIER_REFUSED");
   });
 
-  describe("an unknown pool is not an error", () => {
-    test("recording against a pool that no longer exists is a no-op", async () => {
-      // The pool may have been deleted between dispatch and finalize; the
-      // recorder must not throw into the completion path for that.
-      const absent = crypto.randomUUID();
-      await recordPoolDispatchOutcome(getDb(), absent, {
-        succeeded: false,
-        error: new Error("connect ECONNREFUSED"),
-        errorOrigin: "network",
-      });
-      expect(await readPool(absent)).toBeUndefined();
-    });
+  test("omits the code suffix when upstream named none", async () => {
+    const h = harness();
+    flagPoolBlocked(h.selector as never, h.db as never, poolId(), "opencode", refused());
+    await h.settled(1);
+    expect(h.rows[0]?.reason).not.toContain("()");
+  });
+
+  test("does not coalesce — a re-enabled pool refused again is a new row", async () => {
+    const h = harness();
+    const pool = poolId();
+    flagPoolBlocked(h.selector as never, h.db as never, pool, "opencode", refused());
+    await h.settled(1);
+    flagPoolBlocked(h.selector as never, h.db as never, pool, "opencode", refused());
+    await h.settled(2);
+    expect(h.rows).toHaveLength(2);
   });
 });

@@ -1,5 +1,4 @@
-import type { Socket } from "node:net";
-import { connect as tlsConnect, type ConnectionOptions } from "node:tls";
+import type { ConnectionOptions } from "node:tls";
 
 /**
  * A TLS ClientHello that matches Bun's fetch, for the paths that cannot use
@@ -88,25 +87,4 @@ export function bunClientHelloOptions(): Pick<
     minVersion: "TLSv1.2",
     maxVersion: "TLSv1.3",
   };
-}
-
-/**
- * Upgrades an already-connected socket to TLS with Bun's parameters.
- *
- * The socket is the point: it lets a SOCKS5 `SocksProxyAgent` own the dial
- * (keeping its SSRF `lookup`) while this controls the hello. Bun's `fetch`
- * cannot do that combination — it refuses SOCKS5 outright.
- */
-export function bunTlsOverSocket(
-  socket: Socket,
-  servername: string,
-  extra: Omit<ConnectionOptions, "socket" | "servername"> = {},
-) {
-  return tlsConnect({
-    socket,
-    servername,
-    rejectUnauthorized: true,
-    ...bunClientHelloOptions(),
-    ...extra,
-  });
 }

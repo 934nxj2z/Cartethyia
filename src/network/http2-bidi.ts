@@ -11,7 +11,6 @@
 // (direct TLS to a pinned, SSRF-validated address, or through the selected
 // tenant pool's CONNECT/SOCKS tunnel). A provider adapter consumes the contract
 // and never opens a socket of its own.
-import type { ValidatedOutboundHttp2Bidi } from "../providers/provider-contracts";
 
 /** Response metadata of one opened bidi stream. */
 export interface Http2BidiResponse {
@@ -70,4 +69,17 @@ export interface Http2BidiOpenOptions {
   readonly allowHostname?: (hostname: string) => boolean;
 }
 
-export type { ValidatedOutboundHttp2Bidi };
+/**
+ * The dialer contract a provider adapter is handed.
+ *
+ * Declared here rather than in the provider layer so the dependency runs one
+ * way: `provider-contracts` imports this module, never the reverse. It used to
+ * be declared there and re-exported from here, which made the two import each
+ * other — type-only, so it never deadlocked, but it meant this
+ * transport-neutral contract had to know about providers.
+ */
+export type ValidatedOutboundHttp2Bidi = (
+  url: URL,
+  headers: Readonly<Record<string, string>>,
+  options?: Http2BidiOpenOptions,
+) => Promise<ValidatedHttp2BidiStream>;
