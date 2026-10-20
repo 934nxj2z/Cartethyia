@@ -137,3 +137,69 @@ describe("Trae OAuth clients", () => {
     expect(traeOAuthClient.supportsBrowserCode).toBe(false);
   });
 });
+
+describe("Trae credential import", () => {
+  // Trae has no device-code or browser authorize flow — the donor's
+  // `start_login` answers `unsupported` and directs the operator to a Desktop
+  // import or a pasted refresh token. A Trae PAT *is* a refresh token.
+  test("a bare token is exchanged rather than stored as an access token", async () => {
+    const { fetchFn, calls } = stubFetch(() => ({ payload: OK_PAYLOAD }));
+    const result = await new TraeOAuthClient(fetchFn, "cn").importCredential({
+      credential: "pat-or-refresh",
+      fields: {},
+    });
+    expect(calls[0]?.body["RefreshToken"]).toBe("pat-or-refresh");
+    expect(result.access).toBe("at-new");
+    expect(result.refresh).toBe("rt-new");
+  });
+
+  test("importing proves the credential is live before it is stored", async () => {
+    const { fetchFn } = stubFetch(() => ({ payload: { Code: "invalid_grant", Message: "expired" } }));
+    expect(
+      new TraeOAuthClient(fetchFn, "cn").importCredential({ credential: "dead-pat", fields: {} }),
+    ).rejects.toThrow(/invalid_grant/);
+  });
+
+  test("a full export with expiry is stored without spending the rotation", async () => {
+    const { fetchFn, calls } = stubFetch(() => ({ payload: OK_PAYLOAD }));
+    const result = await new TraeOAuthClient(fetchFn, "cn").importCredential({
+      credential: JSON.stringify({
+        accessToken: "at-existing",
+        refreshToken: "rt-existing",
+        expiredAt: 1_800_000_000_000,
+        email: "ops@example.com",
+      }),
+      fields: {},
+    });
+    // The stored access token is still valid, so exchanging it would rotate
+    // the refresh token for nothing.
+    expect(calls.length).toBe(0);
+    expect(result.access).toBe("at-existing");
+    expect(result.refresh).toBe("rt-existing");
+    expect(result.accountLabel).toBe("ops@example.com");
+    expect(result.expiresAt.getTime()).toBe(1_800_000_000_000);
+  });
+
+  test("an export with no refresh token is marked static", async () => {
+    const { fetchFn } = stubFetch(() => ({ payload: OK_PAYLOAD }));
+    const result = await new TraeOAuthClient(fetchFn, "cn").importCredential({
+      credential: JSON.stringify({ accessToken: "at-only", expiredAt: 1_800_000_000_000 }),
+      fields: {},
+    });
+    expect(result.auth_state?.["staticToken"]).toBe(true);
+  });
+
+  test("an empty paste is refused with a usable message", async () => {
+    const { fetchFn } = stubFetch(() => ({ payload: OK_PAYLOAD }));
+    expect(
+      new TraeOAuthClient(fetchFn, "cn").importCredential({ credential: "   ", fields: {} }),
+    ).rejects.toThrow(/Paste a Trae account export/);
+  });
+
+  test("a malformed JSON paste is refused", async () => {
+    const { fetchFn } = stubFetch(() => ({ payload: OK_PAYLOAD }));
+    expect(
+      new TraeOAuthClient(fetchFn, "cn").importCredential({ credential: "{not json", fields: {} }),
+    ).rejects.toThrow(/Paste a Trae account export/);
+  });
+});

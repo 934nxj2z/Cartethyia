@@ -701,6 +701,18 @@ function hasInteractiveOAuth(provider: ProviderResponse): boolean {
 }
 
 /**
+ * True when the provider holds a credential that expires and renews.
+ *
+ * A provider with neither a browser redirect nor a device code still belongs
+ * under OAuth when it imports a refreshable token pair: filing it with the API
+ * keys hides that it expires, and the account's renewal is then unexplained.
+ * Import-only clients that cannot refresh stay where they are.
+ */
+function hasRefreshableCredential(provider: ProviderResponse): boolean {
+  return provider.oauthFlows?.refreshable === true;
+}
+
+/**
  * Connection counts for one provider's card.
  *
  * Computed once here because both card variants render the same badges from the
@@ -947,9 +959,12 @@ const SECTIONS = [
   {
     title: "OAuth & Agent Providers",
     // Import-only clients validate and store API keys; only browser/device
-    // authorization belongs in this section.
+    // authorization belongs in this section — plus an import-only client whose
+    // credential is a refreshable token pair, which is OAuth in every way the
+    // operator experiences except the missing button.
     filter: (p: ProviderResponse) =>
-      hasInteractiveOAuth(p) && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
+      (hasInteractiveOAuth(p) || hasRefreshableCredential(p)) &&
+      !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Well Known API Key Providers",
@@ -959,7 +974,8 @@ const SECTIONS = [
       WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p),
+      !hasInteractiveOAuth(p) &&
+      !hasRefreshableCredential(p),
   },
   {
     title: "Other API Key Providers",
@@ -969,7 +985,8 @@ const SECTIONS = [
       !WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p),
+      !hasInteractiveOAuth(p) &&
+      !hasRefreshableCredential(p),
   },
 ];
 

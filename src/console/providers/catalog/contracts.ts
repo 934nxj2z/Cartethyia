@@ -643,6 +643,16 @@ export interface ProviderResponse {
      * console offers an import path alongside the redirect and device flows.
      */
     readonly import: boolean;
+    /**
+     * The imported credential is a refreshable token pair rather than a static
+     * key: the client can both import and refresh.
+     *
+     * Import-only clients otherwise look identical to API-key providers — no
+     * redirect, no device code — and were grouped with them, which filed a
+     * refreshable OAuth account under "API Key Providers" where nothing
+     * explains that it expires and renews.
+     */
+    readonly refreshable: boolean;
     /** Fields the browser flow must collect before it starts. */
     readonly browserLoginFields: readonly ProviderLoginField[];
     /** Fields the device flow must collect before it starts. */

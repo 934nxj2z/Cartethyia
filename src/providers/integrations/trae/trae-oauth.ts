@@ -19,6 +19,7 @@
 // in `trae_client.py`).
 
 import { OAuthClient } from "../../authentication/oauth-client";
+import type { OAuthExchangeResult, OAuthImportInput } from "../../authentication/oauth-flow-store";
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
 import {
   TRAE_EXCHANGE_TOKEN_PATH,
@@ -72,6 +73,56 @@ export class TraeOAuthClient extends OAuthClient {
   constructor(fetchFn: typeof fetch = globalThis.fetch, realm: TraeRealm = "intl") {
     super(fetchFn);
     this.realm = realm;
+  }
+
+  /**
+   * Validates a pasted Trae export and stores it as a refreshable account.
+   *
+   * Trae has no authorize endpoint to click through, so the operator pastes
+   * the credential the desktop client already minted. Importing it through this
+   * path rather than the API-key path is what puts the refresh token in
+   * `refresh_ciphertext` — an account imported as a plain key has no refresh
+   * token stored and dies at expiry with nothing to exchange.
+   *
+   * `importFields` is left empty: the export carries everything needed, and
+   * asking the operator for a field the blob already contains invites a
+   * mismatch with the account the token belongs to.
+   */
+  async importCredential(input: OAuthImportInput): Promise<OAuthExchangeResult> {
+    const parsed = parseExport(input.credential);
+    if (parsed === undefined) {
+      // A Trae PAT *is* a refresh token, so the one-token form is accepted
+      // here and exchanged below rather than being stored as a dead access
+      // token.
+      throw new Error(
+        "Paste a Trae account export (JSON with accessToken + refreshToken), a PAT, or a refresh token",
+      );
+    }
+
+    // A full export already carries a usable access token; storing it directly
+    // avoids spending the refresh rotation on a credential that is still valid.
+    if (parsed.refresh === undefined && parsed.expiresAtMs !== undefined) {
+      return parsedResult(parsed, parsed.access, parsed.access, true);
+    }
+    if (parsed.refresh !== undefined && parsed.expiresAtMs !== undefined) {
+      return parsedResult(parsed, parsed.access, parsed.refresh, false);
+    }
+
+    // Only a refresh token (a PAT, or a bare token with no expiry): exchange it
+    // now. Upstream is the only source of the access token and of the account
+    // identity, and the exchange also proves the credential is live before it
+    // is stored — an import that failed here would otherwise surface as a
+    // dispatch failure much later.
+    const exchanged = await this.refreshWithUser(parsed.refresh ?? parsed.access, parsed.userId ?? "");
+    return {
+      access: exchanged.access,
+      refresh: exchanged.refresh ?? (parsed.refresh ?? parsed.access),
+      expiresAt: exchanged.expiresAt,
+      ...(parsed.email === undefined ? {} : { accountLabel: parsed.email }),
+      ...(parsed.userId === undefined
+        ? {}
+        : { auth_state: { userId: parsed.userId } }),
+    };
   }
 
   /**
@@ -178,6 +229,87 @@ export class TraeOAuthClient extends OAuthClient {
  */
 function isBusinessError(err: unknown): boolean {
   return err instanceof Error && (err.message.includes("rejected") || err.message.includes("HTTP 4"));
+}
+
+/** Assembles an import result for an already-complete export. */
+function parsedResult(
+  parsed: TraeExport,
+  access: string,
+  refresh: string,
+  isStatic: boolean,
+): OAuthExchangeResult {
+  return {
+    access,
+    refresh,
+    expiresAt:
+      parsed.expiresAtMs === undefined ? new Date(Date.now() + 3600_000) : new Date(parsed.expiresAtMs),
+    ...(isStatic ? { auth_state: { staticToken: true } } : {}),
+    ...(parsed.email === undefined ? {} : { accountLabel: parsed.email }),
+  };
+}
+
+/** The parts of a Trae export this flow needs. */
+interface TraeExport {
+  readonly access: string;
+  readonly refresh?: string;
+  readonly expiresAtMs?: number;
+  readonly email?: string;
+  readonly userId?: string;
+}
+
+/**
+ * Reads a pasted credential as a Trae export.
+ *
+ * Accepts the exporter's own shape (`accessToken`/`refreshToken`) and the bare
+ * access token an operator may have copied out of it. Returns `undefined` when
+ * neither reading yields a token, so the caller reports a usable message rather
+ * than storing an empty credential.
+ */
+function parseExport(credential: string): TraeExport | undefined {
+  const trimmed = credential.trim();
+  if (trimmed.length === 0) return undefined;
+  if (!trimmed.startsWith("{")) return { access: trimmed };
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const access = firstString(parsed, ["accessToken", "access_token", "token"]);
+  if (access === undefined) return undefined;
+  const refresh = firstString(parsed, ["refreshToken", "refresh_token", "refresh"]);
+  const expiresAtMs = firstNumber(parsed, ["expiredAt", "expiresAt", "TokenExpireAt", "tokenExpireAt"]);
+  const email = firstString(parsed, ["email", "userEmail", "accountLabel"]);
+  const userId = firstString(parsed, ["userId", "user_id", "uid", "UserID"]);
+  return {
+    access,
+    ...(refresh === undefined ? {} : { refresh }),
+    ...(expiresAtMs === undefined ? {} : { expiresAtMs }),
+    ...(email === undefined ? {} : { email }),
+    ...(userId === undefined ? {} : { userId }),
+  };
+}
+
+function firstString(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function firstNumber(record: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      // An ISO expiry is what a re-export carries; epoch ms is what the
+      // exchange returns, and both appear in the wild.
+      const asMs = Date.parse(value);
+      if (Number.isFinite(asMs)) return asMs;
+    }
+  }
+  return undefined;
 }
 
 /** Client bound to the intl deployment. */
