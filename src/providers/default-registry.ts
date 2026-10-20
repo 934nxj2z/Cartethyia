@@ -500,6 +500,10 @@ export const PROVIDER_CAPABILITIES = {
   trae: {
     loadAdapter: async () => (await import("./integrations/trae/trae")).createTraeAdapter(),
     loadModels: async () => (await import("./integrations/trae/trae-catalog")).TRAE_INTL_MODELS,
+    // A Trae credential is an access/refresh pair and the refresh token is what
+    // keeps it alive, so the refresher is registered rather than optional:
+    // without it the account dies at first expiry.
+    loadAuthentication: oauthCapability(() => import("./integrations/trae/trae-oauth"), "traeOAuthClient", { withRefresher: true }),
     // Live model list is intl-unsupported: upstream answers `403 no schema
     // found`, so discovery returning nothing is the truthful result and the
     // static roster above stays authoritative.
@@ -508,6 +512,9 @@ export const PROVIDER_CAPABILITIES = {
   traecn: {
     loadAdapter: async () => (await import("./integrations/trae/trae")).createTraeCnAdapter(),
     loadModels: async () => (await import("./integrations/trae/trae-catalog")).TRAE_CN_MODELS,
+    // The CN client, not the intl one: the exchange runs on the CN account
+    // host, and a refresh posted to the intl host is refused.
+    loadAuthentication: oauthCapability(() => import("./integrations/trae/trae-oauth"), "traeCnOAuthClient", { withRefresher: true }),
     loadModelDiscovery: traeDiscovery("cn", "traecn"),
   },
   inferhub: {

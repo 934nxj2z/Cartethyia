@@ -50,9 +50,11 @@ const STOP_REASONS: Readonly<Record<string, CanonicalStopReason>> = {
 /**
  * Reads the credential.
  *
- * Trae credentials are OAuth-shaped JSON exports, so the whole object is the
+ * Trae credentials are OAuth token pairs, so the whole JSON export is the
  * secret: extracting only the access token would drop the refresh token and
- * leave the account permanently unrefreshable.
+ * leave the account permanently unrefreshable. The refresh itself runs through
+ * the registered OAuth refresher (`trae-oauth.ts`), not here — this only needs
+ * the access token to authorize a request.
  */
 function traeAuth(secret: string, accountId: string | undefined): TraeAuth {
   const token = extractToken(secret);
