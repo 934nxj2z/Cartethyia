@@ -282,9 +282,9 @@ function cursorModel(
  *
  * `auto` is the only id surfaced for Cursor's Auto model: the upstream wire id
  * is `default` and the two are the same model, not two entries. Dispatch maps
- * `auto` onto `default` (see `resolveCursorWireModelId`), so seeding the
- * upstream id as well would show one model twice. Grok 4.6 follows the same
- * rule: the wire id is `cursor-grok-4.6`, and `grok-4.6` is the id surfaced.
+ * `auto` is an alias: Cursor's own roster names its Auto model `default`, and
+ * dispatch maps `auto` onto it, so seeding the upstream id as well would list
+ * the same model twice. Grok ids are already upstream ids and are not rewritten.
  *
  * Output is stated explicitly: `defineModel` would otherwise inherit a
  * base-catalog output equal to the whole 256k window, which is not a limit

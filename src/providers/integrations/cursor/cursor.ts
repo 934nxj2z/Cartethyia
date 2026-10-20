@@ -54,6 +54,7 @@ import { cursorRunSessions } from "./cursor-session-manager";
 import type { CursorContinuationScope, CursorRunSession } from "./cursor-session-manager";
 import { fetchCursorRunOrigin } from "./cursor-catalog";
 import { defaultParameterValues, fetchCursorModels } from "./cursor-catalog";
+import type { CursorModelInfo } from "./cursor-catalog";
 import { decodeValueToJson, decodeStructEntriesToJson } from "./protocol/struct";
 
 /**
@@ -65,6 +66,17 @@ import { decodeValueToJson, decodeStructEntriesToJson } from "./protocol/struct"
  * answers; a shorter one is traffic the upstream does not ask for.
  */
 const CURSOR_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/**
+ * How long one account's model roster is reused for `parameters` lookups.
+ *
+ * A Run needs the model's declared default parameter tuple, but the roster is
+ * per-account and moves rarely, so it is fetched once and cached rather than on
+ * every dispatch.
+ */
+const CURSOR_ROSTER_TTL_MS = 300_000;
+/** credential → { roster, fetchedAt } for the parameter lookup. */
+const rosterCache = new Map<string, { roster: readonly CursorModelInfo[]; fetchedAt: number }>();
 /** Client-heartbeat cadence the Cursor edge expects (donor `heartbeatMs`). */
 const CURSOR_HEARTBEAT_INTERVAL_OVERRIDE = (() => {
   const raw = process.env.CARTETHYIA_CURSOR_HEARTBEAT_MS?.trim();
@@ -469,15 +481,11 @@ class CursorAdapter implements ProviderAdapter {
     // Cursor declares per-model parameter tuples (effort / context / fast). A
     // fresh Run must carry the model's declared default tuple: with an empty
     // `parameters` the Run streams only heartbeats and never turns.
-    const roster = await fetchCursorModels({
-      credential,
-      ...(context.outbound_fetch === undefined
-        ? {}
-        : { fetcher: context.outbound_fetch as unknown as typeof fetch }),
-      signal: context.abort_signal,
-    });
-    const declared = roster.find((model) => model.id === modelId);
-    const parameterValues = defaultParameterValues(declared);
+    const parameterValues = defaultParameterValues(
+      await this.#rosterFor(credential, context).then((roster) =>
+        roster.find((model) => model.id === modelId),
+      ),
+    );
     const images = await collectImages(request, context);
     const descriptors = toolDescriptorsFor(request.tools);
     const systemPrompt = systemPromptFrom(request);
@@ -602,6 +610,36 @@ class CursorAdapter implements ProviderAdapter {
         { providerId: CURSOR_PROVIDER_ID },
         "upstream",
       );
+    }
+  }
+
+  /**
+   * The account's model roster, for the default parameter tuple.
+   *
+   * Cached per credential and never fatal: a Run whose model is not in the
+   * roster (or whose roster fetch failed) still runs with no parameters rather
+   * than failing the dispatch. The tuple is an optimization, not a requirement.
+   */
+  async #rosterFor(
+    credential: string,
+    context: ProviderDispatchContext,
+  ): Promise<readonly CursorModelInfo[]> {
+    const cached = rosterCache.get(credential);
+    if (cached !== undefined && Date.now() - cached.fetchedAt < CURSOR_ROSTER_TTL_MS) {
+      return cached.roster;
+    }
+    try {
+      const roster = await fetchCursorModels({
+        credential,
+        ...(context.outbound_fetch === undefined
+          ? {}
+          : { fetcher: context.outbound_fetch as unknown as typeof fetch }),
+        signal: context.abort_signal,
+      });
+      rosterCache.set(credential, { roster, fetchedAt: Date.now() });
+      return roster;
+    } catch {
+      return cached?.roster ?? [];
     }
   }
 
@@ -913,8 +951,10 @@ export const cursorAdapter: ProviderAdapter = createCursorAdapter();
 /** Maps virtual/canonical client model IDs to upstream Cursor wire IDs. */
 function resolveCursorWireModelId(rawModelId: string): string {
   const id = rawModelId.trim().toLowerCase();
+  // Only `auto` is an alias: Cursor's own roster names its Auto model
+  // `default`. `grok-4.6` is already the upstream id, and rewriting it to
+  // `cursor-grok-4.6` made every Grok Run answer "AI Model Not Found".
   if (id === "auto") return "default";
-  if (id === "grok-4.6") return "cursor-grok-4.6";
   return rawModelId;
 }
 

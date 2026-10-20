@@ -72,6 +72,7 @@ const { values } = parseArgs({
     tenant: { type: "string", default: "probe-tenant" },
     "api-key": { type: "string", default: "probe-key" },
     account: { type: "string", default: "probe-account" },
+    image: { type: "string" },
     raw: { type: "boolean", default: false },
     heartbeat: { type: "boolean", default: false },
     timeout: { type: "string", default: "120000" },
@@ -128,6 +129,22 @@ function requestFor(modelId: string): CanonicalRequest {
           ],
         }
       : {}),
+    ...(values.image === undefined
+      ? {}
+      : {
+          messages: [
+            {
+              role: "user",
+              content: [
+                { kind: "text", text: values.prompt! },
+                {
+                  kind: "image",
+                  payload: { source: { type: "base64", data: values.image, media_type: "image/png" } },
+                },
+              ],
+            },
+          ],
+        }),
     generation_controls: { max_tokens: 512 },
     stream: true,
     source_surface: "chat",
