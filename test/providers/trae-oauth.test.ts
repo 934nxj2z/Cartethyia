@@ -270,6 +270,16 @@ describe("Trae browser authorization", () => {
     expect(url.searchParams.get("client_id")).toBe("ono9krqynydwx5");
   });
 
+  test("the callback path is the one the login page accepts", async () => {
+    // Verified against the live page: it renders the login form only when
+    // `auth_callback_url` ends in `/authorize`. `/callback` — the gateway
+    // default — is answered with "Login Failed" before the operator can sign
+    // in, which is what made every Trae login fail at the first click.
+    const { fetchFn } = oauthStub(GUIDANCE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    expect(new URL(client.browserRedirectUri).pathname).toBe("/authorize");
+  });
+
   test("the authorize URL carries the parameters a real client sends", async () => {
     // Every one of these was missing or wrong when the login page rejected the
     // flow: PKCE is required to get a refresh token back, and the device fields

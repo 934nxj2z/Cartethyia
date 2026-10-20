@@ -28,6 +28,7 @@ import type { OAuthExchangeResult, OAuthImportInput } from "../../authentication
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
 import {
   TRAE_AUTHORIZATION_PATH,
+  TRAE_CALLBACK_PATH,
   TRAE_EXCHANGE_TOKEN_PATH,
   TRAE_GET_USER_INFO_PATH,
   TRAE_LOGIN_GUIDANCE_URLS,
@@ -36,6 +37,7 @@ import {
 } from "./trae-realm";
 import { TRAE_DEVICE_BRAND, TRAE_OS_VERSION, traeDeviceIdentity } from "./trae-headers";
 import { getTraeVersion } from "../../operations/client-versions";
+import { browserAuthorizeRedirectUri } from "../../../config/providers";
 
 /** Upstream client id. Constant across realms. */
 const TRAE_CLIENT_ID = "ono9krqynydwx5";
@@ -108,6 +110,14 @@ export class TraeOAuthClient extends OAuthClient {
    */
   override readonly supportsDeviceCode = false;
   override readonly supportsBrowserCode = true;
+
+  /**
+   * The login page only accepts `/authorize` as the callback path (see
+   * `TRAE_CALLBACK_PATH`); the gateway-wide default is `/callback`, which it
+   * answers with "Login Failed" before consent. The port still comes from the
+   * gateway's own redirect setting so a deployment can move it.
+   */
+  override readonly browserRedirectUri: string = withTraeCallbackPath(browserAuthorizeRedirectUri());
 
   protected override readonly providerLabel = "Trae";
   protected override readonly clientId = TRAE_CLIENT_ID;
@@ -598,3 +608,19 @@ export const traeOAuthClient = new TraeOAuthClient();
 
 /** Client bound to the China deployment. */
 export const traeCnOAuthClient = new TraeOAuthClient(globalThis.fetch, "cn");
+
+/**
+ * Swaps the gateway redirect's path for the one Trae accepts.
+ *
+ * Parsed rather than string-replaced so a custom redirect (a different port,
+ * a host) keeps everything except the path.
+ */
+function withTraeCallbackPath(redirectUri: string): string {
+  try {
+    const url = new URL(redirectUri);
+    url.pathname = TRAE_CALLBACK_PATH;
+    return url.toString();
+  } catch {
+    return `http://127.0.0.1:59653${TRAE_CALLBACK_PATH}`;
+  }
+}

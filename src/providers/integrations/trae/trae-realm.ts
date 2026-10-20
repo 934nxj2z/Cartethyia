@@ -56,7 +56,19 @@ export const TRAE_GET_USER_INFO_PATH = "/cloudide/api/v3/trae/GetUserInfo";
 
 /** Browser-login path on the host `GetLoginGuidance` names. */
 export const TRAE_AUTHORIZATION_PATH = "/authorization";
-export const TRAE_CALLBACK_PATH = "/callback";
+
+/**
+ * Path the login page will accept as `auth_callback_url`.
+ *
+ * Verified against the live page: it renders the login form only when the
+ * callback path is `/authorize`. Any other path — `/callback`, `/auth/callback`,
+ * `/`, a trailing slash — is answered with "Login Failed" before the operator
+ * gets to sign in, so the gateway's own `/callback` default cannot be used.
+ *
+ * The donor serves this on its own dynamic port; here the port comes from the
+ * gateway's redirect setting and only the path is fixed.
+ */
+export const TRAE_CALLBACK_PATH = "/authorize";
 
 /**
  * Login-guidance endpoints, tried in order.
