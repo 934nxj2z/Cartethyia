@@ -1,6 +1,7 @@
 // API-key authentication and authorization snapshots: token extraction, hashing, lookup, and admission identity.
 
 import type { CartethyiaDatabase } from "../persistence/db-handle";
+import { deleteShared, publishInvalidation, readShared, writeShared } from "../persistence/shared-cache";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { GatewayError } from "../protocol/gateway-error";
 import { hashSecret } from "./crypto";
@@ -97,12 +98,24 @@ export function invalidateApiKeyCache(keyId?: string): void {
   if (keyId === undefined) {
     authCache.clear();
     authCacheByKeyId.clear();
+    void deleteShared("auth");
+    publishInvalidation({ namespace: "auth" });
     return;
   }
   const hashes = authCacheByKeyId.get(keyId);
-  if (!hashes) return;
-  for (const hash of hashes) authCache.delete(hash);
-  authCacheByKeyId.delete(keyId);
+  if (hashes) {
+    for (const hash of hashes) authCache.delete(hash);
+    authCacheByKeyId.delete(keyId);
+  }
+  // Peer processes hold their own copy, and `reusePort` means the console
+  // write may have landed on a different one entirely. Dropping only locally
+  // leaves a revoked key valid for up to a full TTL everywhere else.
+  //
+  // Delivered by broadcast rather than by deleting a shared entry: a mutation
+  // names a key id, and the shared layer is keyed by token hash, which the
+  // mutating request does not have. The notice is at-most-once, so the TTL
+  // stays the backstop for a peer that misses it.
+  publishInvalidation({ namespace: "auth", key: keyId });
 }
 
 /**
@@ -292,6 +305,24 @@ export async function resolveApiKeyAuthorization(
   }
   const cached = authCache.get(hash);
   if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.value;
+  // L2: a peer process may have resolved this token already. Reachable only
+  // after the L1 entry lapsed, so Redis is never consulted on a warm hit.
+  //
+  // Keyed by token hash, because that is what a lookup has — invalidation
+  // arrives as a key id and is delivered as a broadcast instead.
+  const shared = await readShared("auth", hash);
+  if (shared !== undefined) {
+    try {
+      const parsed = JSON.parse(shared) as ResolvedApiKey;
+      if (typeof parsed?.id === "string") {
+        indexAuthCache(hash, { at: now, value: parsed, keyId: parsed.id });
+        evictAuthCacheOldest();
+        return parsed;
+      }
+    } catch {
+      // A malformed or schema-drifted entry is ignored and re-resolved.
+    }
+  }
   const store = new DrizzleApiKeyStore(db);
   const row = await store.findActiveByHash(hash);
   if (!row) {
@@ -349,5 +380,16 @@ export async function resolveApiKeyAuthorization(
   };
   indexAuthCache(hash, { at: Date.now(), value, keyId: value.id });
   evictAuthCacheOldest();
+  // Shared copy for peer processes, keyed by the token hash so a lookup can
+  // find it without resolving the key first. Invalidation travels by broadcast,
+  // since a console mutation names a key id and cannot enumerate the hashes
+  // that resolved to it in another process.
+  //
+  // The cached value deliberately carries `lifetime_tokens_consumed` as read.
+  // That figure moves constantly, and the module already documents the snapshot
+  // as advisory on that axis (spending is enforced by the admission counter),
+  // so a peer serving it stale for up to the TTL is the same tradeoff the
+  // in-process cache has always made.
+  void writeShared("auth", hash, JSON.stringify(value), AUTH_CACHE_TTL_MS);
   return value;
 }

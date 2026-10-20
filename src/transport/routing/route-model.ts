@@ -399,6 +399,8 @@ export function accountsRateLimitedError(
 
 
 
+import { publishRoutingInvalidation, subscribeRoutingInvalidation } from "../../persistence/shared-cache";
+
 export type SnapshotBuilder = () => Promise<
   Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number }
 >;
@@ -430,7 +432,17 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    */
   private building: { revision: RoutingRevision; promise: Promise<RouteSnapshot> } | undefined;
 
-  constructor(private readonly builder: SnapshotBuilder) {}
+  constructor(private readonly builder: SnapshotBuilder) {
+    // Peers' mutations arrive once per process, not per instance: the handler
+    // drops this instance's copy, which is the only one there is.
+    this.unsubscribe = subscribeRoutingInvalidation(() => {
+      this.revision += 1;
+      this.snapshot = undefined;
+    });
+  }
+
+  /** Ends the peer-invalidation subscription. */
+  readonly unsubscribe: () => void;
 
   async getSnapshot(): Promise<RouteSnapshot> {
     if (this.snapshot) return this.snapshot;
@@ -454,6 +466,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // Lazy: the next getSnapshot() rebuilds. Dashboard mutations only need
     // the new revision token — they must not pay seven Postgres round-trips
     // inside the mutating request while holding no pool pressure budget.
+    //
+    // Broadcast, because `reusePort` runs several gateway processes and each
+    // holds its own snapshot: a console write handled by one of them left the
+    // others serving pre-write routing until something else invalidated them.
+    // Peers drop their copy on receipt and rebuild lazily, same as here — the
+    // notice carries no data, so there is nothing to deserialize.
+    publishRoutingInvalidation();
     return this.revision;
   }
 

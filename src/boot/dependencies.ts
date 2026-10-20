@@ -32,6 +32,7 @@ import { RedisAdmissionCounterStore } from "../security/admission/redis-store";
 import { sweepLeases } from "../security/admission/lease-sweep";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { UsageFlushBuffer } from "../persistence/usage-flush";
+import { subscribePeerSettingsRevisions } from "../persistence/settings-revision";
 import { deleteExpiredSessions } from "../console/auth/session-service";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
 import {
@@ -204,6 +205,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     }
     return [...totals].map(([accountId, inflight]) => ({ accountId, inflight }));
   };
+  // Peer processes' settings mutations arrive here. Subscribed once for the
+  // process: the revision counter is process-global, and the handler only
+  // moves it forward.
+  subscribePeerSettingsRevisions();
   const usageFlush = new UsageFlushBuffer(db);
   const admissionStore = redis
     ? new RedisAdmissionCounterStore(redis)
