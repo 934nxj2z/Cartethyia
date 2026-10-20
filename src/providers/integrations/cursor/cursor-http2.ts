@@ -19,6 +19,65 @@ import {
 } from "./cursor-shared";
 import { createCursorChecksumHeader, resolveCursorDeviceIds } from "./cursor-identity";
 
+import { isRecord } from "../../../protocol/codecs";
+
+/**
+ * The refusal Cursor sends inside an otherwise-successful 200 Run stream.
+ *
+ * It is a Connect JSON error envelope, not protobuf, and it is where a real
+ * account-level refusal lands — a rate-limited or exhausted account streams a
+ * heartbeat and then this. Without it the Run looks like a deadlock: the
+ * stream opened, no text ever arrived, and nothing named the reason.
+ */
+function connectErrorEnvelope(payload: Uint8Array): GatewayError | undefined {
+  const text = new TextDecoder().decode(payload);
+  if (!text.trimStart().startsWith("{\"error\"")) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed["error"])) return undefined;
+  const error = parsed["error"];
+  const code = typeof error["code"] === "string" ? error["code"] : "";
+  const detail = cursorErrorDetail(error);
+  if (code === "resource_exhausted") {
+    return new GatewayError(
+      "quota_exceeded",
+      429,
+      `Cursor refused the Run: ${detail}`,
+      { providerId: "cursor", upstreamCode: code },
+      "upstream",
+    );
+  }
+  return new GatewayError(
+    "platform_unavailable",
+    502,
+    `Cursor refused the Run: ${detail}`,
+    { providerId: "cursor", upstreamCode: code },
+    "upstream",
+  );
+}
+
+/** The human-readable refusal, preferring Cursor's own `chatMessage`/`detail`. */
+function cursorErrorDetail(error: Record<string, unknown>): string {
+  const raw = typeof error["message"] === "string" ? error["message"] : "";
+  for (const detail of Array.isArray(error["details"]) ? error["details"] : []) {
+    if (!isRecord(detail)) continue;
+    const debug = detail["debug"];
+    if (!isRecord(debug)) continue;
+    const info = debug["details"];
+    if (isRecord(info)) {
+      const chat = info["chatMessage"];
+      if (typeof chat === "string" && chat.length > 0) return chat;
+      const title = info["title"];
+      if (typeof title === "string" && title.length > 0) return title;
+    }
+  }
+  return raw.length > 0 ? raw : "Cursor refused the Run";
+}
+
 /** One decoded Cursor server message. */
 export interface CursorServerMessage {
   readonly raw: Record<string, unknown>;
@@ -206,8 +265,13 @@ export async function* decodeServerMessages(
     const leftover = pending.subarray(consumed);
     pending = leftover.byteLength === 0 ? new Uint8Array(0) : new Uint8Array(leftover);
     for (const frame of frames) {
-      if ((frame.flags & FLAG_END_STREAM) !== 0) return;
       const payload = decodeFramePayload(frame);
+      // A refusal is a Connect JSON error envelope, not protobuf: an exhausted
+      // account answers with one inside a normal 200 stream. Surfacing it is
+      // the difference between "the model said nothing" and "you hit your
+      // usage limit".
+      const envelope = connectErrorEnvelope(payload);
+      if (envelope !== undefined) throw envelope;
       try {
         yield decodeMessage("AgentServerMessage", payload);
       } catch {
@@ -216,6 +280,11 @@ export async function* decodeServerMessages(
         // a Run that produced usable output must not die on one unknown field.
         continue;
       }
+      // `END_STREAM` ends the *response*, not the payload: Cursor sets it on the
+      // last frame of a Run, which is exactly the frame carrying `turn_ended`
+      // and the model's final text. Returning before decoding it dropped every
+      // answer and left the Run looking like a heartbeat-only deadlock.
+      if ((frame.flags & FLAG_END_STREAM) !== 0) return;
     }
   }
 }

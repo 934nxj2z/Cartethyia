@@ -27,10 +27,12 @@ import {
   discoverCursorModels,
   fetchCursorRunOrigin,
 } from "../../src/providers/integrations/cursor/cursor-catalog";
-import { decodeServerMessages, openCursorRun } from "../../src/providers/integrations/cursor/cursor-http2";
+import { openCursorRun } from "../../src/providers/integrations/cursor/cursor-http2";
 import { buildRunRequest } from "../../src/providers/integrations/cursor/cursor-request";
 import { buildHeartbeat } from "../../src/providers/integrations/cursor/cursor-request";
 import { FALLBACK_CLIENT_VERSION } from "../../src/providers/integrations/cursor/cursor-shared";
+import { decodeFramePayload, streamFrames } from "../../src/providers/integrations/cursor/protocol/framing";
+import { decodeMessage } from "../../src/providers/integrations/cursor/protocol/messages";
 import { parseProviderId, type ProviderDispatchTarget, type ProviderDispatchContext, type ResolvedCredential } from "../../src/providers/provider-contracts";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
@@ -67,6 +69,9 @@ const { values } = parseArgs({
     all: { type: "boolean", default: false },
     tools: { type: "boolean", default: false },
     "tool-result": { type: "string", default: "pong" },
+    tenant: { type: "string", default: "probe-tenant" },
+    "api-key": { type: "string", default: "probe-key" },
+    account: { type: "string", default: "probe-account" },
     raw: { type: "boolean", default: false },
     heartbeat: { type: "boolean", default: false },
     timeout: { type: "string", default: "120000" },
@@ -94,6 +99,14 @@ function contextFor(): ProviderDispatchContext {
     abort_signal: AbortSignal.timeout(Number(values.timeout)),
     outbound_fetch: outboundFetch,
     outbound_http2: bindingFactory.http2Bidi(undefined, undefined),
+    // The adapter refuses a tool call it cannot hand to a later request, so a
+    // tool probe must present the same scope a real dispatch would.
+    continuation_scope: {
+      tenantId: values.tenant ?? "probe-tenant",
+      apiKeyId: values["api-key"] ?? "probe-key",
+      providerId: "cursor",
+      providerAccountId: values.account ?? "probe-account",
+    },
   };
 }
 
@@ -131,6 +144,9 @@ function candidateFor(modelId: string): ProviderDispatchTarget {
   };
 }
 
+/** Call id the last probe captured, for the tool-result continuation probe. */
+let capturedCallId: string | undefined;
+
 async function runOne(modelId: string): Promise<void> {
   const startedAt = Date.now();
   let text = "";
@@ -140,21 +156,39 @@ async function runOne(modelId: string): Promise<void> {
   const toolCalls: string[] = [];
   const errors: string[] = [];
   try {
-    for await (const event of cursorAdapter.dispatch(requestFor(modelId), candidateFor(modelId), contextFor())) {
+    // A manual iterator, never `break`: breaking disposes the generator, which
+    // stops the Run's frame reader. The Run must stay read (heartbeats drained)
+    // between the two legs of the tool loop, exactly as it does in the gateway.
+    const events = cursorAdapter.dispatch(requestFor(modelId), candidateFor(modelId), contextFor())[
+      Symbol.asyncIterator
+    ]();
+    let next = await events.next();
+    while (next.done !== true) {
+      const event = next.value;
       if (event.type === "content_delta") {
         if (event.content.kind === "text") text += event.content.text;
         else if (event.content.kind === "reasoning") reasoning += event.content.summary ?? "";
       } else if (event.type === "tool_call_delta") {
         toolCalls.push(`${event.name}(${event.arguments_delta})`);
-        (globalThis as { __cursorProbeCallId?: string }).__cursorProbeCallId = event.call_id;
+        capturedCallId = event.call_id;
+        if (values.tools) {
+          stopReason = "tool_use (Run held)";
+          break;
+        }
       } else if (event.type === "terminal") {
         stopReason = event.stop_reason ?? "unknown";
         usage = event.usage;
         if (event.state === "failed") errors.push("Cursor Run failed (see stop_reason=error)");
+        if (event.stop_details !== undefined) {
+          errors.push(JSON.stringify(event.stop_details));
+        }
       }
+      next = await events.next();
     }
   } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
+    const err = error as { message?: string; status?: number; code?: string };
+    errors.push(`[${err.code ?? "error"} ${err.status ?? ""}] ${err.message ?? String(error)}`);
+    console.log(`thrown: ${JSON.stringify(err)}`);
   }
   const latencyMs = Date.now() - startedAt;
   console.log(`\n=== ${modelId} ===`);
@@ -180,6 +214,19 @@ async function resolveClientVersion(): Promise<string> {
   } catch {
     return FALLBACK_CLIENT_VERSION;
   }
+}
+
+/** Decodes frame payloads the way the adapter's pump does, synchronously. */
+function decodeServerMessagesSync(bytes: Uint8Array): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const frame of streamFrames(bytes)) {
+    try {
+      out.push(decodeMessage("AgentServerMessage", decodeFramePayload(frame)));
+    } catch {
+      // Unknown-field frame: the adapter skips these too.
+    }
+  }
+  return out;
 }
 
 async function main(): Promise<void> {
@@ -219,13 +266,50 @@ async function main(): Promise<void> {
     // the wire answer, not the same heartbeat-only stream.
     const beat = setInterval(() => void opened.write(buildHeartbeat()).catch(() => undefined), 5_000);
     beat.unref();
+    // Raw bytes first, undecorated: a frame the message decoder skips (an
+    // unknown field) still proves what the upstream actually sent.
     let count = 0;
-    for await (const message of decodeServerMessages(opened.stream.body)) {
+    let rawBytes = 0;
+    const captured: Uint8Array[] = [];
+    for await (const chunk of opened.stream.body) {
+      rawBytes += chunk.byteLength;
       count += 1;
-      const keys = Object.keys(message).join(",");
-      console.log(`#${count} keys=${keys}`);
-      console.log(JSON.stringify(message).slice(0, 1200));
-      if (count >= 25) break;
+      captured.push(chunk);
+      const hex = Array.from(chunk.subarray(0, 64))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      console.log(`chunk#${count} bytes=${chunk.byteLength} hex=${hex}`);
+      if (count >= 40) break;
+    }
+    console.log(`total_raw_bytes: ${rawBytes}`);
+    // Re-decode the same bytes through the adapter's decoder: the hex above
+    // proves what arrived, this shows what the adapter makes of it.
+    let decoded = 0;
+    const merged = new Uint8Array(rawBytes);
+    let at = 0;
+    for (const part of captured) {
+      merged.set(part, at);
+      at += part.byteLength;
+    }
+    for (const message of decodeServerMessagesSync(merged)) {
+      decoded += 1;
+      console.log(`decoded#${decoded} ${JSON.stringify(message).slice(0, 1500)}`);
+      if (decoded >= 10) break;
+    }
+    console.log(`decoded_messages: ${decoded}`);
+    // The frame the decoder could not turn into a message: gunzip it and show
+    // the raw protobuf bytes, which is where the model's answer must be.
+    const frames = [...streamFrames(merged)];
+    console.log(`frame_count: ${frames.length}`);
+    for (const [index, frame] of frames.entries()) {
+      const payload = decodeFramePayload(frame);
+      console.log(
+        `frame#${index + 1} flags=${frame.flags} compressed=${frame.payload.byteLength} plain=${payload.byteLength} hex=${Array.from(payload.subarray(0, 48)).map((b) => b.toString(16).padStart(2, "0")).join("")}`,
+      );
+      // Not protobuf: the upstream answered with a Connect JSON error envelope,
+      // which is the real refusal reason a probe has to surface verbatim.
+      const text = new TextDecoder().decode(payload);
+      if (text.trimStart().startsWith("{")) console.log(`frame#${index + 1} json=${text.slice(0, 800)}`);
     }
     clearInterval(beat);
     const response = opened.stream.response;
@@ -260,8 +344,8 @@ async function main(): Promise<void> {
   // Tool loop: first run asks for a tool call, second run answers it on the
   // same held Run. `--tools` alone stops at the call; `--tools --tool-result`
   // replays the captured call id as a continuation request.
-  if (values.tools && (globalThis as { __cursorProbeCallId?: string }).__cursorProbeCallId !== undefined) {
-    const callId = (globalThis as { __cursorProbeCallId: string }).__cursorProbeCallId;
+  if (values.tools && capturedCallId !== undefined) {
+    const callId: string = capturedCallId;
     const modelId = values.model!;
     const request = requestFor(modelId);
     request.messages = [

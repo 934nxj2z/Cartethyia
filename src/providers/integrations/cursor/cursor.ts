@@ -438,7 +438,7 @@ class CursorAdapter implements ProviderAdapter {
       // The Run stays open only while it still owes an answer. A terminal close
       // is the session manager's single release path.
       if (cursorRunSessions.get(runId) === undefined) this.#handles.delete(runId);
-      else if (!this.#awaitsToolResult) {
+      else if (!this.#awaitsToolResult && session.pending.size === 0) {
         cursorRunSessions.terminate(runId);
         this.#handles.delete(runId);
       }
@@ -556,7 +556,12 @@ class CursorAdapter implements ProviderAdapter {
       throw error;
     } finally {
       if (cursorRunSessions.get(runId) === undefined) this.#handles.delete(runId);
-      else if (!this.#awaitsToolResult) {
+      // A Run whose tool call is registered and unanswered is *held*, not
+      // finished. The consumer may stop reading before the pump reaches its
+      // terminal (a stream the client already has enough of), and tearing the
+      // Run down there loses the call it just handed out — the next request's
+      // tool result then resolves nothing.
+      else if (!this.#awaitsToolResult && session.pending.size === 0) {
         cursorRunSessions.terminate(runId);
         this.#handles.delete(runId);
       }
@@ -733,6 +738,9 @@ class CursorAdapter implements ProviderAdapter {
         sequence_number: input.next(),
         state: "failed",
         stop_reason: "error",
+        // The refusal text, so the caller sees "you hit your usage limit"
+        // instead of a terminal with no reason attached.
+        stop_details: { code: failure.code, status: failure.status, message: failure.message },
         ...(terminalUsage === undefined ? {} : { usage: terminalUsage }),
       };
       return;
