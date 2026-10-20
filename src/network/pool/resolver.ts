@@ -1068,13 +1068,15 @@ export class ValidatedNetworkBindingFactory {
       if (!isAddressAllowed(destination.resolvedAddress, this.policy)) {
         throw new GatewayError("invalid_request", 400, "unsafe upstream address rejected");
       }
+      // Mirrors `fetch`: no pool selected (or none configured) means validated
+      // *direct* egress, which is already resolved and SSRF-checked above.
+      // Requiring a pool whenever a tenant id was supplied made bidi-only
+      // providers (Cursor) unreachable on every install without a pool, even
+      // though the equivalent `fetch` path dials direct there.
       if (networkPoolId !== undefined || tenantId !== undefined) {
         if (networkPoolId === undefined || tenantId === undefined || this.poolResolver === undefined) {
-          throw new GatewayError(
-            "proxy_pool_unhealthy",
-            503,
-            "configured proxy pool could not be established",
-          );
+          const socket = await dialDirect(destination, signal);
+          return openBidiStream(socket, url, headers, options ?? {});
         }
         let agent: PoolAgent;
         try {

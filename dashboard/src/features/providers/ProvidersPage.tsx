@@ -670,7 +670,6 @@ const FREE_LIMITED_IDS = new Set([
   // its `/v1/models` marks those rows at zero price, so discovery can keep the
   // list current instead of encoding it by hand.
   "hermes",
-  "commandcode",
   // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
   // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
   // alongside its paid rows, so its free allowance is metered against that
@@ -694,6 +693,7 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "mistral",
   "meta",
   "deepseek",
+  "commandcode",
 ]);
 
 function hasInteractiveOAuth(provider: ProviderResponse): boolean {

@@ -8,9 +8,19 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.5.0] - 2026-10-20
+
+Release preparation includes 19 local commits ahead of the configured upstream;
+they have not been pushed.
 
 ### Added
+
+- **The Notifications bell streams gateway alerts.** While the console is
+  open, it samples gateway memory every 10 seconds and checks for new releases
+  every minute. It reports high RSS (85% of system RAM) and sustained RSS growth
+  (20% over a minute), plus available updates. These are live-only server
+  notifications; they are not persisted, and a stalled GitHub check does not
+  block memory sampling.
 
 - **The providers page can hide providers with no account.** A 73-row catalog
   where an operator has connected three still meant scrolling past seventy

@@ -180,6 +180,7 @@ export function registerConsoleDomains(
           if (slot) {
             return {
               fetch: ctx.networkBindingFactory.fetch(slot.poolId, tenantId),
+              http2Bidi: ctx.networkBindingFactory.http2Bidi(slot.poolId, tenantId),
               networkPoolId: slot.poolId,
               release: slot.release,
             };
@@ -195,7 +196,10 @@ export function registerConsoleDomains(
         }
       }
 
-      return { fetch: ctx.networkBindingFactory.fetch(undefined, tenantId) };
+      return {
+        fetch: ctx.networkBindingFactory.fetch(undefined, tenantId),
+        http2Bidi: ctx.networkBindingFactory.http2Bidi(undefined, tenantId),
+      };
     },
     snapshotInvalidator: ctx.routeSnapshotService,
     readAccountInflight: async (providerId, tenantId) =>
@@ -219,7 +223,10 @@ export function registerConsoleDomains(
   }));
   console.use(createLogRoutes({ accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(createPerformanceRoutes({ accessResolver: ctx.accessResolver }));
-  console.use(createUpdateRoutes());
+  console.use(createUpdateRoutes({
+    accessResolver: ctx.accessResolver,
+    observabilityStore,
+  }));
   console.use(createAuditRoutes({ store: auditReadStore, accessResolver: ctx.accessResolver }));
   if (ctx.modelStrikes) {
     console.use(createModelAbuseRoutes({

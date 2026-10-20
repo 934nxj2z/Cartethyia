@@ -39,6 +39,7 @@ import {
   buildMcpRejected,
   buildMcpResult,
   buildMcpStateResult,
+  buildHeartbeat,
   buildRequestContextResult,
   buildRunRequest,
   historyFromRequest,
@@ -52,7 +53,25 @@ import { cursorRunTerminationError, decodeServerMessages, openCursorRun } from "
 import { cursorRunSessions } from "./cursor-session-manager";
 import type { CursorContinuationScope, CursorRunSession } from "./cursor-session-manager";
 import { fetchCursorRunOrigin } from "./cursor-catalog";
+import { defaultParameterValues, fetchCursorModels } from "./cursor-catalog";
 import { decodeValueToJson, decodeStructEntriesToJson } from "./protocol/struct";
+
+/**
+ * Client-heartbeat cadence for every Cursor Run.
+ *
+ * The edge answers a turn only after it has seen at least one client
+ * heartbeat, and the donor pins this to 5s (`heartbeatMs` in its continuation
+ * policy). A longer cadence is a Run that streams heartbeats and never
+ * answers; a shorter one is traffic the upstream does not ask for.
+ */
+const CURSOR_HEARTBEAT_INTERVAL_MS = 5_000;
+/** Client-heartbeat cadence the Cursor edge expects (donor `heartbeatMs`). */
+const CURSOR_HEARTBEAT_INTERVAL_OVERRIDE = (() => {
+  const raw = process.env.CARTETHYIA_CURSOR_HEARTBEAT_MS?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+})();
 
 /** Image MIME types Cursor accepts in `selected_images`. */
 const ALLOWED_IMAGE_MIME_TYPES: Record<string, true> = {
@@ -445,7 +464,20 @@ class CursorAdapter implements ProviderAdapter {
       "Cursor account credential is missing or empty; reconnect the account",
     );
     const origin = await this.#resolveOrigin(credential, context);
-    const modelId = candidate.model_id.length > 0 ? candidate.model_id : request.model;
+    const rawModelId = candidate.model_id.length > 0 ? candidate.model_id : request.model;
+    const modelId = resolveCursorWireModelId(rawModelId);
+    // Cursor declares per-model parameter tuples (effort / context / fast). A
+    // fresh Run must carry the model's declared default tuple: with an empty
+    // `parameters` the Run streams only heartbeats and never turns.
+    const roster = await fetchCursorModels({
+      credential,
+      ...(context.outbound_fetch === undefined
+        ? {}
+        : { fetcher: context.outbound_fetch as unknown as typeof fetch }),
+      signal: context.abort_signal,
+    });
+    const declared = roster.find((model) => model.id === modelId);
+    const parameterValues = defaultParameterValues(declared);
     const images = await collectImages(request, context);
     const descriptors = toolDescriptorsFor(request.tools);
     const systemPrompt = systemPromptFrom(request);
@@ -493,6 +525,7 @@ class CursorAdapter implements ProviderAdapter {
           ...(images.length > 0 ? { images } : {}),
           ...(descriptors.length > 0 ? { descriptors } : {}),
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
+          ...(parameterValues.length > 0 ? { parameterValues } : {}),
           // A fresh Run always rebases the client's history into its user text:
           // Cursor's own checkpoint cannot be reconstructed after a restart, and
           // `root_prompt_messages_json` would suppress the RequestContext rules.
@@ -587,6 +620,22 @@ class CursorAdapter implements ProviderAdapter {
       const mapped = cursorRunTerminationError({ stream: handle.stream, reason });
       if (mapped !== undefined) failure = mapped;
     });
+    // The Cursor edge answers a Run only after it sees a client heartbeat (the
+    // donor's continuation policy pins `heartbeatMs` to 5s). One heartbeat is
+    // sent eagerly on open here and then on the interval; clearing it when the
+    // body reader ends is safe because the reader's end already means the Run
+    // is over.
+    const beat = (): void =>
+      void handle.write(buildHeartbeat()).catch(() => undefined);
+    const onAbort = (): void => clearInterval(heartbeatTimer);
+    const heartbeatTimer = setInterval(
+      beat,
+      CURSOR_HEARTBEAT_INTERVAL_OVERRIDE ?? CURSOR_HEARTBEAT_INTERVAL_MS,
+    );
+    void beat();
+    context.abort_signal.addEventListener("abort", onAbort, { once: true });
+    if (context.abort_signal.aborted) onAbort();
+    heartbeatTimer.unref();
     try {
       for await (const message of decodeServerMessages(handle.stream.body)) {
         if (context.abort_signal.aborted) {
@@ -672,6 +721,8 @@ class CursorAdapter implements ProviderAdapter {
             );
     } finally {
       unsubscribe();
+    clearInterval(heartbeatTimer);
+    context.abort_signal.removeEventListener("abort", onAbort);
     }
 
     if (failure !== undefined) {
@@ -851,3 +902,11 @@ export function createCursorAdapter(): ProviderAdapter {
 }
 
 export const cursorAdapter: ProviderAdapter = createCursorAdapter();
+/** Maps virtual/canonical client model IDs to upstream Cursor wire IDs. */
+function resolveCursorWireModelId(rawModelId: string): string {
+  const id = rawModelId.trim().toLowerCase();
+  if (id === "auto") return "default";
+  if (id === "grok-4.6") return "cursor-grok-4.6";
+  return rawModelId;
+}
+

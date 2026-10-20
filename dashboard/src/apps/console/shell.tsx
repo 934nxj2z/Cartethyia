@@ -35,7 +35,7 @@ import { consoleRequest } from "../../data/api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { clearPersistedCache, queryClient } from "../../data/query-client";
 import { prefetchRouteIntent } from "../../data/route-prefetch";
-import { useSystemHealth, useLatestRelease } from "../../hooks/system";
+import { useSystemHealth, useLatestRelease, useNotifications } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
 import { DASHBOARD_RELEASE_LABEL, DASHBOARD_VERSION } from "../../lib/version";
 import { GITHUB_ALT_RELEASES_URL, GITHUB_ALT_REPO_URL } from "../../lib/links";
@@ -278,6 +278,7 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
   const [now, setNow] = useState(() => new Date());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const notifications = useNotifications();
 
   useEffect(() => {
     if (!open) return;
@@ -350,6 +351,12 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
         onClick={() => setOpen((v) => !v)}
       >
         <Bell size={17} />
+        {notifications.length > 0 ? (
+          <span
+            aria-label={`${notifications.length} notifications`}
+            className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent"
+          />
+        ) : null}
       </button>
       {open
         ? createPortal(
@@ -388,6 +395,43 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
                 </button>
               </div>
               <div className="scroll-region min-h-0 flex-1 flex flex-col gap-3">
+                {notifications.length > 0 ? (
+                  <section aria-label="Notifications" className="flex flex-col gap-2">
+                    {notifications.map((notification) => (
+                      <article
+                        key={notification.id}
+                        className={`flex items-start gap-3 rounded-card border p-4 ${
+                          notification.level === "warning"
+                            ? "border-orange-soft bg-orange-soft"
+                            : "border-accent/25 bg-accent-soft"
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-caption font-semibold text-text-primary">
+                            {notification.title}
+                          </span>
+                          <span className="mt-1 block text-badge text-text-secondary">
+                            {notification.message}
+                          </span>
+                        </span>
+                        {notification.href ? (
+                          <a
+                            className="shrink-0 text-badge font-semibold text-accent"
+                            href={notification.href}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Release
+                          </a>
+                        ) : null}
+                      </article>
+                    ))}
+                  </section>
+                ) : (
+                  <div className="rounded-card border border-inner-border bg-surface-2 p-4 text-badge text-text-secondary">
+                    No active memory or update alerts.
+                  </div>
+                )}
                 <div className="flex items-start gap-3 rounded-card border border-inner-border bg-surface-2 p-4">
                   <span className="mt-0.5 grid w-12 h-12 shrink-0 place-items-center rounded-control bg-surface-1 text-text-secondary">
                     <Server size={16} aria-hidden="true" />

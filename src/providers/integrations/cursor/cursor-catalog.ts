@@ -246,20 +246,55 @@ export function defaultParameterValues(
 
 /** Projects one Cursor model entry onto a Cartethyia catalog row. */
 export function cursorModelDefinition(model: CursorModelInfo): ModelDefinition {
-  return defineModel({
-    id: model.id,
-    providerId: CURSOR_PROVIDER_ID,
-    wireFamily: "chat",
-    endpoint: "/agent.v1.AgentService/Run",
-    ...(model.maxContext === undefined ? {} : { ctx: model.maxContext }),
-    // Tools are served through Cursor's MCP exec channel, which this adapter
-    // answers for every request that declares tools — so the row advertises
-    // them and the adapter refuses anything it did not advertise.
-    toolCall: true,
+  return cursorModel(model.id, model.maxContext, {
     vision: model.supportsImages === true,
     reasoning: model.supportsThinking === true,
   });
 }
+
+function cursorModel(
+  modelId: string,
+  ctx?: number,
+  options: { vision?: boolean; reasoning?: boolean; out?: number } = {},
+): ModelDefinition {
+  return defineModel({
+    id: modelId,
+    providerId: CURSOR_PROVIDER_ID,
+    wireFamily: "chat",
+    endpoint: "/agent.v1.AgentService/Run",
+    ...(ctx === undefined ? {} : { ctx }),
+    ...(options.out === undefined ? {} : { out: options.out }),
+    // Tools are served through Cursor's MCP exec channel, which this adapter
+    // answers for every request that declares tools — so the row advertises
+    // them and the adapter refuses anything it did not advertise.
+    toolCall: true,
+    vision: options.vision ?? true,
+    reasoning: options.reasoning ?? false,
+  });
+}
+
+/**
+ * Static fallback catalog for Cursor.
+ *
+ * The authoritative roster is resolved per account from `AvailableModels`,
+ * while these static rows give the provider offline floor visibility and
+ * establish canonical IDs for Auto and Grok 4.6/4.7.
+ *
+ * `auto` is the only id surfaced for Cursor's Auto model: the upstream wire id
+ * is `default` and the two are the same model, not two entries. Dispatch maps
+ * `auto` onto `default` (see `resolveCursorWireModelId`), so seeding the
+ * upstream id as well would show one model twice. Grok 4.6 follows the same
+ * rule: the wire id is `cursor-grok-4.6`, and `grok-4.6` is the id surfaced.
+ *
+ * Output is stated explicitly: `defineModel` would otherwise inherit a
+ * base-catalog output equal to the whole 256k window, which is not a limit
+ * Cursor serves and makes admission reserve the entire context as headroom.
+ */
+export const CURSOR_MODELS: readonly ModelDefinition[] = [
+  cursorModel("auto", 256_000, { vision: true, reasoning: false, out: 64_000 }),
+  cursorModel("grok-4.6", 256_000, { vision: true, reasoning: true, out: 64_000 }),
+  cursorModel("grok-4.7", 256_000, { vision: true, reasoning: true, out: 64_000 }),
+];
 
 /** Fetches Cursor's live model roster through validated egress. */
 export async function fetchCursorModels(input: {

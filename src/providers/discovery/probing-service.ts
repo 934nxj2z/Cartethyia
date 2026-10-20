@@ -63,6 +63,7 @@ import { computeTokensPerSec } from "../../observability/token-speed";
 import { TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { providerBaseUrl } from "../provider-metadata";
 import { isBundledProviderId, parseProviderId, type ProviderDispatchTarget as AdapterDispatchTarget, type ValidatedOutboundFetch } from "../provider-contracts";
+import type { ValidatedOutboundHttp2Bidi } from "../provider-contracts";
 import type { ModelDefinition } from "../provider-model-definition";
 import type { ProviderRegistry } from "../provider-registry";
 
@@ -73,6 +74,13 @@ const PROBE_ACCOUNT_CONCURRENCY = 10;
 
 export interface ProbeOutboundBinding {
   readonly fetch: ValidatedOutboundFetch;
+  /**
+   * Validated bidirectional HTTP/2 egress for the same pool/tenant. A provider
+   * whose only transport is a bidi stream (Cursor's Connect-RPC Run) has no
+   * `fetch` path to fall back to, so a probe without this binding reports a
+   * healthy account as broken.
+   */
+  readonly http2Bidi?: ValidatedOutboundHttp2Bidi;
   readonly networkPoolId?: string;
   readonly release?: () => void;
 }
@@ -364,6 +372,11 @@ export class ProviderProbingService {
             deadline: startedAt + 30_000,
             abort_signal: probeSignal,
             outbound_fetch: probeFetch,
+            // A bidi-only provider (Cursor's Connect-RPC Run) has no `fetch`
+            // transport at all: without the HTTP/2 binding the probe fails with
+            // "requires validated HTTP/2 egress" while live dispatch — which
+            // always supplies it — succeeds.
+            ...(outbound.http2Bidi === undefined ? {} : { outbound_http2: outbound.http2Bidi }),
           })) {
             if (ttfbMs === undefined) ttfbMs = Date.now() - startedAt;
             events.push(event);

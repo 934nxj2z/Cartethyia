@@ -152,6 +152,12 @@ export function buildCursorRequestContext(input: {
   return {
     ...(rules.length > 0 ? { rules } : {}),
     ...(tools.length > 0 ? { tools } : {}),
+    // The host's own filesystem/web/search surface. A headless gateway has
+    // none; advertising none up front keeps Cursor from routing a tool call to
+    // a channel the gateway must then refuse.
+    mcp_file_system_options: { enabled: false },
+    web_search_enabled: false,
+    web_fetch_enabled: false,
     ...(tools.length > 0
       ? {
           mcp_meta_tool_options: {

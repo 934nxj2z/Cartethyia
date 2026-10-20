@@ -167,6 +167,24 @@ describe("validated HTTP/2 bidi target validation", () => {
 });
 
 describe("validated HTTP/2 bidi streaming", () => {
+  test("a tenant without a selected pool dials validated direct egress", async () => {
+    // Live dispatch always passes a tenant id, and most installs select no
+    // pool. `fetch` treats that as direct egress; bidi must match, or a
+    // bidi-only provider is unreachable with "no HTTP/2 egress configured"
+    // on every such install.
+    responseBytes = new Uint8Array(0);
+    const binding = factory().http2Bidi(undefined, "tenant-1");
+    const stream = await binding(new URL(`https://${HOST}/x`), {}, {
+      signal: AbortSignal.timeout(5_000),
+      allowHostname: (hostname) => hostname === HOST,
+    });
+    // Reaching here at all is the assertion: the stream is open against the
+    // fixture, so the tenant-without-pool path dialed direct instead of
+    // failing closed on `proxy_pool_unhealthy`.
+    await stream.write(encodeFrame(0, new Uint8Array([1])));
+    stream.abort();
+  });
+
   test("one writable request reaches the server with its headers", async () => {
     responseBytes = new Uint8Array(0);
     endResponse = false;

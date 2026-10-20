@@ -20,6 +20,7 @@
 import { describe, expect, test } from "bun:test";
 import { CursorOAuthClient } from "../../src/providers/integrations/cursor/cursor-auth";
 import {
+  CURSOR_MODELS,
   cursorModelDefinition,
   defaultParameterValues,
   fetchCursorRunOrigin,
@@ -348,6 +349,22 @@ describe("Cursor catalog mapping", () => {
     });
     expect(defaultParameterValues(models[0])).toEqual([{ id: "effort", value: "high" }]);
     expect(defaultParameterValues(undefined)).toEqual([]);
+  });
+
+  test("CURSOR_MODELS static fallback exposes one id per model, not the wire ids", () => {
+    const ids = new Set(CURSOR_MODELS.map((m) => m.modelId));
+    expect([...ids].sort()).toEqual(["auto", "grok-4.6", "grok-4.7"]);
+    // `default` and `cursor-grok-4.6` are the upstream wire ids `auto` and
+    // `grok-4.6` map onto (see `resolveCursorWireModelId`), not separate
+    // models: seeding them would list the same model twice.
+    expect(ids.has("default")).toBe(false);
+    expect(ids.has("cursor-grok-4.6")).toBe(false);
+    // Output is stated, not inherited from the base catalog's 256k: a cap
+    // equal to the whole window is not a limit Cursor serves.
+    for (const model of CURSOR_MODELS) {
+      expect(model.outputLimit).toBe(64_000);
+      expect(model.contextLimit).toBe(256_000);
+    }
   });
 
   test("parses Cursor's k/m context spelling", () => {

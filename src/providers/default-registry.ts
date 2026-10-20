@@ -208,6 +208,7 @@ export const PROVIDER_CAPABILITIES = {
     // the origin itself is resolved per dispatch from GetServerConfig.
     endpointPathsByWireFamily: { chat: "/agent.v1.AgentService/Run" },
     loadAdapter: async () => (await import("./integrations/cursor/cursor")).cursorAdapter,
+    loadModels: async () => (await import("./integrations/cursor/cursor-catalog")).CURSOR_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/cursor/cursor-auth"), "cursorOAuthClient", {
       withRefresher: true,
     }),
