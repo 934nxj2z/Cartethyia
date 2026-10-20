@@ -13,6 +13,7 @@ import { defineModel } from "./provider-model-definition";
 import type { ProviderModelDiscovery } from "./discovery/discovery-types";
 import type { ProviderDispatchContext } from "./provider-contracts";
 import type { QoderRealm } from "./integrations/qoder/qoder-realm";
+import type { TraeRealm } from "./integrations/trae/trae-realm";
 import type { WireFamily } from "../protocol/canonical-model";
 import type { CanonicalRequest } from "../protocol/canonical-model";
 
@@ -35,6 +36,62 @@ function configuredProvider(
  * (PAT exchange or the persisted OAuth state) and then lists against the
  * realm's own gateway hosts.
  */
+/**
+ * Trae model discovery for one realm.
+ *
+ * CN answers `/api/ide/v1/model_list`; intl returns `403 no schema found`, and
+ * this returns empty rather than raising so the static roster stays in force
+ * instead of failing the whole catalog refresh.
+ */
+function traeDiscovery(
+  realm: TraeRealm,
+  providerId: string,
+): NonNullable<ProviderModuleCapabilities["loadModelDiscovery"]> {
+  return async () => async (request: Parameters<ProviderModelDiscovery>[0]) => {
+    const { discoverTraeModels } = await import("./integrations/trae/trae");
+    const { TRAE_INTL_MODELS, TRAE_CN_MODELS } = await import("./integrations/trae/trae-catalog");
+    const secret = request.credential.trim();
+    const fetcher = request.fetcher as unknown as typeof fetch | undefined;
+    if (secret.length === 0 || fetcher === undefined) {
+      return realm === "cn" ? TRAE_CN_MODELS : TRAE_INTL_MODELS;
+    }
+    let token = secret;
+    if (secret.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(secret) as Record<string, unknown>;
+        const found = ["accessToken", "access_token", "token"].find(
+          (key) => typeof parsed[key] === "string" && (parsed[key] as string).length > 0,
+        );
+        if (found !== undefined) token = parsed[found] as string;
+      } catch {
+        // Use the raw secret as the token.
+      }
+    }
+    const rows = await discoverTraeModels({
+      realm,
+      token,
+      uid: request.authState?.["accountId"] as string | undefined ?? "",
+      fetcher,
+      providerId,
+    });
+    if (rows.length === 0) return realm === "cn" ? TRAE_CN_MODELS : TRAE_INTL_MODELS;
+    const fallback = realm === "cn" ? TRAE_CN_MODELS : TRAE_INTL_MODELS;
+    const byId = new Map(fallback.map((model) => [model.modelId, model]));
+    return rows.map((row) => {
+      const existing = byId.get(row.id);
+      if (existing === undefined) {
+        // Discovered upstream but absent from the static roster: clone the
+        // realm's first row so a new model is routable with the shape this
+        // provider serves, carrying the window upstream reported.
+        const template = fallback[0];
+        if (template === undefined) return undefined;
+        return { ...template, modelId: row.id, contextLimit: row.ctx ?? null };
+      }
+      return row.ctx === undefined ? existing : { ...existing, contextLimit: row.ctx };
+    }).filter((model): model is NonNullable<typeof model> => model !== undefined);
+  };
+}
+
 function qoderDiscovery(
   realm: QoderRealm,
   providerId: string,
@@ -439,6 +496,19 @@ export const PROVIDER_CAPABILITIES = {
     // native redirect.
     loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderCnOAuthClient"),
     loadModelDiscovery: qoderDiscovery("cn", "qodercn"),
+  },
+  trae: {
+    loadAdapter: async () => (await import("./integrations/trae/trae")).createTraeAdapter(),
+    loadModels: async () => (await import("./integrations/trae/trae-catalog")).TRAE_INTL_MODELS,
+    // Live model list is intl-unsupported: upstream answers `403 no schema
+    // found`, so discovery returning nothing is the truthful result and the
+    // static roster above stays authoritative.
+    loadModelDiscovery: traeDiscovery("intl", "trae"),
+  },
+  traecn: {
+    loadAdapter: async () => (await import("./integrations/trae/trae")).createTraeCnAdapter(),
+    loadModels: async () => (await import("./integrations/trae/trae-catalog")).TRAE_CN_MODELS,
+    loadModelDiscovery: traeDiscovery("cn", "traecn"),
   },
   inferhub: {
     loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),

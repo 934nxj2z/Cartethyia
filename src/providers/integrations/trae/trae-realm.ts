@@ -1,0 +1,134 @@
+// Trae realms: one vendor, two unrelated deployments.
+//
+// `trae` (global / intl) and `traecn` (China) share the wire protocol — an
+// `x-ide-token` credential, a `model_name` body, an SSE stream — but nothing
+// else about the address: different core host, different account/oauth host,
+// different UA, a *different authorization scheme*, and a different model
+// roster. Treating them as one provider with a region flag is what would send
+// a CN account to `*.traeapi.us` and get it refused.
+//
+// Everything per-realm lives here so the adapter, the auth builder, and the
+// discovery fetcher cannot drift apart on host, UA, or version code.
+//
+// Sourced from the donor hub `Public/trae2api-hub` (`REALMS` in
+// `trae_client.py`, `TRAEREALMS`-shaped config in `trae_accounts.py`).
+
+/** One Trae deployment. */
+export type TraeRealm = "intl" | "cn";
+
+/** Per-realm upstream addresses, client identity, and auth scheme. */
+export interface TraeRealmConfig {
+  /** Data-plane host: chat + model list (`/api/ide/v1/*`). */
+  readonly core: string;
+  /** Fallback core hosts, tried in order after `core`. */
+  readonly coreFallbacks: readonly string[];
+  /** Business host: CloudIDE OAuth token exchange, entitlement. */
+  readonly account: string;
+  /** Fallback account hosts. */
+  readonly accountFallbacks: readonly string[];
+  /** Entitlement / payment host. */
+  readonly pay: string;
+  /** Growth host (daily check-in credits). CN-only in practice. */
+  readonly ug: string;
+  /** Upstream-facing User-Agent for the non-chat endpoints. */
+  readonly userAgent: string;
+  /** Version code sent as `x-ide-version-code`. */
+  readonly versionCode: string;
+  /** Region tag sent in the request body. */
+  readonly region: string;
+  /** True when this realm's `/api/ide/v1/model_list` answers. */
+  readonly modelListSupported: boolean;
+}
+
+/**
+ * Chat path, identical across realms.
+ *
+ * The list endpoint takes a body (`{"type":"chat"}`); the donor posts it, so
+ * this is not a bare GET.
+ */
+export const TRAE_CHAT_PATH = "/api/ide/v1/llm_raw_chat";
+export const TRAE_MODEL_LIST_PATH = "/api/ide/v1/model_list";
+
+/** OAuth / business paths, relative to the realm's `account` host. */
+export const TRAE_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/trae/oauth/ExchangeToken";
+export const TRAE_TEMP_TOKEN_PATH = "/cloudide/api/v3/trae/GenerateTempToken";
+
+/** Usage / entitlement paths, relative to the realm's `pay` host. */
+export const TRAE_SESSION_USAGE_PATH = "/api/v1/commercial/get_session_usage";
+export const TRAE_ACTIVITY_PATH = "/api/v1/commercial/get_user_activity";
+export const TRAE_ENT_USAGE_PATH = "/trae/api/v1/pay/ide_user_ent_usage";
+export const TRAE_PAY_STATUS_PATH = "/trae/api/v1/pay/ide_user_pay_status";
+
+/** Growth paths, relative to the realm's `ug` host. CN-only upstream. */
+export const TRAE_CHECKIN_STATUS_PATH = "/trae/api/v2/ug/checkin_credits/status";
+export const TRAE_CHECKIN_CLAIM_PATH = "/trae/api/v2/ug/checkin_credits/claim";
+
+/**
+ * Realm → deployment.
+ *
+ * `intl` carries two core fallbacks and an account fallback; `cn` has exactly
+ * one host per role. That is upstream fact, not an oversight.
+ *
+ * `modelListSupported` is false for intl: upstream answers
+ * `403 no schema found` there, so discovery must not pretend a live fetch
+ * succeeded and must fall back to the static roster.
+ */
+export const TRAE_REALMS: Readonly<Record<TraeRealm, TraeRealmConfig>> = {
+  cn: {
+    // Resolved dynamically by the client. `api.trae.com.cn` only serves
+    // CloudIDE/OAuth/pay — `/api/ide/v1/*` there is a 404.
+    core: "https://trae-api-cn.mchost.guru",
+    coreFallbacks: [],
+    account: "https://api.trae.com.cn",
+    accountFallbacks: [],
+    pay: "https://api.trae.com.cn",
+    // The check-in routes are registered on `api.trae.cn` only; the same path
+    // on `api.trae.com.cn` is a 404.
+    ug: "https://api.trae.cn",
+    userAgent: "Trae CN/3.4.3",
+    versionCode: "20260212",
+    region: "CN",
+    modelListSupported: true,
+  },
+  intl: {
+    core: "https://core-normal.traeapi.us",
+    coreFallbacks: ["https://core-normal.trae.ai", "https://coresg-normal.trae.ai"],
+    account: "https://grow-normal.trae.ai",
+    accountFallbacks: ["https://grow-normal.traeapi.us"],
+    pay: "https://grow-normal.traeapi.us",
+    ug: "https://grow-normal.traeapi.us",
+    userAgent: "Trae/3.6.2",
+    versionCode: "20260212",
+    region: "US",
+    modelListSupported: false,
+  },
+};
+
+/** The app id is constant across realms. */
+export const TRAE_APP_ID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8";
+
+/** Plugin channel, constant across realms. */
+export const TRAE_PLUGIN_CHANNEL = "icube-ai";
+
+/**
+ * Provider id → realm.
+ *
+ * CN is a separate provider id rather than a flag on `trae`, matching
+ * `qodercn`/`cbcn`: the two deployments share no host, no OAuth client, and no
+ * model roster, so a single provider could not describe either one.
+ */
+export function traeRealmForProvider(providerId: string): TraeRealm {
+  return providerId === "traecn" ? "cn" : "intl";
+}
+
+/** Data-plane host candidates in failover order: primary first, then fallbacks. */
+export function traeCoreCandidates(realm: TraeRealm): readonly string[] {
+  const config = TRAE_REALMS[realm];
+  return [config.core, ...config.coreFallbacks];
+}
+
+/** Business host candidates in failover order. */
+export function traeAccountCandidates(realm: TraeRealm): readonly string[] {
+  const config = TRAE_REALMS[realm];
+  return [config.account, ...config.accountFallbacks];
+}

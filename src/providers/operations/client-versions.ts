@@ -25,6 +25,37 @@ async function qoderVersion(response: Response): Promise<string | null> {
   }
 }
 
+/**
+ * Newest Trae IDE version from the official changelog.
+ *
+ * Trae publishes no npm package and no release API, so the changelog is the
+ * only machine-readable source of the current client version. It matters
+ * upstream: intl `llm_raw_chat` answers `4015` unless the request carries the
+ * *current* client version, so a stale pin is an outage, not a cosmetic drift.
+ *
+ * The page embeds its content as JSON, and its newest entry is the first dated
+ * heading — not the highest semver, because this vendor's hotfix line numbers
+ * past its feature line (3.5.104 shipped after 3.5.97). Taking `max(semver)`
+ * would report an old build as current, so this walks the document in order and
+ * returns the first version following a dated release heading.
+ */
+async function traeVersion(response: Response): Promise<string | null> {
+  try {
+    const text = await response.text();
+    const heading =
+      /"insert":"((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}\s*\([^)]*\))\\n"/g;
+    for (const match of text.matchAll(heading)) {
+      const window = text.slice(match.index ?? 0, (match.index ?? 0) + 900);
+      const found = window.match(/TraeCode\s+v?(\d+\.\d+\.\d+)|v?(\d+\.\d+\.\d+)\s+is\s+released/i);
+      const version = found?.[1] ?? found?.[2];
+      if (version && isSemverish(version)) return version.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function clineClientVersion(response: Response): Promise<string | null> {
   const data = (await response.json()) as { version?: unknown };
   return isSemverish(data.version) ? data.version.trim() : null;
@@ -347,6 +378,19 @@ export const VERSION_SOURCES = {
     fallback: "1.4.10-R6427.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
+  trae: {
+    key: "trae",
+    // Fallback = the donor's last observed client version. Discovery replaces
+    // it within one monitor tick; it is only what a cold process sends before
+    // the first successful fetch.
+    fallback: "3.6.2",
+    sources: [
+      {
+        url: "https://docs.trae.ai/ide/changelog?_lang=en",
+        extract: traeVersion,
+      },
+    ],
+  },
   zcode: {
     key: "zcode",
     fallback: "3.14.3",
@@ -362,6 +406,7 @@ export const VERSION_SOURCES = {
 const resolvers = {
   antigravity: createClientVersionResolver({ ...VERSION_SOURCES.antigravity, client: "antigravity" }),
   qoder: createClientVersionResolver({ ...VERSION_SOURCES.qoder, client: "qoder" }),
+  trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
   grok: createClientVersionResolver({ ...VERSION_SOURCES.grok, client: "grok" }),
@@ -396,6 +441,8 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   cline: resolvers.clineCli,
   codex: resolvers.codex,
   qoder: resolvers.qoder,
+  trae: resolvers.trae,
+  traecn: resolvers.trae,
   commandcode: resolvers.commandcode,
   workbuddy: resolvers.workbuddyClient,
   workbuddycn: resolvers.workbuddyCnClient,
@@ -493,6 +540,7 @@ function accessor<K extends keyof typeof resolvers>(name: K): {
 }
 
 export const getQoderVersion = accessor("qoder").get;
+export const getTraeVersion = accessor("trae").get;
 export const getAntigravityVersion = accessor("antigravity").get;
 
 export const getOpenCodeVersion = accessor("opencode").get;

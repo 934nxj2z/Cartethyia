@@ -16,6 +16,63 @@ import {
   VERSION_SOURCES,
 } from "../../src/providers/operations/client-versions";
 
+describe("trae client version discovery", () => {
+  // Trae publishes no npm package and no release API, so the official
+  // changelog is the only machine-readable source. intl `llm_raw_chat`
+  // answers 4015 unless the request carries the current version, so this is a
+  // live dependency rather than cosmetic metadata.
+  const source = VERSION_SOURCES.trae.sources[0];
+  const extract = source?.extract;
+
+  function changelog(...entries: string[]): Response {
+    const body = entries
+      .map((entry) => `{"insert":"${entry}"}`)
+      .join(",");
+    return new Response(`[[${body}]]`);
+  }
+
+  test("the source is the official changelog", () => {
+    expect(source?.url).toContain("docs.trae.ai/ide/changelog");
+  });
+
+  test("reads the version of the newest dated release", async () => {
+    const page = changelog(
+      "October 08, 2026 (Feature Release)\\n",
+      "TraeCode v3.6.0 is released.\\n",
+      "September 20, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.97 is released.\\n",
+    );
+    expect(await extract?.(page)).toBe("3.6.0");
+  });
+
+  test("takes document order, not the highest semver", async () => {
+    // This vendor numbers hotfixes past its feature line, so `max(semver)`
+    // would report an old build as current.
+    const page = changelog(
+      "October 08, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.104 is released.\\n",
+      "September 20, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.97 is released.\\n",
+    );
+    expect(await extract?.(page)).toBe("3.5.104");
+  });
+
+  test("no dated release means no answer, not a guess", async () => {
+    expect(await extract?.(changelog("Some unrelated heading\\n"))).toBeNull();
+  });
+
+  test("a non-semver match is rejected", async () => {
+    const page = changelog("October 08, 2026 (Feature Release)\\n", "TraeCode v3.6 is released.\\n");
+    expect(await extract?.(page)).toBeNull();
+  });
+
+  test("trae and traecn share one resolver", () => {
+    // One upstream client version, two deployments: CN and intl ship the same
+    // build line, so they must not drift onto different pins.
+    expect(VERSION_SOURCES.trae.fallback).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
 describe("client version monitor snapshot", () => {
   test("starts on fallback and reports latest after background refresh", async () => {
     const resolver = createClientVersionResolver({

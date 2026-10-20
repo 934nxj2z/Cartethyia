@@ -1,5 +1,6 @@
 import type { ServiceKind, WireFamily } from "../protocol/canonical-model";
 import { QODER_CHAT_PATH, QODER_REALMS } from "./integrations/qoder/qoder-realm";
+import { TRAE_CHAT_PATH, TRAE_REALMS } from "./integrations/trae/trae-realm";
 
 /** OpenAI-compatible wire overrides persisted for bundled and BYOK providers. */
 export interface CompatibilityProfile {
@@ -348,6 +349,18 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     hasAdapterUserAgent: true,
     credentialUrl: `${QODER_REALMS.cn.website}/account/integrations`,
     credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder CN integrations page, or sign in with your Qoder China account.",
+  },
+  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
+  // A separate provider, not a region flag on `trae`: the China deployment has
+  // its own core host, authorization scheme, and model roster, and a CN account
+  // dispatched to the intl host is refused rather than degraded.
+  {
+    id: "traecn",
+    displayName: "Trae CN",
+    baseUrl: `${TRAE_REALMS.cn.core}${TRAE_CHAT_PATH}`,
+    hasAdapterUserAgent: true,
+    credentialUrl: "https://www.trae.com.cn/",
+    credentialHint: "Paste a Trae CN account export (accessToken + refreshToken) or the raw access token from a Trae China account.",
   },
   { id: "ollamacloud", displayName: "Ollama Cloud", baseUrl: "https://ollama.com/v1", credentialUrl: "https://ollama.com/settings/keys" },
   { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", serviceKinds: ["llm", "websearch", "imageGeneration"], credentialUrl: "https://aistudio.google.com/app/apikey" },
