@@ -73,6 +73,8 @@ const { values } = parseArgs({
     "api-key": { type: "string", default: "probe-key" },
     account: { type: "string", default: "probe-account" },
     image: { type: "string" },
+    params: { type: "string" },
+    "max-mode": { type: "boolean", default: false },
     raw: { type: "boolean", default: false },
     heartbeat: { type: "boolean", default: false },
     timeout: { type: "string", default: "120000" },
