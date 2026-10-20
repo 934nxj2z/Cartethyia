@@ -105,6 +105,19 @@ export class UsageFlushBuffer {
   }
 
   /**
+   * Deltas recorded but not yet persisted, for one key.
+   *
+   * Exposed so a reader of `lifetime_tokens_consumed` can add what is in
+   * flight to what Postgres last stored. Without it such a reader saw a value
+   * that was behind by up to one flush interval, and — because the flush is
+   * coalescing by design — behind by the largest amount exactly when the key
+   * was busiest.
+   */
+  pendingFor(apiKeyId: string): number {
+    return this.pending.get(apiKeyId) ?? 0;
+  }
+
+  /**
    * Writes everything accumulated so far, in bounded statements of at most
    * 500 keys each. One giant statement grows the SQL string with the
    * distinct-key count per window; chunking keeps each statement bounded.

@@ -43,7 +43,7 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { captureProviderExchange, shouldCaptureProviderBody } from "../attempt-finalize";
+import { captureProviderExchange, shouldCaptureProviderBodyForRequest } from "../attempt-finalize";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
 import type { AttemptLeaseOwnership } from "../leases";
 import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
@@ -169,7 +169,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     ? captureProviderExchange(
         outboundFetch,
         providerCapture,
-        await shouldCaptureProviderBody(deps.db, prepared.authorization.snapshot.tenant_id),
+        await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state),
       )
     : undefined;
   const dispatchContext = buildUpstreamDispatchContext({

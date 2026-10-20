@@ -215,6 +215,20 @@ export interface AccountErrorClassification {
   readonly retryAt: Date | null;
   readonly mutatesAccount: boolean;
   /**
+   * True when this write changed a field the routing snapshot actually reads.
+   *
+   * The snapshot projects `provider_accounts.status` and
+   * `.cooldownUntil` and nothing else (`route-catalog.ts:286-287`), so only a
+   * write that moves one of those has to drop it. Everything else a failure
+   * persists — the failure streak, the error text, the category, a
+   * model-scoped cooldown — is invisible to routing, and invalidating for it
+   * forced the next request to rebuild an 11-SELECT snapshot for no reason.
+   *
+   * That made a failure wave self-sustaining: N failed attempts produced N
+   * invalidations, and every following request paid the full rebuild.
+   */
+  readonly routesVisible: boolean;
+  /**
    * True when `cooldownMs` came from the provider's own statement — a parsed
    * `Retry-After`-family header, or a reset quoted in its message — rather than
    * from one of this module's fallback constants.
@@ -390,6 +404,11 @@ export function classifyAccountError(
     reason: origin === "upstream" ? rawUpstreamResponse ?? message.slice(0, 160) : explanation,
     retryAt,
     mutatesAccount,
+    // Set below by the caller that knows which columns it wrote, not here:
+    // the same classification feeds both the account-wide path (status +
+    // cooldownUntil — routing-visible) and the model-scoped path (neither —
+    // invisible). Defaulting true keeps existing callers conservative.
+    routesVisible: true,
     providerStated,
     modelUnsupported,
   });
@@ -1024,7 +1043,10 @@ export async function recordAccountFailure(
           createdAt: now,
         });
       }
-      return classification;
+      // `status` and `cooldownUntil` are untouched on this path — only the
+      // (account, model) pair backed off — so the snapshot is still accurate
+      // and must not be dropped.
+      return { ...classification, routesVisible: false };
     }
 
     await client
@@ -1063,7 +1085,9 @@ export async function recordAccountFailure(
         createdAt: now,
       });
     }
-    return classification;
+    // This path wrote `status` and `cooldownUntil`, both of which the snapshot
+    // projects, so routing has to see it.
+    return { ...classification, routesVisible: true };
   };
 
   try {
@@ -1337,7 +1361,12 @@ export async function reportAttemptOutcome(
     ...report.evidence,
     ...(report.modelId === undefined ? {} : { modelId: report.modelId }),
   }).catch(() => null);
-  if (classification?.mutatesAccount) await report.snapshotService?.invalidate();
+  // Gated on `routesVisible`, not on `mutatesAccount`: a failure that only
+  // cooled one (account, model) pair, or only advanced the streak, changed
+  // nothing routing reads. Invalidating for those rebuilt an 11-SELECT snapshot
+  // on the next request, and under a failure wave each rebuild fed the next
+  // invalidation.
+  if (classification?.routesVisible) await report.snapshotService?.invalidate();
 }
 
 export async function listAccountHealthEvents(
