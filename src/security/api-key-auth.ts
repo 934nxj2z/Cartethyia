@@ -40,6 +40,28 @@ const authCache = new Map<string, AuthCacheEntry>();
 const authCacheByKeyId = new Map<string, Set<string>>();
 /** Unknown/revoked token HMACs with their miss time; cleared on any key mutation. */
 const authNegativeCache = new Map<string, number>();
+
+/**
+ * Source for lifetime-usage deltas recorded but not yet flushed.
+ *
+ * Injected rather than imported: this module is on the auth path and must not
+ * depend on the persistence/write layer it would otherwise pull in. Set once at
+ * boot (`boot/dependencies.ts`); until then it reads as zero, which is the
+ * value the code has always used.
+ */
+let pendingUsage: (apiKeyId: string) => number = () => 0;
+
+/**
+ * Supplies the in-flight usage source. See {@link pendingUsage}.
+ *
+ * The persisted `lifetime_tokens_consumed` is behind by up to one flush
+ * interval, and the flush coalesces by design — so it is behind by the *most*
+ * exactly when a key is busiest. Adding the pending delta costs nothing and
+ * removes the gap.
+ */
+export function setPendingUsageSource(source: (apiKeyId: string) => number): void {
+  pendingUsage = source;
+}
 /**
  * Negative-result fast path. Unknown/revoked tokens previously hit the DB on
  * every request; now a repeat miss within 1.5 s costs one HMAC + one map
@@ -288,6 +310,19 @@ export function requestToken(headers: Headers | Record<string, string>): string 
 }
 
 /**
+ * Whether a key can possibly have children, and so whether summing them can
+ * return anything but zero.
+ *
+ * Children exist only for a `share` parent — the schema's own check constraint
+ * ties the mode to the parent-child shape (schema.ts:799-803), and no other
+ * mode mints recipients. Extracted and exported because the alternative is an
+ * untestable inline comparison guarding a database round-trip.
+ */
+export function canHaveChildKeys(key: { readonly keyMode?: string | null }): boolean {
+  return key.keyMode === "share";
+}
+
+/**
  * Looks up the API key by its hashed bearer token. Returns `undefined` for
  * an unknown or revoked key — callers must reject with 401, never fall back
  * to an implicit/default identity.
@@ -344,11 +379,19 @@ export async function resolveApiKeyAuthorization(
   // the old row values forever. Reading the parent here makes denylist /
   // one-time / recurring edits apply on the next cache miss.
   const policy = parent ?? row;
+  // Only a `share` parent can have children, and children are the only thing
+  // the SUM below can find. Every other key ran an aggregate that was certain
+  // to return 0 — one extra Postgres round-trip on the auth path for nothing.
+  //
+  // `row.parentKeyId !== null` is the same test, kept as the mode check because
+  // the mode is what the share dialog and the schema's own check constraint
+  // key off (schema.ts:799-803), so the two cannot drift apart.
+  const canHaveChildren = canHaveChildKeys(parent ?? row);
   const consumed =
-    (policy.id === row.id
-      ? (row.lifetimeTokensConsumed ?? 0)
-      : (policy.lifetimeTokensConsumed ?? 0)) +
-    (await store.sumChildrenConsumed(policy.id));
+    ((policy.id === row.id ? row.lifetimeTokensConsumed : policy.lifetimeTokensConsumed) ?? 0) +
+    (canHaveChildren ? await store.sumChildrenConsumed(policy.id) : 0) +
+    // In-flight deltas: what has been spent but not yet persisted.
+    pendingUsage(policy.id);
   const scopes = Array.isArray(policy.scopes) ? (policy.scopes as AccessScope[]) : [];
   const snapshot = createAuthorizationSnapshot({
     api_key_id: row.id,

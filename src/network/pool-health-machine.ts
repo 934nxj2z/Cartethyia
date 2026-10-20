@@ -1,3 +1,4 @@
+import { healthEventBuffer } from "../persistence/health-event-flush";
 import { and, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { healthEvents, networkPools } from "../persistence/schema";
@@ -123,17 +124,23 @@ export async function recordPoolDispatchOutcome(
     ...(input.succeeded && fromStatus !== "active" ? { lastRecoveredAt: now } : {}),
   }).where(eq(networkPools.id, poolId));
   if (statusChanged || (input.succeeded && pool.consecutiveFailures > 0)) {
-    await db.insert(healthEvents).values({
-      entityKind: "pool",
+    // Off the request path when a buffer is installed: this row is
+    // append-only and read by nobody in dispatch. The pool's own status write
+    // above stays synchronous, because pool selection reads it.
+    const buffer = healthEventBuffer();
+    const row = {
+      entityKind: "pool" as const,
       networkPoolId: poolId,
       fromStatus,
       toStatus: status,
-      reason: input.succeeded ? "Proxy dispatch succeeded — pool recovered" : lastError,
-      errorCategory: input.succeeded ? null : category,
+      reason: input.succeeded ? "Proxy dispatch succeeded — pool recovered" : (lastError ?? ""),
+      errorCategory: input.succeeded ? null : (category ?? null),
       // The pool's own cooldown deadline is when the state releases, so the log
       // shows a countdown; a recovery releases immediately.
       createdAt: now,
-    });
+    };
+    if (buffer !== undefined) buffer.enqueue(row);
+    else await db.insert(healthEvents).values(row as never);
   }
   if (healthChanged) {
     publishPoolHealth({

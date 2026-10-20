@@ -1,3 +1,4 @@
+import { healthEventBuffer } from "../../persistence/health-event-flush";
 // Account health: error classification, failure/success recording, recovery and cooldown sweeps.
 import { and, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
@@ -1025,8 +1026,8 @@ export async function recordAccountFailure(
           lastErrorAt: now,
         })
         .where(eq(providerAccounts.id, accountId));
-      if (!alreadyCooling && typeof client.insert === "function") {
-        await client.insert(healthEvents).values({
+      if (!alreadyCooling) {
+        await writeHealthEvent(client, {
           entityKind: "account",
           accountId,
           // The account's own status, on both sides: a model-scoped throttle
@@ -1073,8 +1074,8 @@ export async function recordAccountFailure(
       })
       .where(eq(providerAccounts.id, accountId));
 
-    if (typeof client.insert === "function") {
-      await client.insert(healthEvents).values({
+    {
+      await writeHealthEvent(client, {
         entityKind: "account",
         accountId,
         fromStatus: fromStatus as "active" | "cooldown" | "disabled",
@@ -1209,8 +1210,8 @@ export async function recoverAccount(
         lastErrorAt: null,
       })
       .where(eq(providerAccounts.id, accountId));
-    if (typeof client.insert === "function") {
-      await client.insert(healthEvents).values({
+    {
+      await writeHealthEvent(client, {
         entityKind: "account",
         accountId,
         fromStatus: fromStatus as "active" | "cooldown" | "disabled",
@@ -1345,6 +1346,36 @@ export interface AttemptHealthReport {
   readonly error?: unknown;
   readonly evidence?: AccountFailureEvidence;
   readonly snapshotService?: { invalidate(): unknown };
+}
+
+/**
+ * Writes one health audit row, off the request path when a buffer is installed.
+ *
+ * `health_events` is append-only and read by nobody in the request path, so it
+ * does not need to land before the request finishes — unlike the
+ * `provider_accounts` UPDATE beside it, which routing reads and which therefore
+ * stays synchronous and transactional.
+ */
+async function writeHealthEvent(
+  client: CartethyiaDatabase,
+  row: {
+    readonly entityKind: "account";
+    readonly accountId: string;
+    readonly fromStatus: string;
+    readonly toStatus: string;
+    readonly reason: string;
+    readonly errorCategory: string | null;
+    readonly modelId?: string | null;
+    readonly createdAt: Date;
+  },
+): Promise<void> {
+  const buffer = healthEventBuffer();
+  if (buffer !== undefined) {
+    buffer.enqueue({ ...row, modelId: row.modelId ?? null });
+    return;
+  }
+  if (typeof client.insert !== "function") return;
+  await client.insert(healthEvents).values(row as never);
 }
 
 export async function reportAttemptOutcome(
