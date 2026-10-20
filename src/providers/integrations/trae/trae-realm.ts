@@ -52,6 +52,25 @@ export const TRAE_MODEL_LIST_PATH = "/api/ide/v1/model_list";
 /** OAuth / business paths, relative to the realm's `account` host. */
 export const TRAE_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 export const TRAE_TEMP_TOKEN_PATH = "/cloudide/api/v3/trae/GenerateTempToken";
+export const TRAE_GET_USER_INFO_PATH = "/cloudide/api/v3/trae/GetUserInfo";
+
+/** Browser-login path on the host `GetLoginGuidance` names. */
+export const TRAE_AUTHORIZATION_PATH = "/authorization";
+export const TRAE_CALLBACK_PATH = "/callback";
+
+/**
+ * Login-guidance endpoints, tried in order.
+ *
+ * This is the one Trae OAuth step that is not per-realm: the guidance call is
+ * what *discovers* the login host, so asking a realm's own account host would
+ * presuppose the answer. Verified live: all three answer 200 and return
+ * `Result.LoginHost` (`www.trae.ai`).
+ */
+export const TRAE_LOGIN_GUIDANCE_URLS: readonly string[] = [
+  "https://api.marscode.com/cloudide/api/v3/trae/GetLoginGuidance",
+  "https://api.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
+  "https://www.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
+];
 
 /** Usage / entitlement paths, relative to the realm's `pay` host. */
 export const TRAE_SESSION_USAGE_PATH = "/api/v1/commercial/get_session_usage";

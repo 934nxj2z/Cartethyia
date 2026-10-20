@@ -130,11 +130,11 @@ describe("Trae OAuth clients", () => {
     expect(traeOAuthClient).not.toBe(traeCnOAuthClient);
   });
 
-  test("Trae has no authorize flow in this client", () => {
-    // Credentials arrive as a desktop export; there is no device-code or PKCE
-    // endpoint to implement.
-    expect(traeOAuthClient.supportsDeviceCode).toBe(false);
-    expect(traeOAuthClient.supportsBrowserCode).toBe(false);
+  test("CN and intl clients are distinct instances", () => {
+    // A CN login exchange runs on the CN host; the same client bound to intl
+    // would post it somewhere that refuses it.
+    expect(traeOAuthClient).not.toBe(traeCnOAuthClient);
+    expect(traeCnOAuthClient.supportsBrowserCode).toBe(true);
   });
 });
 
@@ -201,5 +201,135 @@ describe("Trae credential import", () => {
     expect(
       new TraeOAuthClient(fetchFn, "cn").importCredential({ credential: "{not json", fields: {} }),
     ).rejects.toThrow(/Paste a Trae account export/);
+  });
+});
+
+/** A fetch stub that answers the three Trae OAuth endpoints from a local table. */
+function oauthStub(handler: (path: string) => { status?: number; payload?: unknown }) {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    calls.push({ path: url.pathname, body });
+    const { status = 200, payload } = handler(url.pathname);
+    return new Response(JSON.stringify(payload ?? {}), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetchFn, calls };
+}
+
+const GUIDANCE = (path: string) =>
+  path.includes("GetLoginGuidance") ? { payload: { Result: { LoginHost: "www.trae.ai" } } } : { status: 404 };
+const EXCHANGE = (path: string) =>
+  path.includes("ExchangeToken")
+    ? { payload: { Result: { Token: "at-fresh", RefreshToken: "rt-rotated", TokenExpireAt: 1_893_456_000_000 } } }
+    : { status: 404 };
+
+describe("Trae browser authorization", () => {
+  test("Trae has a browser login and no device flow", () => {
+    // The donor's start_login answers `unsupported` for device authorization,
+    // but GetLoginGuidance + /authorization is a real browser flow. Declaring
+    // only the browser half is what stops the console offering a dead device
+    // login.
+    expect(traeOAuthClient.supportsBrowserCode).toBe(true);
+    expect(traeOAuthClient.supportsDeviceCode).toBe(false);
+  });
+
+  test("prepareAuthorize resolves the login host", async () => {
+    // The host is an upstream discovery, not a constant: pinning the one seen
+    // today breaks the day upstream moves it.
+    const { fetchFn, calls } = oauthStub(GUIDANCE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const prepared = await client.prepareAuthorize({
+      state: "trace-1",
+      codeChallenge: "x",
+      redirectUri: "http://127.0.0.1:1455/callback",
+    });
+    expect(prepared.parameters?.["loginHost"]).toBe("www.trae.ai");
+    expect(calls[0]?.path).toContain("GetLoginGuidance");
+  });
+
+  test("the authorize URL carries the trace id and callback", async () => {
+    const { fetchFn } = oauthStub(GUIDANCE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const prepared = await client.prepareAuthorize({
+      state: "trace-abc",
+      codeChallenge: "x",
+      redirectUri: "http://127.0.0.1:1455/callback",
+    });
+    const url = new URL(client.buildAuthorizeUrl(prepared));
+    expect(url.pathname).toBe("/authorization");
+    expect(url.searchParams.get("login_trace_id")).toBe("trace-abc");
+    expect(url.searchParams.get("auth_callback_url")).toBe("http://127.0.0.1:1455/callback");
+    expect(url.searchParams.get("client_id")).toBe("ono9krqynydwx5");
+  });
+
+  test("building the URL before resolving the host fails loudly", () => {
+    // Silently building against an empty host would send the operator to a
+    // page that cannot sign them in.
+    const { fetchFn } = oauthStub(GUIDANCE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    expect(() =>
+      client.buildAuthorizeUrl({ state: "s", redirectUri: "http://127.0.0.1:1455/callback" }),
+    ).toThrow(/not resolved/);
+  });
+
+  test("exchangeCode redeems the pasted callback for a token pair", async () => {
+    // Trae's callback carries the refresh token directly, not a code.
+    const { fetchFn, calls } = oauthStub((path) =>
+      path.includes("ExchangeToken")
+        ? EXCHANGE(path)
+        : path.includes("GetUserInfo")
+          ? { payload: { Result: { NonPlainTextEmail: "ops@example.com", UserID: "u-99" } } }
+          : { status: 404 },
+    );
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const result = await client.exchangeCode(
+      "http://127.0.0.1:1455/callback?isRedirect=true&refreshToken=rt-from-callback&loginHost=www.trae.ai",
+      "",
+      "http://127.0.0.1:1455/callback",
+    );
+    expect(result.access).toBe("at-fresh");
+    // The exchange rotates the refresh token, so the new one must be stored.
+    expect(result.refresh).toBe("rt-rotated");
+    expect(result.accountLabel).toBe("ops@example.com");
+    expect(result.auth_state).toEqual({ userId: "u-99" });
+    const exchange = calls.find((c) => c.path.includes("ExchangeToken"));
+    expect(exchange?.body["RefreshToken"]).toBe("rt-from-callback");
+  });
+
+  test("a bare query string is accepted as well as a full URL", async () => {
+    const { fetchFn, calls } = oauthStub(EXCHANGE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    await client.exchangeCode("?refreshToken=rt-bare", "", "http://127.0.0.1:1455/callback");
+    const exchange = calls.find((c) => c.path.includes("ExchangeToken"));
+    expect(exchange?.body["RefreshToken"]).toBe("rt-bare");
+  });
+
+  test("a callback with no refresh token is a clear error", async () => {
+    const { fetchFn } = oauthStub(EXCHANGE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    expect(client.exchangeCode("?isRedirect=true", "", "http://127.0.0.1:1455/callback")).rejects.toThrow(
+      /missing refreshToken/,
+    );
+  });
+
+  test("an upstream error in the callback is reported", async () => {
+    const { fetchFn } = oauthStub(EXCHANGE);
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    expect(
+      client.exchangeCode("?error=access_denied&error_description=user+cancelled", "", "http://x/callback"),
+    ).rejects.toThrow(/access_denied.*user cancelled/);
+  });
+
+  test("a missing identity still completes the login", async () => {
+    // The account is usable without an email; only the token pair is required.
+    const { fetchFn } = oauthStub((path) => (path.includes("ExchangeToken") ? EXCHANGE(path) : { status: 404 }));
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const result = await client.exchangeCode("?refreshToken=rt", "", "http://x/callback");
+    expect(result.access).toBe("at-fresh");
+    expect(result.accountLabel).toBeUndefined();
   });
 });

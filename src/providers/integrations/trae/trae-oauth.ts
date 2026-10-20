@@ -1,10 +1,14 @@
-// Trae credential refresh.
+// Trae credential login and refresh.
 //
-// Trae is OAuth2 in the narrow sense that matters operationally: the persisted
-// credential is an access/refresh token pair, and the refresh token is what
-// keeps the account alive. There is no device-code or PKCE authorize endpoint
-// in the donor — credentials enter the gateway as a desktop client export — so
-// the only flow implemented here is the token exchange.
+// Trae has a real browser authorization flow, just not a device-code one: the
+// other donor's `start_login` answers `unsupported` for device authorization,
+// which is what led to the earlier claim that Trae had no OAuth login at all.
+// The browser path is `GetLoginGuidance` (discovers the login host) → the
+// operator signs in at `/authorization` → the callback carries a refresh token
+// → `ExchangeToken` redeems it → `GetUserInfo` names the account.
+//
+// A pasted credential (a PAT — which *is* a refresh token — or a desktop
+// export) still enters through `importCredential`, so both doors are open.
 //
 // The exchange is `POST /cloudide/api/v3/trae/oauth/ExchangeToken` with a fixed
 // client id. Upstream's client secret is the literal string `"-"`, which is
@@ -18,17 +22,38 @@
 // Sourced from the donor hub `Public/trae2api-hub` (`_refresh_account_request`
 // in `trae_client.py`).
 
+import { randomUUID } from "node:crypto";
 import { OAuthClient } from "../../authentication/oauth-client";
 import type { OAuthExchangeResult, OAuthImportInput } from "../../authentication/oauth-flow-store";
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
 import {
+  TRAE_AUTHORIZATION_PATH,
   TRAE_EXCHANGE_TOKEN_PATH,
+  TRAE_GET_USER_INFO_PATH,
+  TRAE_LOGIN_GUIDANCE_URLS,
   traeAccountCandidates,
   type TraeRealm,
 } from "./trae-realm";
 
 /** Upstream client id. Constant across realms. */
 const TRAE_CLIENT_ID = "ono9krqynydwx5";
+
+/** UA for the login steps, distinct from the data-plane UA. */
+const TRAE_OAUTH_USER_AGENT = "Trae/1.0.0 antigravity-cockpit-tools";
+
+/** Client version advertised on the authorization page. */
+const TRAE_APP_VERSION = "3.5.54";
+
+/**
+ * Device context for the login.
+ *
+ * Trae's own client reuses the account's numeric user id here; a gateway has no
+ * IDE install to read, so a per-process pair is used instead. These identify the
+ * browser session only — they are not the data-plane fingerprint the adapter
+ * derives per account.
+ */
+const TRAE_MACHINE_ID = randomUUID();
+const TRAE_DEVICE_ID = "0";
 
 /**
  * Upstream client secret.
@@ -59,20 +84,185 @@ interface TraeExchangeResponse extends TraeExchangeResult {
 }
 
 export class TraeOAuthClient extends OAuthClient {
+  /**
+   * Trae has no device-code flow — the donor's `start_login` answers
+   * `unsupported` for it — but it does have a browser authorization flow:
+   * `GetLoginGuidance` discovers the login host, the operator signs in there,
+   * and the callback carries a refresh token that `ExchangeToken` redeems.
+   *
+   * Declaring only the browser half is what keeps the console from offering a
+   * device login that cannot work.
+   */
   override readonly supportsDeviceCode = false;
-  override readonly supportsBrowserCode = false;
+  override readonly supportsBrowserCode = true;
 
   protected override readonly providerLabel = "Trae";
   protected override readonly clientId = TRAE_CLIENT_ID;
   /** The exchange is per-realm: CN and intl use different account hosts. */
   protected override readonly tokenUrl = "";
   protected override readonly scopes = "";
+  /**
+   * Resolved at authorize time by `GetLoginGuidance` rather than pinned: the
+   * login host is an upstream discovery, and hard-coding the one observed today
+   * would break the day upstream moves it.
+   */
+  protected override readonly authorizeUrl = "";
 
   private readonly realm: TraeRealm;
 
   constructor(fetchFn: typeof fetch = globalThis.fetch, realm: TraeRealm = "intl") {
     super(fetchFn);
     this.realm = realm;
+  }
+
+  /**
+   * Resolves the login host before the authorize URL is built.
+   *
+   * The base `buildAuthorizeUrl` is synchronous and needs a static
+   * `authorizeUrl`, neither of which fits a host that upstream hands out per
+   * login. Resolving it here — the async step the console awaits before it
+   * builds the URL — and passing it on in `parameters` keeps the URL builder
+   * synchronous without pinning a host that can move.
+   */
+  async prepareAuthorize(request: {
+    readonly state: string;
+    readonly codeChallenge: string;
+    readonly redirectUri: string;
+    readonly parameters?: Readonly<Record<string, string>>;
+  }): Promise<{ readonly state: string; readonly codeChallenge: string; readonly redirectUri: string; readonly parameters?: Readonly<Record<string, string>> }> {
+    const host = await this.loginHost(request.state);
+    return { ...request, parameters: { ...(request.parameters ?? {}), loginHost: host } };
+  }
+
+  /**
+   * Builds the URL the operator opens to sign in.
+   *
+   * `state` carries the login trace id, so the callback can be matched to the
+   * browser session that produced it.
+   */
+  override buildAuthorizeUrl(request: {
+    readonly state: string;
+    readonly redirectUri: string;
+    readonly parameters?: Readonly<Record<string, string>>;
+  }): string {
+    const host = request.parameters?.["loginHost"];
+    if (host === undefined) {
+      throw new Error("Trae login host is not resolved — the authorize step must run first");
+    }
+    const url = new URL(host.startsWith("http") ? host : `https://${host.replace(/^\/+/, "")}`);
+    url.pathname = TRAE_AUTHORIZATION_PATH;
+    const params = new URLSearchParams({
+      login_version: "1",
+      auth_from: "trae",
+      login_channel: "native_ide",
+      plugin_version: "local",
+      auth_type: "local",
+      client_id: TRAE_CLIENT_ID,
+      redirect: "0",
+      login_trace_id: request.state,
+      auth_callback_url: request.redirectUri,
+      machine_id: TRAE_MACHINE_ID,
+      device_id: TRAE_DEVICE_ID,
+      x_device_id: TRAE_DEVICE_ID,
+      x_machine_id: TRAE_MACHINE_ID,
+      x_device_brand: "unknown",
+      x_device_type: "unknown",
+      x_os_version: "unknown",
+      x_env: "",
+      x_app_version: TRAE_APP_VERSION,
+      x_app_type: "stable",
+    });
+    url.search = params.toString();
+    return url.toString();
+  }
+
+  /**
+   * Asks upstream where to sign in.
+   *
+   * Tried in order across the known guidance hosts: the call is what discovers
+   * the login host, so it cannot be scoped to one realm's account host.
+   */
+  private async loginHost(loginTraceId: string): Promise<string> {
+    const body = JSON.stringify({ loginTraceID: loginTraceId, login_trace_id: loginTraceId });
+    let lastError = "no successful response";
+    for (const url of TRAE_LOGIN_GUIDANCE_URLS) {
+      try {
+        const response = await this.fetchFn(url, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": TRAE_OAUTH_USER_AGENT,
+          },
+          body,
+        });
+        if (!response.ok) {
+          lastError = `${url} HTTP ${response.status}`;
+          continue;
+        }
+        const data = (await response.json()) as { Result?: { LoginHost?: unknown } };
+        const host = data.Result?.LoginHost;
+        if (typeof host === "string" && host.length > 0) return host;
+        lastError = `${url} missing LoginHost`;
+      } catch (err: unknown) {
+        lastError = `${url} ${err instanceof Error ? err.message : "request failed"}`;
+      }
+    }
+    throw new Error(`Trae GetLoginGuidance failed: ${lastError}`);
+  }
+
+  /**
+   * Completes the login from the callback the operator pastes back.
+   *
+   * Trae's callback is not an authorization code — it carries the refresh token
+   * directly, so `code` is the callback URL (or its query string) and the
+   * exchange is what turns it into an access token.
+   */
+  override async exchangeCode(
+    code: string,
+    _codeVerifier: string,
+    _redirectUri: string,
+  ): Promise<OAuthExchangeResult> {
+    const callback = parseTraeCallback(code);
+    const exchanged = await this.refreshWithUser(callback.refreshToken, "");
+    const identity = await this.userInfo(exchanged.access);
+    return {
+      access: exchanged.access,
+      refresh: exchanged.refresh ?? callback.refreshToken,
+      expiresAt: exchanged.expiresAt,
+      ...(identity.email === undefined ? {} : { accountLabel: identity.email }),
+      ...(identity.userId === undefined ? {} : { auth_state: { userId: identity.userId } }),
+    };
+  }
+
+  /** Reads the account identity the fresh access token names. */
+  private async userInfo(accessToken: string): Promise<{ email?: string; userId?: string }> {
+    for (const host of traeAccountCandidates(this.realm)) {
+      try {
+        const response = await this.fetchFn(`${host}${TRAE_GET_USER_INFO_PATH}`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": TRAE_OAUTH_USER_AGENT,
+            "x-cloudide-token": accessToken,
+          },
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) continue;
+        const data = (await response.json()) as { Result?: Record<string, unknown> };
+        const result = data.Result ?? {};
+        const email = firstStringValue(result, ["NonPlainTextEmail", "Email", "email"]);
+        const userId = firstStringValue(result, ["UserID", "userId"]);
+        return {
+          ...(email === undefined ? {} : { email }),
+          ...(userId === undefined ? {} : { userId }),
+        };
+      } catch {
+        // Identity is optional: the account is usable without it.
+      }
+    }
+    return {};
   }
 
   /**
@@ -308,6 +498,48 @@ function firstNumber(record: Record<string, unknown>, keys: readonly string[]): 
       const asMs = Date.parse(value);
       if (Number.isFinite(asMs)) return asMs;
     }
+  }
+  return undefined;
+}
+
+/**
+ * Reads the Trae callback the operator pastes back.
+ *
+ * Upstream redirects with `?isRedirect=true&refreshToken=…&loginHost=…`. The
+ * pasted value may be the whole URL, just its query, or a fragment, so all
+ * three are accepted.
+ */
+function parseTraeCallback(raw: string): { refreshToken: string; loginHost?: string } {
+  const text = raw.trim();
+  let query = text;
+  if (text.includes("?")) query = text.slice(text.indexOf("?") + 1);
+  if (text.startsWith("#")) query = text.slice(1);
+  const params = Object.fromEntries(new URLSearchParams(query));
+  const pick = (keys: readonly string[]): string | undefined => {
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    }
+    return undefined;
+  };
+  const error = pick(["error", "error_code", "errorCode"]);
+  if (error !== undefined) {
+    const detail = pick(["error_description", "error_desc", "message"]);
+    throw new Error(detail === undefined ? `Trae auth failed: ${error}` : `Trae auth failed: ${error} (${detail})`);
+  }
+  const refreshToken = pick(["refreshToken", "refresh_token", "RefreshToken"]);
+  if (refreshToken === undefined) {
+    throw new Error("Trae callback is missing refreshToken — paste the full callback URL");
+  }
+  const loginHost = pick(["loginHost", "login_host", "LoginHost", "host", "consoleHost"]);
+  return { refreshToken, ...(loginHost === undefined ? {} : { loginHost }) };
+}
+
+/** First non-empty string among the keys, for upstream's varied spellings. */
+function firstStringValue(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }
   return undefined;
 }
