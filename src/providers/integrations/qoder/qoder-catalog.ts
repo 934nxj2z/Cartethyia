@@ -19,8 +19,46 @@ export interface QoderCatalogEntry {
   readonly displayName: string;
   readonly isVl: boolean;
   readonly isReasoning: boolean;
+  /**
+   * Largest window this model can be switched to.
+   *
+   * Upstream states two different numbers: `max_input_tokens` is the window
+   * *currently selected* (often 180k), while `context_config` lists the
+   * selectable windows — `{"200K":…, "400K":…, "1M":…}` — which for the same
+   * row go up to 1M. Taking `max_input_tokens` alone published and dispatched
+   * the smaller figure, so Qoder was told the conversation was 180k when the
+   * account could use 1M.
+   */
   readonly maxInputTokens: number | undefined;
   readonly enable: boolean;
+}
+
+/**
+ * The widest selectable window on one catalog row.
+ *
+ * `context_config` is the authority when present: it names every window the
+ * account can switch to, whereas `max_input_tokens` only names the one active
+ * now. Absent both, `undefined` — an unknown window is not zero.
+ */
+export function qoderMaxContextWindow(raw: unknown): number | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const candidates: number[] = [];
+  const config = record["context_config"];
+  if (config !== null && typeof config === "object" && !Array.isArray(config)) {
+    for (const option of Object.values(config as Record<string, unknown>)) {
+      if (option === null || typeof option !== "object" || Array.isArray(option)) continue;
+      const tokenCount = (option as Record<string, unknown>)["token_count"];
+      if (typeof tokenCount === "number" && Number.isFinite(tokenCount) && tokenCount > 0) {
+        candidates.push(Math.floor(tokenCount));
+      }
+    }
+  }
+  const stated = record["max_input_tokens"];
+  if (typeof stated === "number" && Number.isFinite(stated) && stated > 0) {
+    candidates.push(Math.floor(stated));
+  }
+  return candidates.length === 0 ? undefined : Math.max(...candidates);
 }
 
 /** One static row's shape, mirrored on `QODER_MODEL_CONFIGS` in `qoder.ts`. */
@@ -41,19 +79,19 @@ interface QoderModelConfig {
  */
 export const QODER_CN_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> = {
   auto: { id: "auto", display_name: "Auto", max_input_tokens: 200000, is_vl: true, is_reasoning: true },
-  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  q37fmodel: { id: "q37fmodel", display_name: "Qwen3.7-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 96000, is_vl: true, is_reasoning: true },
-  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
-  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  q37fmodel: { id: "q37fmodel", display_name: "Qwen3.7-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
   gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  gm51model: { id: "gm51model", display_name: "GLM-5.2", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
-  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  mmodel: { id: "mmodel", display_name: "MiniMax-M2.7", max_input_tokens: 180000, is_vl: false, is_reasoning: false },
+  gm51model: { id: "gm51model", display_name: "GLM-5.2", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M2.7", max_input_tokens: 200000, is_vl: false, is_reasoning: false },
 };
 
 /**
@@ -72,19 +110,19 @@ export const QODER_INTL_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>
   fast: { id: "fast", display_name: "Fast", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
   performance: { id: "performance", display_name: "Performance", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
   efficient: { id: "efficient", display_name: "Efficient", max_input_tokens: 200000, is_vl: true, is_reasoning: false },
-  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
-  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
   qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
   qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
-  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
-  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
   gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
   dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
   dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
 };
 
 /** Output ceiling when the upstream states none, matching `qoder.ts`. */
@@ -114,10 +152,6 @@ export const QODER_CN_MODELS: readonly ModelDefinition[] = qoderModels(QODER_CN_
 /** Static offline catalog for the global/intl realm. */
 export const QODER_INTL_MODELS: readonly ModelDefinition[] = qoderModels(QODER_INTL_MODEL_CONFIGS, "qoder");
 
-function positiveInt(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
-}
-
 /**
  * Reads upstream's `{"chat": [...]}` envelope.
  *
@@ -140,7 +174,7 @@ export function mapQoderCatalogResponse(raw: unknown): QoderCatalogEntry[] {
       displayName: typeof displayName === "string" && displayName.length > 0 ? displayName : key.trim(),
       isVl: record["is_vl"] === true,
       isReasoning: record["is_reasoning"] === true,
-      maxInputTokens: positiveInt(record["max_input_tokens"]),
+      maxInputTokens: qoderMaxContextWindow(record),
       // Absent means "not stated", which is not the same as disabled.
       enable: record["enable"] !== false,
     });
