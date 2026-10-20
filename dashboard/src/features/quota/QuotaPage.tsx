@@ -9,7 +9,6 @@ import {
   Loader2,
   RefreshCw,
   RotateCcw,
-  SlidersHorizontal,
   Trash2,
   TriangleAlert,
   Zap,
@@ -28,7 +27,7 @@ import { HealthEventsModal } from "../../components/HealthEventsModal";
 import { Select } from "../../components/ui/select";
 
 import { Stack } from "../../components/ui/stack";
-import { Card, CardBody, CardHeader } from "../../components/ui/card";
+import { Card, CardBody } from "../../components/ui/card";
 import { toast } from "../../lib/toast";
 import {
   useQuotaOverview,
@@ -783,9 +782,6 @@ export default function QuotaPage(): ReactNode {
 
   return (
     <Stack gap="16px" className="dashboard-page min-h-0 flex-1">
-      <Card>
-        <CardHeader title="Quota" subtitle="Provider account limits and what is left of them" icon={<SlidersHorizontal size={16} />} />
-      </Card>
       <Card>
         <CardBody className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-5">
