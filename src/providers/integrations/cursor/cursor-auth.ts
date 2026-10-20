@@ -99,6 +99,21 @@ export function isExpiringSoon(token: string, thresholdSeconds = TOKEN_EXPIRY_TH
   return expiry - Date.now() < thresholdSeconds * 1000;
 }
 
+/**
+ * The account identity Cursor itself asserts, from the access token's `sub`.
+ *
+ * Cursor publishes no email on this grant, so the login used to fall back to the
+ * provider id — every account of the provider then looked identical, and adding
+ * a second one replaced the first. `sub` (`auth0|user_01…`) is stable across
+ * every login of one account and differs between accounts, which is exactly
+ * what an account identity has to do.
+ */
+export function cursorAccountIdentity(token: string): string | undefined {
+  const payload = decodeJwtPayload(token);
+  const subject = payload?.["sub"];
+  return typeof subject === "string" && subject.trim().length > 0 ? subject.trim() : undefined;
+}
+
 /** Private device-flow state. Never returned to the browser. */
 interface CursorDeviceState {
   readonly verifier: string;
@@ -289,15 +304,17 @@ export class CursorOAuthClient extends OAuthDeviceFlow {
     if (accessToken === undefined) return { status: "pending" };
     const refreshToken = nonEmptyTrimmedString(outcome.body["refreshToken"]) ?? accessToken;
     const expiry = decodeJwtExpiryMs(accessToken);
+    const identity = cursorAccountIdentity(accessToken);
     return {
       status: "complete",
       result: {
         access: accessToken,
         refresh: refreshToken,
         expiresAt: new Date(expiry ?? Date.now() + EXPIRY_FALLBACK_MS),
+        ...(identity === undefined ? {} : { accountLabel: identity }),
         // `method` distinguishes a browser session (renewed by grant) from an
         // imported key (renewed by re-exchange). It carries no secret.
-        auth_state: { method: "login" },
+        auth_state: { method: "login", ...(identity === undefined ? {} : { subject: identity }) },
       },
     };
   }
@@ -319,11 +336,13 @@ export class CursorOAuthClient extends OAuthDeviceFlow {
       );
     }
     const exchanged = await exchangeApiKey(asFetchFn(this.fetchFn), credential);
+    const identity = cursorAccountIdentity(exchanged.accessToken);
     return {
       access: exchanged.accessToken,
       refresh: credential,
       expiresAt: exchanged.expiresAt,
-      auth_state: { method: "api_key" },
+      ...(identity === undefined ? {} : { accountLabel: identity }),
+      auth_state: { method: "api_key", ...(identity === undefined ? {} : { subject: identity }) },
     };
   }
 

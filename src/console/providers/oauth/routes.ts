@@ -28,14 +28,22 @@ import type { ConsoleAccessResolver } from "../../auth/access";
  * identity the provider itself reports (an email or org name), which is stable
  * across logins, so it is what a re-login replaces.
  *
- * A provider that reports no label falls back to the refresh-token fingerprint,
- * which is the old behaviour and still catches an exact replay. Renaming an
- * account in the console changes the stored label, so a later login is treated
- * as a new account rather than silently overwriting the rename — the same
- * tradeoff the unique index has always had, now stated where it is decided.
+ * A label the provider never resolved is *not* that identity. Callers fill the
+ * gap with the provider id (`cursor`, `github`), and hashing that made every
+ * login of every account of that provider collide: the second login matched the
+ * first row and replaced it, so adding an account silently consumed the one
+ * already there. Only a label the provider actually reported — or the refresh
+ * token, which still catches an exact replay — may be the identity.
+ *
+ * Test seam: exported so the merge rule can be pinned without a database.
  */
-function oauthIdentityFingerprint(input: { readonly label: string } & OAuthExchangeResult): string {
-  return hashSecret(input.label.trim().length > 0 ? input.label.trim() : input.refresh);
+export function oauthIdentityFingerprint(input: {
+  readonly label: string;
+  readonly providerId: string;
+} & OAuthExchangeResult): string {
+  const label = input.label.trim();
+  const resolved = label.length > 0 && label.toLowerCase() !== input.providerId.trim().toLowerCase();
+  return hashSecret(resolved ? label : input.refresh);
 }
 
 export class DrizzleOAuthAccountStore implements OAuthAccountStore {
@@ -46,7 +54,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
     providerId: string,
     input: { readonly label: string } & OAuthExchangeResult,
   ): Promise<PersistedOAuthAccount> {
-    const credentialFingerprint = oauthIdentityFingerprint(input);
+    const credentialFingerprint = oauthIdentityFingerprint({ ...input, providerId });
     const sameAccount = and(
       eq(providerAccounts.providerId, providerId),
       // The identity index coalesces a null tenant to a sentinel, so "same
