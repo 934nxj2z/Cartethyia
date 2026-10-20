@@ -32,6 +32,7 @@ import {
   TRAE_EXCHANGE_TOKEN_PATH,
   TRAE_GET_USER_INFO_PATH,
   TRAE_LOGIN_GUIDANCE_URLS,
+  TRAE_PUBLIC_EXCHANGE_TOKEN_PATH,
   traeAccountCandidates,
   type TraeRealm,
 } from "./trae-realm";
@@ -279,19 +280,81 @@ export class TraeOAuthClient extends OAuthClient {
    */
   override async exchangeCode(
     code: string,
-    _codeVerifier: string,
+    codeVerifier: string,
     _redirectUri: string,
   ): Promise<OAuthExchangeResult> {
     const callback = parseTraeCallback(code);
-    const exchanged = await this.refreshWithUser(callback.refreshToken, "");
+    // Two shapes, two exchanges. The PKCE code is redeemed against the
+    // verifier; a refresh token is rotated. Sending one where the other is
+    // expected is answered "refresh token is invalid" or "Invalid param", so
+    // the branch is not an optimisation.
+    const exchanged =
+      callback.authCode === undefined
+        ? await this.refreshWithUser(callback.refreshToken ?? "", "")
+        : await this.exchangeAuthCode(callback.authCode, codeVerifier, callback.host);
     const identity = await this.userInfo(exchanged.access);
     return {
       access: exchanged.access,
-      refresh: exchanged.refresh ?? callback.refreshToken,
-      expiresAt: exchanged.expiresAt,
+      // A refresh-token rotation may not return a new refresh token; the one
+      // that was sent stays valid in that case, so it is the fallback.
+      refresh: exchanged.refresh ?? callback.refreshToken ?? "",
+      expiresAt: new Date(exchanged.expiresAt),
       ...(identity.email === undefined ? {} : { accountLabel: identity.email }),
       ...(identity.userId === undefined ? {} : { auth_state: { userId: identity.userId } }),
     };
+  }
+
+  /**
+   * Redeems the PKCE code the login page redirects with.
+   *
+   * `public/oauth/ExchangeToken` is the endpoint that accepts `AuthCode` — the
+   * authenticated `oauth/ExchangeToken` only takes `RefreshToken` and answers
+   * any code with "Invalid param". The body is taken verbatim from the page's
+   * own client, which also sends an empty `RefreshToken`: upstream's binding
+   * requires the field to exist, not to be set.
+   */
+  private async exchangeAuthCode(
+    authCode: string,
+    codeVerifier: string,
+    host: string | undefined,
+  ): Promise<{ access: string; refresh: string; expiresAt: number }> {
+    const base = (host ?? traeAccountCandidates(this.realm)[0] ?? "").replace(/\/+$/, "");
+    const response = await this.fetchFn(`${base}${TRAE_PUBLIC_EXCHANGE_TOKEN_PATH}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": TRAE_OAUTH_USER_AGENT,
+      },
+      body: JSON.stringify({
+        ClientID: TRAE_CLIENT_ID,
+        ClientSecret: TRAE_CLIENT_SECRET,
+        RefreshToken: "",
+        UserID: "",
+        AuthCode: authCode,
+        CodeVerifier: codeVerifier,
+        DeviceInfo: "",
+        DeviceProof: "",
+      }),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Trae AuthCode exchange failed: HTTP ${response.status} ${text.slice(0, 200)}`);
+    }
+    const body = JSON.parse(text) as TraeExchangeResponse;
+    const result = body.Result ?? body;
+    const access = firstString(result as unknown as Record<string, unknown>, ["Token", "token"]);
+    const refresh = firstString(result as unknown as Record<string, unknown>, [
+      "RefreshToken",
+      "refreshToken",
+    ]);
+    if (access === undefined || refresh === undefined) {
+      throw new Error("Trae AuthCode exchange returned no token pair");
+    }
+    const expiresAt =
+      firstNumber(result as unknown as Record<string, unknown>, ["TokenExpireAt", "expireAt"]) ??
+      Date.now() + 3_600_000;
+    return { access, refresh, expiresAt };
   }
 
   /** Reads the account identity the fresh access token names. */
@@ -561,14 +624,32 @@ function firstNumber(record: Record<string, unknown>, keys: readonly string[]): 
   return undefined;
 }
 
+/** What a Trae callback can carry. Exactly one of the two is present. */
+interface TraeCallbackPayload {
+  /** Present on the refresh-token flow. */
+  readonly refreshToken?: string;
+  /** Present on the PKCE flow: the code the login page minted. */
+  readonly authCode?: string;
+  /** Host the exchange must go to, echoed back by the page. */
+  readonly host?: string;
+}
+
 /**
  * Reads the Trae callback the operator pastes back.
  *
- * Upstream redirects with `?isRedirect=true&refreshToken=…&loginHost=…`. The
- * pasted value may be the whole URL, just its query, or a fragment, so all
+ * Upstream has two shapes and the page picks by how the login started:
+ *
+ * - `?isRedirect=true&refreshToken=…&refreshExpireAt=…` — the refresh-token
+ *   flow, which is what the donor implements.
+ * - `?isRedirect=true&scope=trae&authCodeInfo={"AuthCode":…}&host=…` — the PKCE
+ *   flow, which is what the live page actually produces here. The code inside
+ *   `authCodeInfo` is what `public/oauth/ExchangeToken` redeems against the
+ *   verifier, so it is not interchangeable with a refresh token.
+ *
+ * The pasted value may be the whole URL, just its query, or a fragment, so all
  * three are accepted.
  */
-function parseTraeCallback(raw: string): { refreshToken: string; loginHost?: string } {
+function parseTraeCallback(raw: string): TraeCallbackPayload {
   const text = raw.trim();
   let query = text;
   if (text.includes("?")) query = text.slice(text.indexOf("?") + 1);
@@ -586,12 +667,15 @@ function parseTraeCallback(raw: string): { refreshToken: string; loginHost?: str
     const detail = pick(["error_description", "error_desc", "message"]);
     throw new Error(detail === undefined ? `Trae auth failed: ${error}` : `Trae auth failed: ${error} (${detail})`);
   }
+  const host = pick(["loginHost", "login_host", "LoginHost", "host", "consoleHost"]);
   const refreshToken = pick(["refreshToken", "refresh_token", "RefreshToken"]);
-  if (refreshToken === undefined) {
-    throw new Error("Trae callback is missing refreshToken — paste the full callback URL");
-  }
-  const loginHost = pick(["loginHost", "login_host", "LoginHost", "host", "consoleHost"]);
-  return { refreshToken, ...(loginHost === undefined ? {} : { loginHost }) };
+  if (refreshToken !== undefined) return { refreshToken, ...(host === undefined ? {} : { host }) };
+  // The PKCE flow nests the code in `authCodeInfo`, a JSON string.
+  const authCode = pick(["AuthCode"]) ?? authCodeFromInfo(params["authCodeInfo"]);
+  if (authCode !== undefined) return { authCode, ...(host === undefined ? {} : { host }) };
+  throw new Error(
+    "Trae callback carries neither a refreshToken nor an AuthCode — paste the full callback URL",
+  );
 }
 
 /** First non-empty string among the keys, for upstream's varied spellings. */
@@ -622,5 +706,17 @@ function withTraeCallbackPath(redirectUri: string): string {
     return url.toString();
   } catch {
     return `http://127.0.0.1:59653${TRAE_CALLBACK_PATH}`;
+  }
+}
+
+/** Extracts `AuthCode` from the `authCodeInfo` JSON string the page sends. */
+function authCodeFromInfo(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return firstString(parsed as Record<string, unknown>, ["AuthCode", "authCode"]);
+  } catch {
+    return undefined;
   }
 }

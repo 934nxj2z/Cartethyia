@@ -346,11 +346,35 @@ describe("Trae browser authorization", () => {
     expect(exchange?.body["RefreshToken"]).toBe("rt-bare");
   });
 
+  test("the PKCE callback is redeemed against the verifier", async () => {
+    // The live page redirects with `authCodeInfo` — a PKCE code, not a refresh
+    // token. It is redeemed at the *public* exchange endpoint, which is the
+    // only one that accepts `AuthCode`; the authenticated one answers
+    // "Invalid param".
+    const callback =
+      "?isRedirect=true&scope=trae&authCodeInfo=%7B%22AuthCode%22%3A%22ac-1%22%7D" +
+      "&loginTraceID=trace-1&host=https%3A%2F%2Fapi-sg-central.trae.ai&userRegion=sg";
+    const { fetchFn, calls } = oauthStub((path) =>
+      path.includes("public/oauth/ExchangeToken")
+        ? { payload: { Result: { Token: "at-1", RefreshToken: "rt-1", TokenExpireAt: 1_800_000_000_000 } } }
+        : path.includes("GetUserInfo")
+          ? { payload: { Result: { NonPlainTextEmail: "ops@example.com", UserID: "u-1" } } }
+          : { status: 404, payload: {} },
+    );
+    const client = new TraeOAuthClient(fetchFn, "intl");
+    const result = await client.exchangeCode(callback, "verifier-1", "http://127.0.0.1:59653/authorize");
+    expect(result.access).toBe("at-1");
+    expect(result.refresh).toBe("rt-1");
+    const exchange = calls.find((c) => c.path.includes("public/oauth/ExchangeToken"));
+    expect(exchange?.body["AuthCode"]).toBe("ac-1");
+    expect(exchange?.body["CodeVerifier"]).toBe("verifier-1");
+  });
+
   test("a callback with no refresh token is a clear error", async () => {
     const { fetchFn } = oauthStub(EXCHANGE);
     const client = new TraeOAuthClient(fetchFn, "intl");
     expect(client.exchangeCode("?isRedirect=true", "", "http://127.0.0.1:1455/callback")).rejects.toThrow(
-      /missing refreshToken/,
+      /neither a refreshToken nor an AuthCode/,
     );
   });
 

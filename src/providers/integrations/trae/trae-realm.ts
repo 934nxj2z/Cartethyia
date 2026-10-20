@@ -51,6 +51,16 @@ export const TRAE_MODEL_LIST_PATH = "/api/ide/v1/model_list";
 
 /** OAuth / business paths, relative to the realm's `account` host. */
 export const TRAE_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/trae/oauth/ExchangeToken";
+
+/**
+ * The endpoint that redeems a PKCE `AuthCode`.
+ *
+ * Distinct from {@link TRAE_EXCHANGE_TOKEN_PATH}, which is the authenticated
+ * refresh-token rotation and refuses an `AuthCode` outright. Sourced from the
+ * login page's own client (`TraeExchangeTokenV2` / `PublicExchangeToken` in
+ * `9839.*.js`).
+ */
+export const TRAE_PUBLIC_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/public/oauth/ExchangeToken";
 export const TRAE_TEMP_TOKEN_PATH = "/cloudide/api/v3/trae/GenerateTempToken";
 export const TRAE_GET_USER_INFO_PATH = "/cloudide/api/v3/trae/GetUserInfo";
 
