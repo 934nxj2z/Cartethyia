@@ -240,6 +240,37 @@ export type QoderSigner = (url: string, body: string) => Promise<Record<string, 
  * also the only way a body reaches the wire on a GET — `fetch` itself rejects
  * `GET` + `body` with "request with GET/HEAD method cannot have body".
  */
+/**
+ * How long one realm's live list is reused, in milliseconds.
+ *
+ * The roster is account-wide and changes rarely — upstream adds or retires a
+ * key, it does not reshuffle per request — so every catalog refresh inside the
+ * window would re-sign and re-fetch an identical list. The donor caches the
+ * same way (`fetch_models`, 300 s per realm).
+ */
+const DISCOVERY_CACHE_TTL_MS = 300_000;
+
+/** One realm's cached roster, with the instant it was read. */
+interface CachedRoster {
+  readonly at: number;
+  readonly models: readonly ModelDefinition[];
+}
+
+/** Per-realm live-list cache; keyed by realm, not by account. */
+const discoveryCache = new Map<QoderRealm, CachedRoster>();
+
+/**
+ * Drops one realm's cached list.
+ *
+ * Exported for tests: the cache is module state, so a test that builds a
+ * roster and then asserts a fresh fetch would otherwise read the entry the
+ * previous assertion left behind.
+ */
+export function resetQoderDiscoveryCache(realm?: QoderRealm): void {
+  if (realm === undefined) discoveryCache.clear();
+  else discoveryCache.delete(realm);
+}
+
 export async function discoverQoderModels(input: {
   readonly realm: QoderRealm;
   /** Account secret the injected signer signs with; blank fails fast. */
@@ -253,6 +284,10 @@ export async function discoverQoderModels(input: {
   readonly encode?: (body: Uint8Array) => string;
 }): Promise<readonly ModelDefinition[]> {
   const providerId = input.providerId ?? (input.realm === "cn" ? "qodercn" : "qoder");
+  const cached = discoveryCache.get(input.realm);
+  if (cached !== undefined && Date.now() - cached.at < DISCOVERY_CACHE_TTL_MS) {
+    return cached.models;
+  }
   // The credential belongs to the caller and is never echoed into `details`;
   // this only refuses the case where discovery was asked for without one,
   // which would otherwise surface as an opaque 403 from upstream.
@@ -300,7 +335,11 @@ export async function discoverQoderModels(input: {
         lastError = new Error("Qoder model list returned no usable models");
         continue;
       }
-      return enabled.map((entry) => qoderCatalogModel(entry, providerId));
+      const models = enabled.map((entry) => qoderCatalogModel(entry, providerId));
+      // Cached only after a host actually answered: a failure must stay
+      // retryable on the next call rather than being frozen for five minutes.
+      discoveryCache.set(input.realm, { at: Date.now(), models });
+      return models;
     } catch (error) {
       lastError = error;
     }
