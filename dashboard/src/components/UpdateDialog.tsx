@@ -10,6 +10,35 @@ import {
   NPM_UPDATE_COMMAND,
 } from "../lib/links";
 
+/** Which release the operator has already been told about and dismissed. */
+const DISMISS_KEY = "cartethyia:update-dismissed";
+
+/**
+ * Reads the dismissed release, and records one.
+ *
+ * `localStorage` can throw — a full quota, or a browser with storage blocked —
+ * and a failed write must not take the dialog down with it. Reading falls back
+ * to "never dismissed", which is the safer failure: the operator sees the
+ * prompt again rather than never being told about a release.
+ */
+/** Reads the dismissed release. Exported so the shell can gate the auto-prompt. */
+export function readDismissedUpdate(): string | null {
+  try {
+    return window.localStorage.getItem(DISMISS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Records that a release has been seen, so the auto-prompt stops returning. */
+export function dismissUpdate(version: string): void {
+  try {
+    window.localStorage.setItem(DISMISS_KEY, version);
+  } catch {
+    // Not fatal: the prompt simply returns on the next load.
+  }
+}
+
 /**
  * What the gateway is running and what GitHub says is newest.
  *
@@ -25,6 +54,12 @@ export interface UpdateDialogProps {
   readonly latestVersion?: string | undefined;
   /** Release page to open. Falls back to the public mirror. */
   readonly releaseUrl?: string | undefined;
+  /**
+   * Records that this release has been seen, so the automatic prompt does not
+   * return on every reload. Absent when the dialog was opened from the badge,
+   * where there is nothing automatic to suppress.
+   */
+  readonly onDismissVersion?: (() => void) | undefined;
 }
 
 /** Copies text and reports the transient "copied" state to the button. */
@@ -53,9 +88,14 @@ export function UpdateDialog({
   currentVersion,
   latestVersion,
   releaseUrl,
+  onDismissVersion,
 }: UpdateDialogProps): ReactNode {
   const { copied, copy } = useCopy();
   const target = latestVersion ?? "the latest release";
+  const dismiss = (): void => {
+    onDismissVersion?.();
+    onClose();
+  };
 
   return (
     <Dialog
@@ -66,9 +106,15 @@ export function UpdateDialog({
       size="md"
       footer={
         <DialogActions>
-          <Button variant="ghost" onClick={onClose}>
-            Later
-          </Button>
+          {onDismissVersion === undefined ? (
+            <Button variant="ghost" onClick={onClose}>
+              Later
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={dismiss}>
+              Don&rsquo;t show for v{target}
+            </Button>
+          )}
           <Button onClick={() => copy(NPM_UPDATE_COMMAND)}>
             {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
             {copied ? "Copied" : "Copy update command"}

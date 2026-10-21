@@ -20,6 +20,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   A release alert in the notifications bell now opens the same dialog rather
   than the release page; other alert kinds keep their link.
 
+  **It also opens on its own**, once per release. An operator on an old version
+  is the one least likely to go looking, so waiting for a click defeats the
+  point. But a dialog returning on every navigation punishes whoever already
+  decided not to upgrade, so dismissing records the version and the prompt stays
+  away until a newer one is published. The badge still opens it on demand.
+
 - **The dialog says why the console cannot just install it.** npm cannot replace
   the package directory while a process is executing out of it — on Windows the
   rename fails with `EBUSY` — so a button that tried would fail in a way that

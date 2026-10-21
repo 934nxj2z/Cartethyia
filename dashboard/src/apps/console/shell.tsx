@@ -33,7 +33,7 @@ import { BackgroundLayer } from "../../features/customization/BackgroundLayer";
 import { applyCustomization, readCustomizationSettings } from "../../features/customization/settings";
 import { consoleRequest } from "../../data/api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { UpdateDialog } from "../../components/UpdateDialog";
+import { UpdateDialog, readDismissedUpdate, dismissUpdate } from "../../components/UpdateDialog";
 import { clearPersistedCache, queryClient } from "../../data/query-client";
 import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease, useNotifications } from "../../hooks/system";
@@ -693,6 +693,21 @@ export function DashboardShell({
   const latestTag = releaseQuery.data?.tag_name?.replace(/^v/, "");
   const updateAvailable = isNewerRelease(localVersion, latestTag);
   const providersQuery = useProviders();
+  // Prompts once per release, not once per load: the point of showing it at all
+  // is that an operator running an old version may never think to look. But a
+  // dialog that returns on every navigation punishes the person who has already
+  // decided not to upgrade, so dismissing records the version and the prompt
+  // stays away until a newer one is published.
+  const promptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!updateAvailable || latestTag === undefined) return;
+    if (readDismissedUpdate() === latestTag) return;
+    // The release query can settle more than once; without this the dialog
+    // would reopen after the operator closed it, within the same page life.
+    if (promptedRef.current === latestTag) return;
+    promptedRef.current = latestTag;
+    setUpdateOpen(true);
+  }, [updateAvailable, latestTag]);
 
   const prefetchIntent = (path: string): void => {
     void prefetchRouteIntent(queryClient, path);
@@ -888,6 +903,9 @@ export function DashboardShell({
         {...(releaseQuery.data?.html_url === undefined
           ? {}
           : { releaseUrl: releaseQuery.data.html_url })}
+        {...(latestTag === undefined
+          ? {}
+          : { onDismissVersion: () => dismissUpdate(latestTag) })}
       />
     </>
   );
