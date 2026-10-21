@@ -15,6 +15,7 @@ import { GatewayError, publicGatewayErrorBody } from "../protocol/gateway-error"
 import { shutdownError, shutdownNotice } from "../transport/shutdown-notice";
 import type { CanonicalAdapter } from "../transport/contracts";
 import type { ApiKeyAuthorizationSnapshot } from "../security/api-key-auth";
+import { unknownApiKeyError } from "../security/api-key-auth";
 import { getDbHandle } from "../persistence/boot";
 import { isPgHandle } from "../persistence/db-pg";
 import { resolveRedisClient } from "../persistence/redis";
@@ -408,7 +409,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     const handleModelsList = async ({ request }: { request: Request }): Promise<Response> => {
       const state = requestStateStore.require(request);
       const auth = state.authorization;
-      if (!auth) throw new GatewayError("invalid_request", 401, "This API key is unknown, revoked, or expired. Issue a new key and send it as: Authorization: Bearer <key>.");
+      if (!auth) throw unknownApiKeyError();
       const data = await queryAllowedModels(auth);
       return new Response(JSON.stringify({ object: "list", data }), {
         headers: {
@@ -431,7 +432,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     }): Promise<Response> => {
       const state = requestStateStore.require(request);
       const auth = state.authorization;
-      if (!auth) throw new GatewayError("invalid_request", 401, "This API key is unknown, revoked, or expired. Issue a new key and send it as: Authorization: Bearer <key>.");
+      if (!auth) throw unknownApiKeyError();
       const raw = params?.["*"] ?? params?.id ?? "";
       const targetId = new URL(request.url).searchParams.get("id") ?? raw;
       const found = await publicModelStore.getPublicModelDetail(
