@@ -339,6 +339,9 @@ export function mapModelRow(
     // `true` is pro-only. Absence means nobody established the tier, and the
     // surface must render that as unknown rather than as free.
     ...(row.proOnly === true ? { proOnly: true } : {}),
+    // Same three-valued rule, from the provider's own directory. Qoder states
+    // `is_free` per row, so a plan change moves the pill without a code change.
+    ...(row.freeTier === true ? { freeTier: true } : {}),
     sourceUpdatedAt: row.sourceUpdatedAt?.toISOString() ?? null,
   } satisfies ModelCatalogEntry;
 }

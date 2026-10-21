@@ -347,6 +347,14 @@ export interface ModelCatalogEntry {
    * would mislabel every one of them.
    */
   proOnly?: boolean;
+  /**
+   * True when the provider publishes this row as free, so the surface can show
+   * the tier instead of an operator discovering it from the pricing.
+   *
+   * Absence is "tier unknown", not "not free": the flag is only set where the
+   * provider's own model directory states it.
+   */
+  freeTier?: boolean;
 }
 export interface FlatModelCatalogEntry {
   readonly providerId: string;

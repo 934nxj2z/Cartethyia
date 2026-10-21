@@ -564,7 +564,10 @@ export function buildQoderRequest(
       is_vl: modelConfig.is_vl,
       is_reasoning: modelConfig.is_reasoning,
       max_input_tokens: modelConfig.max_input_tokens,
-      max_output_tokens: modelConfig.max_output_tokens ?? 32768,
+      // Mirrors the roster's stated ceiling. The 32k this used to fall back to
+      // was sent for every model alike, so the request declared a cap the
+      // catalog no longer publishes.
+      max_output_tokens: modelConfig.max_output_tokens ?? 65_536,
       source: modelConfig.source ?? "system",
     },
     messages: qoderMessages,

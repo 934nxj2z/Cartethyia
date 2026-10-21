@@ -831,6 +831,8 @@ export class ProviderProbingService {
         // row carries the same answer a seeded one does. Null when neither
         // source marked it, which reads as "unknown" rather than "free".
         proOnly: (discDef?.proOnly ?? knownDefinition?.proOnly ?? null),
+        // Same shape for the tier the provider states itself (Qoder `is_free`).
+        freeTier: (discDef?.freeTier ?? knownDefinition?.freeTier ?? null),
       };
       rows.push({
         providerId,
@@ -869,6 +871,7 @@ export class ProviderProbingService {
             toolCall: sql`excluded.tool_call`,
             cost: sql`excluded.cost`,
             proOnly: sql`excluded.pro_only`,
+            freeTier: sql`excluded.free_tier`,
             // The proposed row's own source, not a constant: a free-tier
             // discovery and an ordinary one write the same upsert, and pinning
             // this to `discovered` would relabel every free-tier row on the

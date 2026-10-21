@@ -215,6 +215,8 @@ interface MergedModelRow {
   toolCall: boolean;
   enabled: boolean;
   proOnly: boolean | null;
+  /** Whether the provider publishes the row as free. Read for plan logging. */
+  freeTier: boolean | null;
 }
 /**
  * Converts persisted model rows into candidate input. Seed materialization is
@@ -236,6 +238,7 @@ function mergeModelCatalog(
       reasoning: row.reasoning,
       toolCall: row.toolCall,
       enabled: row.enabled,
+      freeTier: row.freeTier ?? null,
       proOnly: row.proOnly ?? null,
     }));
 }
@@ -277,6 +280,9 @@ const MODEL_COLUMNS = {
   // Carried for the plan gate: an upstream may refuse a model on a free plan,
   // and only the row says which. See `planAllowsModel`.
   proOnly: models.proOnly,
+  // Carried alongside it: the provider's own statement that the row is free,
+  // which is the other half of the same plan question.
+  freeTier: models.freeTier,
 } as const;
 const ACCOUNT_COLUMNS = {
   id: providerAccounts.id,

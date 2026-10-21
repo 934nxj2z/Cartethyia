@@ -56,6 +56,9 @@ export async function seedBundledModels(
           // nothing. Never coerced to false: the column is three-valued, and
           // "nobody established it" is not the same claim as "served on free".
           proOnly: definition.proOnly ?? null,
+          // Same three-valued rule for the inverse: the provider's directory
+          // states the tier, so the flag is carried rather than derived.
+          freeTier: definition.freeTier ?? null,
           source: "builtin",
           sourceUpdatedAt: now,
           enabled: true,
@@ -84,6 +87,7 @@ export async function seedBundledModels(
       toolCall: sql`excluded.tool_call`,
       cost: sql`excluded.cost`,
       proOnly: sql`excluded.pro_only`,
+      freeTier: sql`excluded.free_tier`,
       source: sql`'builtin'`,
       sourceUpdatedAt: sql`excluded.source_updated_at`,
     },

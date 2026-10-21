@@ -377,6 +377,15 @@ export const models = pgTable(
      * `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`.
      */
     proOnly: boolean("pro_only"),
+    /**
+     * Whether the provider publishes this model as free.
+     *
+     * Mirrors `proOnly` but sourced from the provider's own directory rather
+     * than inferred: Qoder states `is_free` per row, so the tier tracks a plan
+     * change without a code change. Nullable three-valued — absence means the
+     * provider did not state it, which is not the same as billed.
+     */
+    freeTier: boolean("free_tier"),
   },
   (table) => [
     uniqueIndex("models_provider_model_route_uidx").on(

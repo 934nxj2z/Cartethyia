@@ -32,6 +32,16 @@ export interface QoderCatalogEntry {
    */
   readonly maxInputTokens: number | undefined;
   readonly enable: boolean;
+  /**
+   * Whether upstream publishes this row as free.
+   *
+   * Qoder states it per row (`is_free`) and it is not inferable: `price_factor`
+   * is 0 on both free and some billed rows, and the lite-plan flag describes a
+   * plan tier rather than a model. So the free tier is read from this field
+   * instead of being hardcoded as a list, which is what lets a plan change
+   * move a model between tiers without a code change.
+   */
+  readonly isFree: boolean;
 }
 
 /**
@@ -70,6 +80,12 @@ interface QoderModelConfig {
   readonly max_output_tokens?: number;
   readonly is_vl: boolean;
   readonly is_reasoning: boolean;
+  /**
+   * Whether upstream publishes this row as free. Absent means upstream did not
+   * state it for the row, which is not the same as false — only an explicit
+   * `false` marks the model as billed.
+   */
+  readonly is_free?: boolean;
 }
 
 /**
@@ -103,7 +119,7 @@ export const QODER_CN_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> 
  */
 export const QODER_INTL_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> = {
   auto: { id: "auto", display_name: "Auto", max_input_tokens: 200000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
-  ultimate: { id: "ultimate", display_name: "Ultimate", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
+  ultimate: { id: "ultimate", display_name: "Ultimate", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_free: false, is_reasoning: true },
   // `fast` is what the live roster reports today; `performance` is the older
   // key for the same slot. Both are kept so a hand-added model id written
   // against either name still resolves — the roster is the offline floor, and
@@ -111,19 +127,19 @@ export const QODER_INTL_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>
   fast: { id: "fast", display_name: "Fast", max_input_tokens: 1000000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
   performance: { id: "performance", display_name: "Performance", max_input_tokens: 1000000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
   efficient: { id: "efficient", display_name: "Efficient", max_input_tokens: 200000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
-  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
-  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
+  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_free: false, is_reasoning: true },
+  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_free: false, is_reasoning: true },
   qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
-  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_free: true, is_reasoning: true },
   qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
   qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
-  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
-  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, max_output_tokens: 65_536, is_vl: true, is_reasoning: false },
-  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_free: false, is_reasoning: false },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, max_output_tokens: 65_536, is_vl: true, is_free: false, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_free: false, is_reasoning: true },
   gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
-  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_reasoning: true },
-  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_reasoning: true },
-  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 1000000, max_output_tokens: 512_000, is_vl: true, is_reasoning: false },
+  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_free: false, is_reasoning: true },
+  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_free: true, is_reasoning: true },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 1000000, max_output_tokens: 512_000, is_vl: true, is_free: false, is_reasoning: false },
 };
 
 /**
@@ -154,6 +170,9 @@ function qoderModels(
       ...(cfg.max_output_tokens === undefined ? {} : { out: cfg.max_output_tokens }),
       vision: cfg.is_vl,
       reasoning: cfg.is_reasoning,
+      // Only an explicit `true` marks the row free; an unstated flag is left
+      // unset so nothing claims a tier the roster did not state.
+      ...(cfg.is_free === undefined ? {} : { free: cfg.is_free, freeTier: cfg.is_free }),
     }),
   );
 }
@@ -196,6 +215,9 @@ export function qoderVirtualModels(
         vision: target.modalities.input.includes("image"),
         reasoning: target.reasoning ?? false,
         toolCall: target.toolCall ?? false,
+        // The same model under its caller-facing name belongs to the same tier,
+        // so the pill follows the roster row rather than being restated.
+        ...(target.freeTier === undefined ? {} : { free: target.freeTier, freeTier: target.freeTier }),
       }),
     );
   }
@@ -242,6 +264,7 @@ export function mapQoderCatalogResponse(raw: unknown): QoderCatalogEntry[] {
       isVl: record["is_vl"] === true,
       isReasoning: record["is_reasoning"] === true,
       maxInputTokens: qoderMaxContextWindow(record),
+      isFree: record["is_free"] === true,
       // Absent means "not stated", which is not the same as disabled.
       enable: record["enable"] !== false,
     });
@@ -265,6 +288,11 @@ export function qoderCatalogModel(
     ctx: entry.maxInputTokens ?? null,
     vision: entry.isVl,
     reasoning: entry.isReasoning,
+    // Free tier straight from upstream's own flag, so the pill on a model card
+    // tracks the plan rather than a hardcoded id list. Both statements hold:
+    // a free row bills zero per token and belongs to the provider's free tier.
+    free: entry.isFree,
+    freeTier: entry.isFree,
   });
 }
 
