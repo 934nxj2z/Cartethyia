@@ -44,7 +44,7 @@ write a cooldown.
 
 A completed request debits the credits it reported from the account's cached
 pooled balance. The sweep is the only thing that fetches a fresh reading, and
-it runs at most every four minutes; without the debit the floor keeps
+it runs at most every eight minutes; without the debit the floor keeps
 selecting an account whose balance already crossed the threshold. The debit
 preserves `fetchedAt`, so the sweep still refreshes on its own schedule, and
 it never invents a balance for an account whose last fetch failed.
@@ -59,8 +59,9 @@ treated as a successful balance.
 The `quota-refresh-sweep` worker runs every 60 seconds, selects entries at
 least eight minutes old — half the 15-minute cache TTL, so an entry is
 refreshed roughly twice per window rather than three times — orders them
-oldest first, and bounds a pass to 40 accounts and 45 seconds (set in
-`src/boot/dependencies.ts`). It is registered in Lite and Full modes; Redis is not
+oldest first, and bounds a pass to 40 accounts and 45 seconds — the budget is
+set in `src/boot/dependencies.ts`, the account cap is the worker's own default.
+It is registered in Lite and Full modes; Redis is not
 a prerequisite. Opening a quota view normally reads the warmed cache, while a
 cold account read can still wait for its first upstream fetch. Queued and
 in-flight background refreshes are included in the overview's pending state.

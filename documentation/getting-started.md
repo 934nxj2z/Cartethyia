@@ -259,3 +259,13 @@ bun run build
 Typechecking is not runtime proof. For behavior changes, also exercise the real
 boundary: a gateway request, a browser surface, a provider flow, or an isolated
 database migration.
+
+### Do not run `bun test` directly
+
+`bun test` is defined, but it is not the gate — it skips the runner, and the
+runner is what makes the TLS-dependent suites pass. `scripts/ci/run.ts` merges
+`test/fixtures/localhost-cert.pem` into a bundle and passes it to the subprocess
+as `NODE_EXTRA_CA_CERTS`. Bun reads that variable only at process start, so a
+direct `bun test` has no extra CA and the outbound HTTP/2 suites fail on the
+handshake. Use `bun run test`, or `bun run test:backend` / `bun run
+dashboard:test` for one scope.

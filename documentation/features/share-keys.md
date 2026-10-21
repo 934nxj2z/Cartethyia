@@ -16,16 +16,20 @@ issuance flow.
 
 | Table | Key | Holds |
 | --- | --- | --- |
-| `share_links` | unique `token_hash` | `token_encrypted`, `kind`, `active`, `expires_at`, `last_viewed_at` |
+| `share_links` | unique `token_hash`, unique `slug` (nullable) | `token_encrypted`, `kind`, `active`, `expires_at`, `last_viewed_at`, `slug` |
 | `share_popups` | PK `api_key_id` | `enabled`, `image`, `image_mime`, `title`, `body` |
 | `api_keys` | `parentKeyId` | The child row itself |
 
 **Token.** A 32-byte random token encodes to 43 base64url characters; lookup
 uses its SHA-256 hash (`hashShareToken`). The plaintext is kept in
-`token_encrypted` only so the console can re-display a stable link. Rows written
-before that column existed
-carry `NULL` and simply cannot be shown again — the remedy is a new link, not a
-recovery path. `kind` is `enroll` or `handoff`.
+`token_encrypted` only so the console can re-display a stable link.
+
+**Address.** The public URL carries a random `slug`, not the token, so the
+address outlives a rotated encryption key. Lookup accepts either spelling —
+slug or token hash — which is what lets an existing link keep resolving after a
+rotate. Only rows written before `token_encrypted` existed, and never
+backfilled with a slug, cannot be re-displayed; for those the remedy is a new
+link, not a recovery path. `kind` is `enroll` or `handoff`.
 
 **Popup.** An optional image and text shown on the public page. The image must
 be one of four raster formats and at most 2 MiB; the check is a database
