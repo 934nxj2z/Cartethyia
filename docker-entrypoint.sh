@@ -74,19 +74,33 @@ else
   mkdir -p "$STATE_DIR" "$PAYLOAD_DIR" ${CONFIG_DIR:+"$CONFIG_DIR"} 2> /dev/null || true
 fi
 
-# Railway: derive the public origin from the Railway-provided domain.
+# Railway: always give CARTETHYIA_PUBLIC_ORIGIN a value, so no deploy depends on
+# setting one by hand.
 #
-# RAILWAY_PUBLIC_DOMAIN is a bare hostname ("example.up.railway.app"); the app
-# needs a scheme, and it only exists once the service has a domain. The gateway
-# reads this lazily — only OAuth callback URLs need it — so a missing domain
-# does not block boot. An explicit CARTETHYIA_PUBLIC_ORIGIN always wins.
-if [ -z "$(printenv CARTETHYIA_PUBLIC_ORIGIN 2> /dev/null)" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-  export CARTETHYIA_PUBLIC_ORIGIN="https://${RAILWAY_PUBLIC_DOMAIN}"
-  echo "cartethyia: public origin derived from RAILWAY_PUBLIC_DOMAIN: ${CARTETHYIA_PUBLIC_ORIGIN}" >&2
-elif [ -z "$(printenv CARTETHYIA_PUBLIC_ORIGIN 2> /dev/null)" ]; then
-  echo "cartethyia: no public domain yet, so CARTETHYIA_PUBLIC_ORIGIN is unset." >&2
-  echo "cartethyia: the gateway and /console work; provider OAuth callbacks will fail" >&2
-  echo "cartethyia: until the service has a domain (Settings -> Networking -> Generate Domain)." >&2
+# The app treats the variable as required, but only two things read it: the OAuth
+# callback builder (unused in the gateway) and the session-cookie policy, which
+# makes the console cookie `Secure` only when the origin starts with https://.
+# The share links use the live request origin, not this variable.
+#
+# Order of preference, highest first:
+#   1. an explicit CARTETHYIA_PUBLIC_ORIGIN (a Railway service variable)
+#   2. https://$RAILWAY_PUBLIC_DOMAIN — the real domain, once one exists
+#   3. http://localhost:$PORT — a placeholder that keeps the app booting before
+#      the service has a domain.
+#
+# The placeholder is a last resort, not a default: it downgrades the console
+# cookie to non-Secure (see shouldUseSecureSessionCookie). Generating a domain in
+# Settings -> Networking replaces it on the next boot.
+if [ -z "$(printenv CARTETHYIA_PUBLIC_ORIGIN 2> /dev/null)" ]; then
+  if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
+    export CARTETHYIA_PUBLIC_ORIGIN="https://${RAILWAY_PUBLIC_DOMAIN}"
+    echo "cartethyia: public origin derived from RAILWAY_PUBLIC_DOMAIN: ${CARTETHYIA_PUBLIC_ORIGIN}" >&2
+  else
+    export CARTETHYIA_PUBLIC_ORIGIN="http://localhost:${PORT:-12800}"
+    echo "cartethyia: no public domain yet; CARTETHYIA_PUBLIC_ORIGIN fell back to ${CARTETHYIA_PUBLIC_ORIGIN}" >&2
+    echo "cartethyia: the gateway and /console work, but the console cookie is not marked Secure." >&2
+    echo "cartethyia: generate a domain (Settings -> Networking) to switch it to https:// automatically." >&2
+  fi
 fi
 
 # Railway: the encryption key.
