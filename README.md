@@ -85,17 +85,25 @@ and change routing without restarting anything.
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 
 
-| Route                   | For                                       |
-| ----------------------- | ----------------------------------------- |
-| `/v1/chat/completions`  | OpenAI-style chat                         |
-| `/v1/responses`         | Responses API, including Codex tools      |
-| `/v1/messages`          | Anthropic Messages, including Claude Code |
-| `/v1/models`            | What this key can call                    |
-| `/v1/completions`       | Legacy text completions                   |
-| `/v1/responses/compact` | Responses compaction                      |
-| `/v1/search`            | Web search                                |
-| `/v1/systemone`         | System One                                |
+| Route                    | For                                       |
+| ------------------------ | ----------------------------------------- |
+| `/v1/chat/completions`   | OpenAI-style chat                         |
+| `/v1/responses`          | Responses API, including Codex tools      |
+| `/v1/messages`           | Anthropic Messages, including Claude Code |
+| `/v1/models`             | What this key can call                    |
+| `/v1/completions`        | Legacy text completions                   |
+| `/v1/responses/compact`  | Responses compaction                      |
+| `/v1/search`             | Web search                                |
+| `/v1/systemone`          | System One                                |
+| `/v1/images/generations` | Image generation                          |
+| `/v1/videos/generations` | Video generation                          |
 
+
+Generation routes take an opaque body and let the provider's own adapter shape
+it, so what a given model accepts is whatever that provider accepts. Images are
+served by Gemini, Antigravity, Codex, and the Buddy family. Video is narrower:
+`seedance-2.5` on CodeBuddy/WorkBuddy only, submitted as an async task the
+adapter polls to completion rather than returning a clip inline.
 
 The route picks the wire. After that, routing, admission, retry, and accounting
 are the same.
