@@ -61,6 +61,29 @@ async function clineClientVersion(response: Response): Promise<string | null> {
   return isSemverish(data.version) ? data.version.trim() : null;
 }
 
+/**
+ * Newest Cursor build from the official download API, as the IDE's own header
+ * spells it.
+ *
+ * Cursor's `x-cursor-client-version` is not the IDE semver on its own: the wire
+ * value is `cli-<version>-<sha7>` (observed live as `cli-2026.10.19-6bbf2c4`).
+ * The download API is the only source that returns both halves — `version` and
+ * `commitSha` — so they are joined here rather than guessed. A semver alone
+ * would be a different identity than the one the IDE sends.
+ */
+async function cursorVersion(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { version?: unknown; commitSha?: unknown };
+    const version = data.version;
+    if (!isSemverish(version)) return null;
+    const sha = typeof data.commitSha === "string" ? data.commitSha.trim() : "";
+    const short = sha.length >= 7 ? sha.slice(0, 7) : "";
+    return short.length > 0 ? `cli-${version.trim()}-${short}` : version.trim();
+  } catch {
+    return null;
+  }
+}
+
 async function clineSdkVersion(response: Response): Promise<string | null> {
   const data = (await response.json()) as {
     version?: unknown;
@@ -391,6 +414,19 @@ export const VERSION_SOURCES = {
       },
     ],
   },
+  cursor: {
+    key: "cursor",
+    // Fallback = the last observed wire version. Discovery replaces it within
+    // one monitor tick; it is only what a cold process sends before the first
+    // successful fetch.
+    fallback: "cli-2026.10.19-6bbf2c4",
+    sources: [
+      {
+        url: "https://cursor.com/api/download?platform=win32-x64-user&releaseTrack=stable",
+        extract: cursorVersion,
+      },
+    ],
+  },
   hermes: {
     key: "hermes",
     // Hermes DOES publish a semver: the GitHub release tag is `v0.22.2`. The
@@ -422,6 +458,7 @@ const resolvers = {
   qoder: createClientVersionResolver({ ...VERSION_SOURCES.qoder, client: "qoder" }),
   hermes: createClientVersionResolver({ ...VERSION_SOURCES.hermes, client: "hermes" }),
   trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
+  cursor: createClientVersionResolver({ ...VERSION_SOURCES.cursor, client: "cursor" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
   grok: createClientVersionResolver({ ...VERSION_SOURCES.grok, client: "grok" }),
@@ -459,6 +496,7 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   hermes: resolvers.hermes,
   trae: resolvers.trae,
   traecn: resolvers.trae,
+  cursor: resolvers.cursor,
   commandcode: resolvers.commandcode,
   workbuddy: resolvers.workbuddyClient,
   workbuddycn: resolvers.workbuddyCnClient,
