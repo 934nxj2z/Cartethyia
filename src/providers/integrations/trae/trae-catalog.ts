@@ -51,17 +51,41 @@ const TRAE_CN_ROWS: readonly TraeModelRow[] = [
 ];
 
 /** intl roster: 10 chat-face models from the donor's client-state snapshot. */
+/**
+ * Intl roster, verified model by model against a live SG account.
+ *
+ * Every row here answered a real completion. `claude3.5` and
+ * `aws_sdk_claude37_sonnet` are served by `model_list` but answer
+ * `3003 all models failed`, so they are absent: a roster row that cannot
+ * complete is worse than a missing one.
+ *
+ * This is the SG catalog. Upstream provisions an account into a region and
+ * serves that region's roster, so an account on another intl region sees a
+ * different set — which is why `discoverTraeModels` now lists live rather than
+ * trusting this list.
+ */
+/**
+ * Intl roster, verified model by model against a live SG account.
+ *
+ * Every row here answered a real completion through `llm_raw_chat`. The two
+ * entries `model_list` also serves — `claude3.5` and `aws_sdk_claude37_sonnet`
+ * — answer `3003 all models failed`, so they are absent.
+ *
+ * This is the **chat** catalog. The much larger list the IDE picker shows
+ * (GPT-5.4, GLM-5.2, Kimi-K3, MiniMax-M3, DeepSeek-V4.1-Flash, …) is not this
+ * surface: those ids are carried by `modules/ai-agent/harness.dll`, which routes
+ * them through the agent protocol (`/api/v1/chat/start_chat` +
+ * `/api/v1/chat/subscribe_events` against a `frontierUrl`), not `llm_raw_chat`.
+ * Feeding them here was verified to fail with `model is unknown`.
+ */
 const TRAE_INTL_ROWS: readonly TraeModelRow[] = [
-  { id: "gemini-2.5-pro-latest", displayName: "Gemini-2.5-Pro", ctx: 200000, out: 968000, vision: true, reasoning: false },
-  { id: "aws_claude_4.7_opus", displayName: "Claude-Opus-4.7", ctx: 1000000, out: 168000, vision: true, reasoning: false },
-  { id: "aws_claude_4.6_sonnet", displayName: "Claude-Sonnet-4.6", ctx: 1000000, out: 168000, vision: true, reasoning: false },
-  { id: "gemini_2.5_flash_premium", displayName: "Gemini-2.5-Flash", ctx: 1000000, out: 968000, vision: true, reasoning: false },
-  { id: "gemini_3_flash", displayName: "Gemini-3-Flash-Preview", ctx: 200000, out: 168000, vision: true, reasoning: false },
-  { id: "gemini_3.1_pro", displayName: "Gemini-3.1-Pro-Preview", ctx: 200000, out: 168000, vision: true, reasoning: false },
-  { id: "gpt-5.5", displayName: "GPT-5.5", ctx: 272000, out: 240000, vision: true, reasoning: false },
-  { id: "gpt-6-astra", displayName: "GPT-6-Astra", ctx: 1000000, out: 936000, vision: true, reasoning: false },
-  { id: "grok-4", displayName: "Grok-4", ctx: 128000, out: 112000, vision: true, reasoning: false },
-  { id: "kimi-k2", displayName: "Kimi-K2-0905", ctx: 200000, out: 184000, vision: false, reasoning: false },
+  { id: "gemini-2.5-pro-preview-03-25", displayName: "gemini-2.5-pro-preview-03-25", ctx: 1000000, out: 32768, vision: true, reasoning: true },
+  { id: "gemini_2.5_flash", displayName: "gemini_2.5_flash", ctx: 1000000, out: 32768, vision: true, reasoning: false },
+  { id: "gpt-4.1-2025-04-14", displayName: "gpt-4.1-2025-04-14", ctx: 1000000, out: 32768, vision: true, reasoning: false },
+  { id: "gpt-4o", displayName: "gpt-4o", ctx: 1000000, out: 32768, vision: true, reasoning: false },
+  { id: "deepseek-R1", displayName: "deepseek-R1", ctx: 128000, out: 32768, vision: false, reasoning: true },
+  { id: "deepseek-V3", displayName: "deepseek-V3", ctx: 128000, out: 32768, vision: false, reasoning: false },
+  { id: "deepseek-V3-0324", displayName: "deepseek-V3-0324", ctx: 128000, out: 32768, vision: false, reasoning: false },
 ];
 
 function traeModels(rows: readonly TraeModelRow[], providerId: string): readonly ModelDefinition[] {

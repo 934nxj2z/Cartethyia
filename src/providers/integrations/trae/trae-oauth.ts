@@ -32,7 +32,7 @@ import {
   TRAE_EXCHANGE_TOKEN_PATH,
   TRAE_GET_USER_INFO_PATH,
   TRAE_LOGIN_GUIDANCE_URLS,
-  TRAE_PUBLIC_EXCHANGE_TOKEN_PATH,
+  TRAE_AUTH_CODE_EXCHANGE_PATHS,
   traeAccountCandidates,
   type TraeRealm,
 } from "./trae-realm";
@@ -200,10 +200,15 @@ export class TraeOAuthClient extends OAuthClient {
      * Parameter set mirrored from a real client authorize URL. Three of these
      * were missing and are not decoration:
      *
-     * - `code_challenge`/`code_challenge_method`: the page runs PKCE and
-     *   refuses to issue a refresh token without them.
      * - `channel_name`: selects the desktop distribution channel; without it
      *   the page falls back to a build that does not hand back a refresh token.
+     *
+     * `code_challenge`/`code_challenge_method` are deliberately ABSENT. The page
+     * branches on them: with PKCE it mints an `AuthCode` via `GetPCAuthCode`,
+     * and that code is an opaque ticket for another client — nothing redeems it
+     * back into a token pair (verified: the PKCE pair matched, and every
+     * exchange endpoint answered "Invalid param"). Without them it sends a
+     * refresh token, which this gateway can rotate.
      * - the device fields: the login is correlated with the data-plane
      *   fingerprint, so an `unknown`/`0` set is a device upstream has never
      *   seen from this account.
@@ -228,8 +233,6 @@ export class TraeOAuthClient extends OAuthClient {
       x_env: "",
       x_app_version: getTraeVersion(),
       x_app_type: "stable",
-      code_challenge: request.codeChallenge ?? "",
-      code_challenge_method: "S256",
       channel_name: "common",
     });
     url.search = params.toString();
@@ -293,6 +296,9 @@ export class TraeOAuthClient extends OAuthClient {
         ? await this.refreshWithUser(callback.refreshToken ?? "", "")
         : await this.exchangeAuthCode(callback.authCode, codeVerifier, callback.host);
     const identity = await this.userInfo(exchanged.access);
+    const state: Record<string, unknown> = {};
+    if (identity.userId !== undefined) state["userId"] = identity.userId;
+    if (callback.region !== undefined) state["region"] = callback.region;
     return {
       access: exchanged.access,
       // A refresh-token rotation may not return a new refresh token; the one
@@ -300,7 +306,7 @@ export class TraeOAuthClient extends OAuthClient {
       refresh: exchanged.refresh ?? callback.refreshToken ?? "",
       expiresAt: new Date(exchanged.expiresAt),
       ...(identity.email === undefined ? {} : { accountLabel: identity.email }),
-      ...(identity.userId === undefined ? {} : { auth_state: { userId: identity.userId } }),
+      ...(Object.keys(state).length === 0 ? {} : { auth_state: state }),
     };
   }
 
@@ -319,42 +325,62 @@ export class TraeOAuthClient extends OAuthClient {
     host: string | undefined,
   ): Promise<{ access: string; refresh: string; expiresAt: number }> {
     const base = (host ?? traeAccountCandidates(this.realm)[0] ?? "").replace(/\/+$/, "");
-    const response = await this.fetchFn(`${base}${TRAE_PUBLIC_EXCHANGE_TOKEN_PATH}`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": TRAE_OAUTH_USER_AGENT,
-      },
-      body: JSON.stringify({
-        ClientID: TRAE_CLIENT_ID,
-        ClientSecret: TRAE_CLIENT_SECRET,
-        RefreshToken: "",
-        UserID: "",
-        AuthCode: authCode,
-        CodeVerifier: codeVerifier,
-        DeviceInfo: "",
-        DeviceProof: "",
-      }),
+    /**
+     * `DeviceInfo` and `DeviceProof` must be maps, not strings — the gateway
+     * rejects the string form with an explicit binding error. Empty maps pass,
+     * and `RefreshToken` has to be present (the binding requires the field, not
+     * a value) even though an AuthCode exchange does not use it.
+     */
+    const body = JSON.stringify({
+      ClientID: TRAE_CLIENT_ID,
+      ClientSecret: TRAE_CLIENT_SECRET,
+      RefreshToken: "-",
+      UserID: "",
+      AuthCode: authCode,
+      CodeVerifier: codeVerifier,
+      DeviceInfo: {},
+      DeviceProof: {},
     });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`Trae AuthCode exchange failed: HTTP ${response.status} ${text.slice(0, 200)}`);
+    let lastError = "no endpoint answered";
+    const errors: string[] = [];
+    for (const path of TRAE_AUTH_CODE_EXCHANGE_PATHS) {
+      let response: Response;
+      try {
+        response = await this.fetchFn(`${base}${path}`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": TRAE_OAUTH_USER_AGENT,
+          },
+          body,
+        });
+      } catch (failure) {
+        lastError = `${path} ${failure instanceof Error ? failure.message : "request failed"}`;
+        continue;
+      }
+      const text = await response.text();
+      if (!response.ok) {
+        lastError = `${path} HTTP ${response.status} ${text.slice(0, 200)}`;
+        // Both paths are kept in the message: the first one's rejection is what
+        // says whether the verifier or the endpoint is wrong, and only the last
+        // was surviving before.
+        errors.push(lastError);
+        continue;
+      }
+      const parsed = JSON.parse(text) as TraeExchangeResponse;
+      const result = (parsed.Result ?? parsed) as unknown as Record<string, unknown>;
+      const access = firstString(result, ["Token", "token"]);
+      const refresh = firstString(result, ["RefreshToken", "refreshToken"]);
+      if (access === undefined || refresh === undefined) {
+        lastError = `${path} returned no token pair`;
+        continue;
+      }
+      const expiresAt =
+        firstNumber(result, ["TokenExpireAt", "expireAt"]) ?? Date.now() + 3_600_000;
+      return { access, refresh, expiresAt };
     }
-    const body = JSON.parse(text) as TraeExchangeResponse;
-    const result = body.Result ?? body;
-    const access = firstString(result as unknown as Record<string, unknown>, ["Token", "token"]);
-    const refresh = firstString(result as unknown as Record<string, unknown>, [
-      "RefreshToken",
-      "refreshToken",
-    ]);
-    if (access === undefined || refresh === undefined) {
-      throw new Error("Trae AuthCode exchange returned no token pair");
-    }
-    const expiresAt =
-      firstNumber(result as unknown as Record<string, unknown>, ["TokenExpireAt", "expireAt"]) ??
-      Date.now() + 3_600_000;
-    return { access, refresh, expiresAt };
+    throw new Error(`Trae AuthCode exchange failed: ${errors.length > 0 ? errors.join(" | ") : lastError}`);
   }
 
   /** Reads the account identity the fresh access token names. */
@@ -632,6 +658,13 @@ interface TraeCallbackPayload {
   readonly authCode?: string;
   /** Host the exchange must go to, echoed back by the page. */
   readonly host?: string;
+  /**
+   * Provisioned region (`sg`, `us`, …).
+   *
+   * The token only authenticates against its own region's core host, so this is
+   * persisted with the account rather than inferred from the realm.
+   */
+  readonly region?: string;
 }
 
 /**
@@ -668,11 +701,16 @@ function parseTraeCallback(raw: string): TraeCallbackPayload {
     throw new Error(detail === undefined ? `Trae auth failed: ${error}` : `Trae auth failed: ${error} (${detail})`);
   }
   const host = pick(["loginHost", "login_host", "LoginHost", "host", "consoleHost"]);
+  const region = pick(["userRegion", "user_region", "UserRegion"]) ?? regionFromUserInfo(params["userInfo"]);
+  const extra = {
+    ...(host === undefined ? {} : { host }),
+    ...(region === undefined ? {} : { region }),
+  };
   const refreshToken = pick(["refreshToken", "refresh_token", "RefreshToken"]);
-  if (refreshToken !== undefined) return { refreshToken, ...(host === undefined ? {} : { host }) };
+  if (refreshToken !== undefined) return { refreshToken, ...extra };
   // The PKCE flow nests the code in `authCodeInfo`, a JSON string.
   const authCode = pick(["AuthCode"]) ?? authCodeFromInfo(params["authCodeInfo"]);
-  if (authCode !== undefined) return { authCode, ...(host === undefined ? {} : { host }) };
+  if (authCode !== undefined) return { authCode, ...extra };
   throw new Error(
     "Trae callback carries neither a refreshToken nor an AuthCode — paste the full callback URL",
   );
@@ -716,6 +754,19 @@ function authCodeFromInfo(raw: string | undefined): string | undefined {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return undefined;
     return firstString(parsed as Record<string, unknown>, ["AuthCode", "authCode"]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads the provisioned region out of the `userInfo` JSON the page sends. */
+function regionFromUserInfo(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const record = parsed as Record<string, unknown>;
+    return firstString(record, ["AIRegion", "aiRegion", "Region"]);
   } catch {
     return undefined;
   }

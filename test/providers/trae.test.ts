@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   TRAE_REALMS,
+  TRAE_REGION_CORE_HOSTS,
   traeCoreCandidates,
   traeRealmForProvider,
 } from "../../src/providers/integrations/trae/trae-realm";
@@ -31,10 +32,19 @@ describe("trae realms", () => {
     expect(traeCoreCandidates("intl").length).toBeGreaterThan(1);
   });
 
-  test("only CN supports the live model list", () => {
-    // intl answers `403 no schema found`, so discovery must not claim success.
+  test("the live model list is supported on both realms", () => {
+    // The earlier claim that intl answers `403 no schema found` came from
+    // asking the generic intl core. The listing is per account region: an SG
+    // account is served by `coresg-normal.trae.ai`, which answers it.
     expect(TRAE_REALMS.cn.modelListSupported).toBe(true);
-    expect(TRAE_REALMS.intl.modelListSupported).toBe(false);
+    expect(TRAE_REALMS.intl.modelListSupported).toBe(true);
+  });
+
+  test("a regional account is dispatched to its own core host", () => {
+    // Verified live: an SG token on the US core answers 1001 "not able to
+    // authenticate you", while the SG core streams normally.
+    expect(TRAE_REGION_CORE_HOSTS["sg"]).toBe("https://coresg-normal.trae.ai");
+    expect(TRAE_REGION_CORE_HOSTS["us"]).toBe("https://core-normal.traeapi.us");
   });
 
   test("the realms do not share a core host", () => {
@@ -270,5 +280,40 @@ describe("parseTraeSse", () => {
     for await (const f of parseTraeSse(body)) frames.push(f);
     expect(frames.length).toBe(1);
     expect((frames[0]?.data as { chunk: { content: string } }).chunk.content).toBe("x");
+  });
+});
+
+describe("trae stream framing", () => {
+  const encoder = new TextEncoder();
+  const streamOf = (chunks: readonly string[]): ReadableStream<Uint8Array> =>
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+
+  test("the flat frame layout the region host sends is parsed", async () => {
+    // `event: output` with a top-level `response`, not the donor's nested
+    // `chunk.content`. Reading only the nested shape made a working upstream
+    // look like an empty stream.
+    const frames = [
+      'event: metadata\ndata: {"session_id":"s1"}\n\n',
+      'event: output\ndata: {"response":"OK","reasoning_content":null}\n\n',
+      'event: token_usage\ndata: {"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}\n\n',
+    ];
+    const parsed = [];
+    for await (const frame of parseTraeSse(streamOf(frames))) parsed.push(frame);
+    expect(parsed.map((f) => f.event)).toEqual(["metadata", "output", "token_usage"]);
+    expect((parsed[1]?.data as { response: string }).response).toBe("OK");
+    expect((parsed[2]?.data as { prompt_tokens: number }).prompt_tokens).toBe(4);
+  });
+
+  test("a frame split across chunks is reassembled", async () => {
+    const frames = ['event: output\ndata: {"resp', 'onse":"OK"}\n\n'];
+    const parsed = [];
+    for await (const frame of parseTraeSse(streamOf(frames))) parsed.push(frame);
+    expect(parsed).toHaveLength(1);
+    expect((parsed[0]?.data as { response: string }).response).toBe("OK");
   });
 });

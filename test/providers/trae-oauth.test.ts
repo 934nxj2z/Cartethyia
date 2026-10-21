@@ -293,8 +293,10 @@ describe("Trae browser authorization", () => {
     });
     const url = new URL(client.buildAuthorizeUrl(prepared));
     const param = (key: string) => url.searchParams.get(key);
-    expect(param("code_challenge")).toBe("challenge-1");
-    expect(param("code_challenge_method")).toBe("S256");
+    // PKCE is deliberately absent: it selects the page's `AuthCode` flow, and
+    // that code is not redeemable into a token pair.
+    expect(param("code_challenge")).toBeNull();
+    expect(param("code_challenge_method")).toBeNull();
     expect(param("channel_name")).toBe("common");
     expect(param("plugin_version")).toBe("2.3.93439");
     expect(param("x_device_type")).toBe("windows");

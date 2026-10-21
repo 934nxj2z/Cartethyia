@@ -39,9 +39,10 @@ function configuredProvider(
 /**
  * Trae model discovery for one realm.
  *
- * CN answers `/api/ide/v1/model_list`; intl returns `403 no schema found`, and
- * this returns empty rather than raising so the static roster stays in force
- * instead of failing the whole catalog refresh.
+ * The listing is per account region: it answers on CN and on the intl region
+ * host that serves the account. This returns the static roster when the live
+ * call yields nothing, rather than raising, so one unsupported account cannot
+ * fail the whole catalog refresh.
  */
 function traeDiscovery(
   realm: TraeRealm,
@@ -67,12 +68,14 @@ function traeDiscovery(
         // Use the raw secret as the token.
       }
     }
+    const region = request.authState?.["region"];
     const rows = await discoverTraeModels({
       realm,
       token,
       uid: request.authState?.["accountId"] as string | undefined ?? "",
       fetcher,
       providerId,
+      ...(typeof region === "string" ? { region } : {}),
     });
     if (rows.length === 0) return realm === "cn" ? TRAE_CN_MODELS : TRAE_INTL_MODELS;
     const fallback = realm === "cn" ? TRAE_CN_MODELS : TRAE_INTL_MODELS;

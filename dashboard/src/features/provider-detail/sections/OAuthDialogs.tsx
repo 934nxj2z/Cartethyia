@@ -24,7 +24,8 @@ import { useTrackedTimeout } from "../../../hooks/use-timeout";
  * expired code` — an error that names the code but is really a failed parse, so
  * the operator retries the same broken paste. A URL with `error` is reported
  * with the provider's own description instead, and a URL with neither is
- * rejected as an unrecognized redirect.
+ * rejected as an unrecognized redirect — unless it carries a provider payload
+ * in place of a `code`, which is forwarded whole.
  */
 export function extractOAuthCode(raw: string): { code: string } | { error: string } {
   const trimmed = raw.trim();
@@ -42,6 +43,16 @@ export function extractOAuthCode(raw: string): { code: string } | { error: strin
   if (code) return { code };
   const providerError = params.get("error_description") ?? params.get("error");
   if (providerError) return { error: `The provider refused the login: ${providerError}` };
+  /**
+   * Not every provider redirects with `code`. Trae's page sends its payload
+   * directly — `authCodeInfo` for the PKCE flow, `refreshToken` for the other —
+   * and the server's parser reads the whole query. Passing it through is what
+   * lets that login finish; the server rejects anything it cannot redeem, with
+   * a message specific to the provider.
+   */
+  if (params.has("authCodeInfo") || params.has("refreshToken") || params.has("refresh_token")) {
+    return { code: params.toString() };
+  }
   // A query string or a bare code both parse to no `code` param. Only a value
   // that is recognizably a URL is refused; anything else is handed on as the
   // code the operator pasted.

@@ -53,14 +53,23 @@ export const TRAE_MODEL_LIST_PATH = "/api/ide/v1/model_list";
 export const TRAE_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 
 /**
- * The endpoint that redeems a PKCE `AuthCode`.
+ * Endpoints that redeem a PKCE `AuthCode`, tried in order.
  *
  * Distinct from {@link TRAE_EXCHANGE_TOKEN_PATH}, which is the authenticated
- * refresh-token rotation and refuses an `AuthCode` outright. Sourced from the
- * login page's own client (`TraeExchangeTokenV2` / `PublicExchangeToken` in
- * `9839.*.js`).
+ * refresh-token rotation and refuses an `AuthCode` with "Invalid param".
+ *
+ * The `/trae/api/v3` form is tried first because it is the one that answers:
+ * the `/cloudide/api/v3/public` form returns 500 for every input, including a
+ * garbage code, with an internal DNS failure (`cloudide.coreservice.apiserver`),
+ * so it is kept only as a fallback in case that is repaired.
+ *
+ * Sourced from the login page's own client (`TraeExchangeTokenV2` and
+ * `PublicExchangeToken` in `9839.*.js`).
  */
-export const TRAE_PUBLIC_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/public/oauth/ExchangeToken";
+export const TRAE_AUTH_CODE_EXCHANGE_PATHS: readonly string[] = [
+  "/trae/api/v3/oauth/ExchangeToken",
+  "/cloudide/api/v3/public/oauth/ExchangeToken",
+];
 export const TRAE_TEMP_TOKEN_PATH = "/cloudide/api/v3/trae/GenerateTempToken";
 export const TRAE_GET_USER_INFO_PATH = "/cloudide/api/v3/trae/GetUserInfo";
 
@@ -141,8 +150,26 @@ export const TRAE_REALMS: Readonly<Record<TraeRealm, TraeRealmConfig>> = {
     userAgent: "Trae/3.6.2",
     versionCode: "20260212",
     region: "US",
-    modelListSupported: false,
+    // Verified against an SG account: the region host answers `model_list`.
+    modelListSupported: true,
   },
+};
+
+/**
+ * Data-plane host per account region, when the login reported one.
+ *
+ * An intl account is provisioned into a region and its token only authenticates
+ * against that region's core host. Verified: a `userRegion=sg` account sent to
+ * `core-normal.traeapi.us` answers `1001 "we are not able to authenticate you"`,
+ * while `coresg-normal.trae.ai` accepts the same token and streams normally.
+ * Without this, a correct login produced an account that could never dispatch.
+ *
+ * `store-country-code` follows the same value: the US host was rejecting the
+ * token *and* the roster it serves is a different catalog.
+ */
+export const TRAE_REGION_CORE_HOSTS: Readonly<Record<string, string>> = {
+  sg: "https://coresg-normal.trae.ai",
+  us: "https://core-normal.traeapi.us",
 };
 
 /** The app id is constant across realms. */

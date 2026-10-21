@@ -21,7 +21,7 @@ import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operat
 import { TRAE_CN_MODELS, TRAE_INTL_MODELS, traeMaxContextWindow } from "./trae-catalog";
 import { buildTraeHeaders } from "./trae-headers";
 import { buildTraeChatBody, parseTraeSse, TRAE_CHAT_ENDPOINT } from "./trae-protocol";
-import { TRAE_REALMS, traeCoreCandidates, type TraeRealm } from "./trae-realm";
+import { TRAE_REGION_CORE_HOSTS, traeCoreCandidates, type TraeRealm } from "./trae-realm";
 
 export interface TraeAdapterOptions {
   readonly providerId?: string;
@@ -123,7 +123,7 @@ class TraeAdapter implements ProviderAdapter {
       stream: true,
     });
 
-    const primary = traeCoreCandidates(this.realm)[0] ?? "";
+    const primary = traeCoreForAccount(this.realm, context.credential.auth_state);
     const url =
       candidate.endpoint_path && candidate.endpoint_path.startsWith("http")
         ? candidate.endpoint_path
@@ -182,11 +182,44 @@ class TraeAdapter implements ProviderAdapter {
       }
       if (typeof frame.data !== "object" || frame.data === null) continue;
       const record = frame.data as Record<string, unknown>;
+      /**
+       * Two frame layouts reach here and both are live.
+       *
+       * The donor's client nests the answer under `chunk`; the region host this
+       * gateway talks to sends it flat — `event: output` with
+       * `{"response":"…"}` — and reports usage as a separate `token_usage`
+       * frame with the OpenAI spelling at the top level. Reading only `chunk`
+       * made a working upstream look like an empty stream.
+       */
       const chunk = record["chunk"];
       if (typeof chunk !== "object" || chunk === null) {
-        if (record["usage"] !== undefined && typeof record["usage"] === "object") {
-          usage = record["usage"] as Record<string, unknown>;
+        const flat = record["response"];
+        if (typeof flat === "string" && flat.length > 0) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: { kind: "text", text: flat },
+          } as CanonicalEvent;
         }
+        const flatReasoning = record["reasoning_content"];
+        if (typeof flatReasoning === "string" && flatReasoning.length > 0) {
+          yield {
+            type: "content_delta",
+            sequence_number: seq++,
+            content: { kind: "reasoning", payload: flatReasoning, summary: flatReasoning },
+          } as CanonicalEvent;
+        }
+        if (typeof record["finish_reason"] === "string") {
+          stopReason = STOP_REASONS[record["finish_reason"] as string] ?? "stop";
+        }
+        // `token_usage` frames carry the counters themselves, not under `usage`.
+        const counters =
+          record["usage"] !== undefined && typeof record["usage"] === "object"
+            ? (record["usage"] as Record<string, unknown>)
+            : frame.event === "token_usage" || record["prompt_tokens"] !== undefined
+              ? record
+              : undefined;
+        if (counters !== undefined) usage = counters;
         continue;
       }
       const payload = chunk as Record<string, unknown>;
@@ -217,7 +250,14 @@ class TraeAdapter implements ProviderAdapter {
     if (usage !== undefined) {
       yield* this.#usageEvent(usage, seq++);
     }
-    yield { type: "response_stop", sequence_number: seq, stop_reason: stopReason } as unknown as CanonicalEvent;
+    // The canonical terminal is `terminal`; a stream that ends without one is
+    // read as "the upstream never reported a result".
+    yield {
+      type: "terminal",
+      sequence_number: seq,
+      state: "complete",
+      stop_reason: stopReason,
+    } as unknown as CanonicalEvent;
   }
 
   /**
@@ -252,9 +292,11 @@ export function createTraeCnAdapter(options: TraeAdapterOptions = {}): ProviderA
 /**
  * Live model discovery.
  *
- * Only CN answers this endpoint; intl returns `403 no schema found`. The
- * adapter does not retry past that — the static roster is the honest answer for
- * intl, and pretending a fetch succeeded would leave a stale empty roster.
+ * The listing is per account region, not per realm: it answers on CN and on the
+ * intl region host that serves the account (`coresg-normal.trae.ai` verified),
+ * while the generic intl core answers `403 no schema found`. An empty result is
+ * therefore a real "this account has no listing", and the static roster stays
+ * the fallback rather than being replaced by nothing.
  */
 export async function discoverTraeModels(input: {
   readonly realm: TraeRealm;
@@ -263,14 +305,15 @@ export async function discoverTraeModels(input: {
   readonly fetcher: typeof fetch;
   readonly signal?: AbortSignal;
   readonly providerId?: string;
+  /** Account region, so the listing is asked of the host that serves it. */
+  readonly region?: string;
 }): Promise<readonly { id: string; ctx: number | undefined }[]> {
-  if (!TRAE_REALMS[input.realm].modelListSupported) return [];
   const headers = buildTraeHeaders({
     realm: input.realm,
     token: input.token,
     uid: input.uid,
   });
-  const url = `${traeCoreCandidates(input.realm)[0] ?? ""}/api/ide/v1/model_list`;
+  const url = `${traeCoreForAccount(input.realm, input.region === undefined ? undefined : { region: input.region })}/api/ide/v1/model_list`;
   const response = await input.fetcher(url, {
     method: "POST",
     headers,
@@ -278,15 +321,45 @@ export async function discoverTraeModels(input: {
     ...(input.signal ? { signal: input.signal } : {}),
   });
   if (!response.ok) return [];
-  const parsed = (await response.json()) as { data?: unknown; models?: unknown };
-  const rows = Array.isArray(parsed.models) ? parsed.models : Array.isArray(parsed.data) ? parsed.data : [];
+  const parsed = (await response.json()) as {
+    data?: unknown;
+    models?: unknown;
+    model_configs?: unknown;
+  };
+  const rows = Array.isArray(parsed.model_configs)
+    ? parsed.model_configs
+    : Array.isArray(parsed.models)
+      ? parsed.models
+      : Array.isArray(parsed.data)
+        ? parsed.data
+        : [];
   return rows
     .filter((row): row is Record<string, unknown> => typeof row === "object" && row !== null)
     .map((row) => ({
-      id: String(row["name"] ?? row["id"] ?? "").trim(),
+      // `model_name` is the key upstream's listing uses; the others are the
+      // spellings the older donors assumed.
+      id: String(row["model_name"] ?? row["name"] ?? row["id"] ?? "").trim(),
       ctx: traeMaxContextWindow(row),
     }))
     .filter((row) => row.id.length > 0);
 }
 
 export { TRAE_CN_MODELS, TRAE_INTL_MODELS };
+
+/**
+ * Core host for one account.
+ *
+ * An intl account is provisioned into a region and its token only authenticates
+ * against that region's host, so the account's own `region` wins over the
+ * realm default. Falling back to the realm keeps older accounts (stored before
+ * the region was captured) working exactly as before.
+ */
+function traeCoreForAccount(
+  realm: TraeRealm,
+  authState: Readonly<Record<string, unknown>> | undefined,
+): string {
+  const region = typeof authState?.["region"] === "string" ? authState["region"].toLowerCase() : "";
+  const regional = TRAE_REGION_CORE_HOSTS[region];
+  if (regional !== undefined) return regional;
+  return traeCoreCandidates(realm)[0] ?? "";
+}
