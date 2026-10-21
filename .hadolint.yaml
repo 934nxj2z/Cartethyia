@@ -1,0 +1,8 @@
+# DL3018 (pin apk versions) is off on purpose: repositories.railway.app
+# redirects to Alpine's public mirror, so the image is not a controlled-guidance
+# build and pinning package versions would only freeze CVE fixes.
+# DL3025 is the HEALTHCHECK's shell form, which is deliberate: it uses
+# `|| exit 1` and a variable default. ENTRYPOINT and CMD are JSON arrays.
+ignored:
+  - DL3018
+  - DL3025

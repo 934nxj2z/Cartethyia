@@ -5,6 +5,10 @@ dist/
 !.env.example
 !.env.test
 !.env.test.example
+# Railway template defaults. Tracked on purpose: it carries the literal defaults
+# a standalone Railway deploy boots with, and NO secret — its encryption key is a
+# placeholder the entrypoint refuses to start on.
+!.env.railway
 # A hand-kept environment file: this one holds the Full-mode (external
 # PostgreSQL) configuration. `.env.*` does not match it — that pattern needs a
 # literal dot after `env` — so it is named here. It carries
