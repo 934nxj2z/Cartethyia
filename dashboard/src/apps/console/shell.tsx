@@ -33,12 +33,13 @@ import { BackgroundLayer } from "../../features/customization/BackgroundLayer";
 import { applyCustomization, readCustomizationSettings } from "../../features/customization/settings";
 import { consoleRequest } from "../../data/api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { UpdateDialog } from "../../components/UpdateDialog";
 import { clearPersistedCache, queryClient } from "../../data/query-client";
 import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease, useNotifications } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
 import { DASHBOARD_RELEASE_LABEL, DASHBOARD_VERSION } from "../../lib/version";
-import { GITHUB_ALT_RELEASES_URL, GITHUB_ALT_REPO_URL } from "../../lib/links";
+import { GITHUB_ALT_REPO_URL } from "../../lib/links";
 import { isNewerRelease, type SystemHealthResponse } from "../../data/contracts";
 import type { SessionUser } from "../../data/contracts";
 
@@ -273,7 +274,14 @@ function MetricTile({
   );
 }
 
-function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
+function NotificationsPopover({
+  health,
+  onOpenUpdate,
+}: {
+  health?: SystemHealthResponse;
+  /** Opens the update dialog. A release alert is answered there, not on GitHub. */
+  onOpenUpdate: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -419,14 +427,28 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
                           </span>
                         </span>
                         {notification.href ? (
-                          <a
-                            className="shrink-0 text-badge font-semibold text-accent"
-                            href={notification.href}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Release
-                          </a>
+                          // A release alert opens the update dialog rather than
+                          // the release page: the page shows what changed, not
+                          // how to install, and the console is the thing that
+                          // can answer that. Other kinds keep their link.
+                          notification.kind === "update-available" ? (
+                            <button
+                              type="button"
+                              className="shrink-0 text-badge font-semibold text-accent"
+                              onClick={onOpenUpdate}
+                            >
+                              Update
+                            </button>
+                          ) : (
+                            <a
+                              className="shrink-0 text-badge font-semibold text-accent"
+                              href={notification.href}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open
+                            </a>
+                          )
                         ) : null}
                       </article>
                     ))}
@@ -661,6 +683,7 @@ export function DashboardShell({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const healthQuery = useSafeSystemHealth();
   const releaseQuery = useLatestRelease();
   // The running version is the gateway's, not the bundled dashboard's: the
@@ -752,20 +775,24 @@ export function DashboardShell({
               <div className="brand-version-badge">
                 <a href={GITHUB_ALT_REPO_URL} target="_blank" rel="noreferrer" className="brand-version-link">{DASHBOARD_RELEASE_LABEL}</a>
                 {updateAvailable ? (
-                  <a
-                    href={releaseQuery.data?.html_url ?? GITHUB_ALT_RELEASES_URL}
-                    target="_blank"
-                    rel="noreferrer"
+                  // A button, not a link to GitHub: the badge says an update
+                  // exists and the dialog tells the operator how to install it.
+                  // Sending them to a release page instead left them to work
+                  // out the npm command themselves, on a page that does not
+                  // mention it.
+                  <button
+                    type="button"
+                    onClick={() => setUpdateOpen(true)}
                     className="brand-update-badge"
                     title={
                       latestTag === undefined
-                        ? "A newer Cartethyia release is available on GitHub"
-                        : `Update available on GitHub: v${latestTag}`
+                        ? "A newer Cartethyia release is available"
+                        : `Update available: v${latestTag} — how to install it`
                     }
                   >
                     <Rocket size={9} className="shrink-0" aria-hidden="true" />
                     {latestTag === undefined ? "update" : `Update v${latestTag}`}
-                  </a>
+                  </button>
                 ) : null}
               </div>
             </div>
@@ -829,7 +856,10 @@ export function DashboardShell({
 
             <div className="topbar-actions">
               <ThemeToggle />
-              <NotificationsPopover health={healthQuery.data} />
+              <NotificationsPopover
+                health={healthQuery.data}
+                onOpenUpdate={() => setUpdateOpen(true)}
+              />
             </div>
           </header>
 
@@ -849,6 +879,15 @@ export function DashboardShell({
         message="You will need to sign in again to open the console."
         confirmLabel="Sign out"
         danger
+      />
+      <UpdateDialog
+        open={updateOpen}
+        onClose={() => setUpdateOpen(false)}
+        currentVersion={localVersion}
+        {...(latestTag === undefined ? {} : { latestVersion: latestTag })}
+        {...(releaseQuery.data?.html_url === undefined
+          ? {}
+          : { releaseUrl: releaseQuery.data.html_url })}
       />
     </>
   );

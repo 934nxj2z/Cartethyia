@@ -8,6 +8,29 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.2] - 2026-10-21
+
+### Added
+
+- **The update badge opens a dialog instead of a release page.** Pointing it at
+  GitHub told an operator a release existed and left them to work out the
+  install themselves, on a page that does not mention it. The dialog shows what
+  is running against what is published, gives the command, and copies it.
+
+  A release alert in the notifications bell now opens the same dialog rather
+  than the release page; other alert kinds keep their link.
+
+- **The dialog says why the console cannot just install it.** npm cannot replace
+  the package directory while a process is executing out of it — on Windows the
+  rename fails with `EBUSY` — so a button that tried would fail in a way that
+  looks like a gateway bug. The command is the honest offer, and the dialog
+  explains why.
+
+### Changed
+
+- The update command lives in one place (`NPM_UPDATE_COMMAND`) so the console,
+  the CLI's printed instructions, and the docs cannot disagree about the flag.
+
 ## [2.5.1] - 2026-10-21
 
 Version housekeeping, plus one fix for the tray.
