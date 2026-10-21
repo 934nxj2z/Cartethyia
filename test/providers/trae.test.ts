@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   TRAE_REALMS,
   TRAE_REGION_CORE_HOSTS,
+  TRAE_AGENT_CHAT_PATH,
+  TRAE_CHAT_PATH,
   traeCoreCandidates,
   traeRealmForProvider,
 } from "../../src/providers/integrations/trae/trae-realm";
@@ -60,7 +62,13 @@ describe("trae rosters", () => {
     const intl = new Set(TRAE_INTL_MODELS.map((m) => m.modelId));
     expect(cn.size).toBeGreaterThan(0);
     expect(intl.size).toBeGreaterThan(0);
-    for (const id of intl) expect(cn.has(id)).toBe(false);
+    // Distinct rosters, not disjoint ones. A few ids (minimax-m3, kimi-k3,
+    // deepseek-v4.1-flash) are provisioned on both deployments, so overlap is
+    // legitimate; what must hold is that neither realm is a copy of the other.
+    const shared = [...intl].filter((id) => cn.has(id));
+    expect(shared.length).toBeLessThan(Math.min(cn.size, intl.size));
+    expect([...cn].some((id) => !intl.has(id))).toBe(true);
+    expect([...intl].some((id) => !cn.has(id))).toBe(true);
   });
 
   test("CN advertises the selectable maximum, not the active window", () => {
@@ -68,6 +76,25 @@ describe("trae rosters", () => {
     // active window is what made the fetcher always pick the low number.
     const deepseek = TRAE_CN_MODELS.find((m) => m.modelId === "DeepSeek-V4-Flash-Official");
     expect(deepseek?.contextLimit).toBe(1_000_000);
+  });
+
+  test("picker rows point at the agent path, legacy rows at the chat path", () => {
+    // The two surfaces select models by different keys, so a picker id sent to
+    // llm_raw_chat answers `4023 model is unknown` on every host. Pinning the
+    // endpoint per row is what keeps them from crossing.
+    const picker = TRAE_INTL_MODELS.find((m) => m.modelId === "deepseek-v4.1-flash");
+    const legacy = TRAE_INTL_MODELS.find((m) => m.modelId === "gpt-4o");
+    expect(picker?.endpointPath).toBe(TRAE_AGENT_CHAT_PATH);
+    expect(legacy?.endpointPath).toBe(TRAE_CHAT_PATH);
+  });
+
+  test("the legacy deepseek ids are gone from intl", () => {
+    // Superseded by the picker's DeepSeek-V4 rows; keeping them offered three
+    // near-duplicates of one model.
+    const ids = new Set(TRAE_INTL_MODELS.map((m) => m.modelId));
+    for (const gone of ["deepseek-R1", "deepseek-V3", "deepseek-V3-0324"]) {
+      expect(ids.has(gone)).toBe(false);
+    }
   });
 });
 

@@ -12,7 +12,7 @@
 // intl stays on its static roster and says so via `modelListSupported`.
 
 import { defineModel, type ModelDefinition } from "../../provider-model-definition";
-import { TRAE_CHAT_PATH, type TraeRealm } from "./trae-realm";
+import { TRAE_AGENT_CHAT_PATH, TRAE_CHAT_PATH, type TraeRealm } from "./trae-realm";
 
 /** One roster row, as upstream describes it. */
 export interface TraeModelRow {
@@ -24,7 +24,18 @@ export interface TraeModelRow {
   readonly out: number;
   readonly vision: boolean;
   readonly reasoning: boolean;
+  /**
+   * Surface this row belongs to.
+   *
+   * Defaults to `"chat"`. The picker's models must be `"agent"`: they are
+   * absent from `model_list` and answer `4023 model is unknown` on the chat
+   * path no matter which host is tried.
+   */
+  readonly surface?: TraeSurface;
 }
+
+/** Which upstream endpoint serves a row. */
+export type TraeSurface = "chat" | "agent";
 
 /** CN roster: 20 chat-face models from the donor's client-state snapshot. */
 const TRAE_CN_ROWS: readonly TraeModelRow[] = [
@@ -50,42 +61,53 @@ const TRAE_CN_ROWS: readonly TraeModelRow[] = [
   { id: "step-5-preview", displayName: "Step-5-Preview", ctx: 1000000, out: 936000, vision: true, reasoning: true },
 ];
 
-/** intl roster: 10 chat-face models from the donor's client-state snapshot. */
 /**
- * Intl roster, verified model by model against a live SG account.
+ * Intl roster, every row confirmed by a real completion on a live SG account.
  *
- * Every row here answered a real completion. `claude3.5` and
- * `aws_sdk_claude37_sonnet` are served by `model_list` but answer
- * `3003 all models failed`, so they are absent: a roster row that cannot
- * complete is worse than a missing one.
+ * Two surfaces are mixed here and that is deliberate: upstream splits them and
+ * a client that only knows one sees half the catalog. Chat rows are answered by
+ * `llm_raw_chat` and keyed by `model_name`; agent rows are answered by
+ * `llm_utils_chat` and keyed by `config_name`. See
+ * `documentation/research/trae-agent-vs-chat-surface.md`.
  *
- * This is the SG catalog. Upstream provisions an account into a region and
- * serves that region's roster, so an account on another intl region sees a
- * different set — which is why `discoverTraeModels` now lists live rather than
- * trusting this list.
- */
-/**
- * Intl roster, verified model by model against a live SG account.
+ * The legacy DeepSeek entries (`deepseek-R1`, `deepseek-V3`, `deepseek-V3-0324`)
+ * are dropped: the picker's DeepSeek-V4 row supersedes them and the old ids add
+ * three near-duplicates to a list where one suffices.
  *
- * Every row here answered a real completion through `llm_raw_chat`. The two
- * entries `model_list` also serves — `claude3.5` and `aws_sdk_claude37_sonnet`
- * — answer `3003 all models failed`, so they are absent.
+ * `claude3.5` and `aws_sdk_claude37_sonnet` are served by `model_list` but
+ * answer `3003 all models failed`, so they stay absent — a roster row that
+ * cannot complete is worse than a missing one.
  *
- * This is the **chat** catalog. The much larger list the IDE picker shows
- * (GPT-5.4, GLM-5.2, Kimi-K3, MiniMax-M3, DeepSeek-V4.1-Flash, …) is not this
- * surface: those ids are carried by `modules/ai-agent/harness.dll`, which routes
- * them through the agent protocol (`/api/v1/chat/start_chat` +
- * `/api/v1/chat/subscribe_events` against a `frontierUrl`), not `llm_raw_chat`.
- * Feeding them here was verified to fail with `model is unknown`.
+ * Numbers come from `batch_get_detail_param`: `context_window_tokens.dev` for
+ * the window and `model_detail_list[0].max_tokens` for the output cap. Agent
+ * rows report their real upstream in `timing_cost.provider_model_name`, which
+ * is often not the id sent (DeepSeek-V4.1-Flash resolves to `ep-2026…-69njn`),
+ * so the id is the config name, never the resolved one.
  */
 const TRAE_INTL_ROWS: readonly TraeModelRow[] = [
+  // chat surface — the account's `model_list?type=chat` rows that complete
   { id: "gemini-2.5-pro-preview-03-25", displayName: "gemini-2.5-pro-preview-03-25", ctx: 1000000, out: 32768, vision: true, reasoning: true },
   { id: "gemini_2.5_flash", displayName: "gemini_2.5_flash", ctx: 1000000, out: 32768, vision: true, reasoning: false },
   { id: "gpt-4.1-2025-04-14", displayName: "gpt-4.1-2025-04-14", ctx: 1000000, out: 32768, vision: true, reasoning: false },
   { id: "gpt-4o", displayName: "gpt-4o", ctx: 1000000, out: 32768, vision: true, reasoning: false },
-  { id: "deepseek-R1", displayName: "deepseek-R1", ctx: 128000, out: 32768, vision: false, reasoning: true },
-  { id: "deepseek-V3", displayName: "deepseek-V3", ctx: 128000, out: 32768, vision: false, reasoning: false },
-  { id: "deepseek-V3-0324", displayName: "deepseek-V3-0324", ctx: 128000, out: 32768, vision: false, reasoning: false },
+  // agent surface — the IDE picker's roster
+  { id: "gpt-5.4", displayName: "GPT-5.4", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5.2", displayName: "GPT-5.2", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5.2-codex-paygo", displayName: "gpt-5.2-codex-paygo", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5.1-paygo", displayName: "GPT-5.1", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5-paygo", displayName: "GPT-5", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "Dola-Seed-2.0-Code", displayName: "Seed-2.1-Turbo", ctx: 200000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4-flash-0731", displayName: "DeepSeek-V4-Flash", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4-pro-0813", displayName: "DeepSeek-V4-Pro", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "kimi-k3", displayName: "Kimi-K3", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "kimi-k2.7-code", displayName: "Kimi-K2.7-Code", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "kimi-k2.5", displayName: "Kimi-K2.5", ctx: 200000, out: 32000, vision: false, reasoning: true, surface: "agent" },
+  { id: "gemini-3.1-pro", displayName: "Gemini-3.1-Pro-Preview", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gemini-3.1-pro-paygo", displayName: "Gemini-3.1-Pro-Preview", ctx: 200000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gemini-3-flash-solo", displayName: "Gemini-3-Flash-Preview", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "minimax-m3", displayName: "MiniMax-M3", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "minimax-m2.7", displayName: "MiniMax-M2.7", ctx: 200000, out: 32000, vision: false, reasoning: true, surface: "agent" },
 ];
 
 function traeModels(rows: readonly TraeModelRow[], providerId: string): readonly ModelDefinition[] {
@@ -94,7 +116,7 @@ function traeModels(rows: readonly TraeModelRow[], providerId: string): readonly
       id: row.id,
       providerId,
       wireFamily: "chat",
-      endpoint: TRAE_CHAT_PATH,
+      endpoint: row.surface === "agent" ? TRAE_AGENT_CHAT_PATH : TRAE_CHAT_PATH,
       ctx: row.ctx,
       out: row.out,
       vision: row.vision,

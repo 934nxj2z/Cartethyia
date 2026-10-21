@@ -49,6 +49,24 @@ export interface TraeRealmConfig {
 export const TRAE_CHAT_PATH = "/api/ide/v1/llm_raw_chat";
 export const TRAE_MODEL_LIST_PATH = "/api/ide/v1/model_list";
 
+/**
+ * Agent path, serving the IDE picker's roster.
+ *
+ * A different surface from {@link TRAE_CHAT_PATH}, not a version of it: this
+ * one selects models by `config_name` + `config_source` and ignores
+ * `model_name` entirely, so the two rosters cannot be merged into one call.
+ */
+export const TRAE_AGENT_CHAT_PATH = "/api/agent/v3/llm_utils_chat";
+
+/**
+ * Resolves which roster the agent surface serves for an account.
+ *
+ * `solo_agent` holds the picker's chat-capable configs. Other values are
+ * either rejected (`solo_coder` is `4001 param is invalid`) or resolve to a
+ * different, non-chat set.
+ */
+export const TRAE_AGENT_FUNCTION = "solo_agent";
+
 /** OAuth / business paths, relative to the realm's `account` host. */
 export const TRAE_EXCHANGE_TOKEN_PATH = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 
