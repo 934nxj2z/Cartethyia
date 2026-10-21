@@ -63,13 +63,17 @@ export function assertSystemHealth(value: unknown): SystemHealthResponse {
     "memory_heap_bytes",
     "memory_external_bytes",
     "memory_percent",
-    "cpu_percent",
     "request_count",
     "error_count",
     "latency_avg_ms",
     "latency_p95_ms",
     "latency_p99_ms",
   ];
+  // `cpu_percent` is deliberately absent from that list: there is no `loadavg`
+  // on Windows, so the backend reports `null` there. Validating it as a number
+  // made the whole health payload invalid on Windows — every tile then read
+  // "Unavailable" because of one metric the platform cannot supply. It is
+  // checked as nullable separately below.
   if (
     !numericFields.every((field) => isFiniteNumber(value[field])) ||
     typeof value.database_healthy !== "boolean" ||
@@ -77,6 +81,10 @@ export function assertSystemHealth(value: unknown): SystemHealthResponse {
     typeof value.redis_configured !== "boolean" ||
     typeof value.database_in_process !== "boolean"
   ) {
+    throw invalidResponse("Invalid system health response");
+  }
+  const cpuPercent = value["cpu_percent"];
+  if (cpuPercent !== null && !isFiniteNumber(cpuPercent)) {
     throw invalidResponse("Invalid system health response");
   }
   return value as unknown as SystemHealthResponse;

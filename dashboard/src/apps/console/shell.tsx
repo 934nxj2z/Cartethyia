@@ -39,6 +39,7 @@ import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease, useNotifications } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
 import { DASHBOARD_RELEASE_LABEL, DASHBOARD_VERSION } from "../../lib/version";
+import { formatUptime } from "../../lib/format/numbers";
 import { GITHUB_ALT_REPO_URL } from "../../lib/links";
 import { isNewerRelease, type SystemHealthResponse } from "../../data/contracts";
 import type { SessionUser } from "../../data/contracts";
@@ -224,21 +225,6 @@ const UTC_CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   timeZone: "UTC",
 });
 
-function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "Unavailable";
-  const totalSeconds = Math.floor(seconds);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const totalHours = Math.floor(totalMinutes / 60);
-  const hours = totalHours % 24;
-  const days = Math.floor(totalHours / 24);
-  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
-  return `${totalMinutes}m`;
-}
-
 function formatProcessRss(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unavailable";
   const unit = bytes >= 1024 ** 3
@@ -343,8 +329,13 @@ function NotificationsPopover({
     : undefined;
   // Load average has no equivalent on Windows, so an unavailable reading is
   // the honest result there rather than a measured 0%.
+  // Narrowed once: `cpu_percent` is `number | null`, and every consumer needs
+  // the same check. `Number.isFinite` proves it is a number at runtime but does
+  // not narrow the type, so this is the one `!== null` that does.
+  const cpuPercent = health?.cpu_percent ?? undefined;
+  const cpuMeasured = cpuPercent !== undefined && Number.isFinite(cpuPercent);
   const cpuDetail = health
-    ? Number.isFinite(health.cpu_percent)
+    ? cpuMeasured
       ? Number.isFinite(health.cpu_cores) && health.cpu_cores > 0
         ? `1-min load · ${health.cpu_cores} cores`
         : "Normalized 1-min load"
@@ -488,8 +479,8 @@ function NotificationsPopover({
                   <MetricTile
                     icon={Cpu}
                     label="CPU load"
-                    value={health && Number.isFinite(health.cpu_percent)
-                      ? `${health.cpu_percent.toFixed(1)}%`
+                    value={cpuMeasured && cpuPercent !== undefined
+                      ? `${cpuPercent.toFixed(1)}%`
                       : "Unavailable"}
                     detail={cpuDetail}
                     title="One-minute load average normalized by the number of CPU cores."

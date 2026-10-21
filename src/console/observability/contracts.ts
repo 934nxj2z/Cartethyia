@@ -45,7 +45,17 @@ export interface SystemHealthResponse {
    * gateway itself grew.
    */
   database_in_process: boolean;
-  cpu_percent: number;
+  /**
+   * `null` when the platform does not report it — there is no `loadavg` on
+   * Windows and Node hands back a zeroed tuple rather than failing, so on
+   * Windows this is always `null` rather than a confident-looking `0`.
+   *
+   * Nullable rather than `NaN`: `NaN` is not a JSON value and serializes to
+   * `null` anyway, which means a client validating the field as a number
+   * rejects the *whole* health payload. One unavailable metric then reads as
+   * every metric being unavailable.
+   */
+  cpu_percent: number | null;
   cpu_cores: number;
   pid: number;
   platform: string;

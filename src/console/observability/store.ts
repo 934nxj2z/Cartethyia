@@ -330,12 +330,15 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     // syscall and Node reports a zeroed tuple rather than failing. Divided by
     // cores that is a confident-looking 0.0% on a busy gateway, which is worse
     // than saying nothing: an operator reads it as "idle" and stops looking.
-    // Reported as unavailable instead of as a measurement.
-    const load = loadavg()[0] ?? 0;
-    const cpuPercent =
-      process.platform === "win32" || load === 0
-        ? Number.NaN
-        : Math.round((load / Math.max(cpus().length, 1)) * 10000) / 100;
+    // Reported as null instead of as a measurement.
+    //
+    // A real zero load is *not* the same thing and is reported as zero: an
+    // idle machine genuinely has nothing queued, and collapsing that into
+    // "unavailable" would hide a number the platform did supply.
+    const cpuPercent: number | null =
+      process.platform === "win32"
+        ? null
+        : Math.round(((loadavg()[0] ?? 0) / Math.max(cpus().length, 1)) * 10000) / 100;
 
     let databaseHealthy = true;
     let total = 0;
