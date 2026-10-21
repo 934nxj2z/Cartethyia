@@ -13,12 +13,32 @@ name: Sync upstream
 # mounted at /app/data: the generated encryption key lives there, so a new
 # container reads the same key and stored provider credentials stay readable.
 # Without that volume, every sync loses them.
+#
+# Run it by hand with `force` to prove the gates still pass on the current tree
+# without waiting for upstream to publish. Force never merges and never pushes:
+# it runs the tree checks, hadolint, shellcheck and the four boot scenarios
+# against whatever `main` already is. That is the difference between "the gates
+# are configured" and "the gates pass right now".
 
 on:
   schedule:
     # Every 6 hours. Upstream is active, so hourly would mostly be noise.
-    - cron: "17 */6 * * *"
+    #
+    # The inline note on the cron line is deliberate, not cosmetic. GitHub's
+    # "Scheduled workflow stopped running" guidance says a cron workflow can go
+    # quiet while still reporting itself enabled, and that the documented way to
+    # revive it is a commit by someone with write access that *changes the cron
+    # schedule*. This commit therefore touches that line. The schedule itself is
+    # unchanged: still 17 past every sixth hour, still UTC.
+    - cron: "17 */6 * * *" # UTC, unchanged
   workflow_dispatch:
+    inputs:
+      force:
+        description: >-
+          Run the verification gates even when upstream has nothing new.
+          Never merges and never pushes.
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -47,6 +67,8 @@ jobs:
 
       - name: Report what is new
         id: check
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
           count="$(git rev-list --count HEAD..upstream/main)"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
@@ -55,6 +77,18 @@ jobs:
           else
             echo "Merging ${count} new upstream commit(s)." >> "$GITHUB_STEP_SUMMARY"
             git log --oneline HEAD..upstream/main >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Force is only ever a gate rehearsal. Say so in the summary, because
+          # a green run with nothing merged otherwise reads like a sync that did
+          # its job when it did nothing at all.
+          if [ "${FORCE}" = "true" ] && [ "$count" = "0" ]; then
+            {
+              echo
+              echo "### Force run"
+              echo
+              echo "Upstream has nothing new. The gates below ran against the current \`main\`"
+              echo "tree as a rehearsal: no merge, no push, no deploy."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Merge upstream
@@ -83,8 +117,12 @@ jobs:
       # when BOTH sides changed the same region — an upstream edit elsewhere in
       # Dockerfile merges cleanly and can silently drop a Railway fix. These
       # checks fail the run instead.
+      #
+      # Gated on `count != 0 || inputs.force` rather than `count != 0`: a forced
+      # run has nothing to merge but still has a tree worth checking, and that is
+      # the only way to see these gates go green without waiting on upstream.
       - name: Verify the Railway additions survived
-        if: steps.check.outputs.count != '0'
+        if: steps.check.outputs.count != '0' || inputs.force == true
         run: |
           set -eu
           fail() {
@@ -121,20 +159,20 @@ jobs:
             || fail "Dockerfile pins Bun ${bun_image} but .bun-version is ${bun_expected}"
 
       - name: Lint the Dockerfile
-        if: steps.check.outputs.count != '0'
+        if: steps.check.outputs.count != '0' || inputs.force == true
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
 
       - name: Lint the entrypoint
-        if: steps.check.outputs.count != '0'
+        if: steps.check.outputs.count != '0' || inputs.force == true
         run: |
           shellcheck --version > /dev/null
           shellcheck --shell=sh docker-entrypoint.sh
 
       - name: Boot the entrypoint without any variables
-        if: steps.check.outputs.count != '0'
+        if: steps.check.outputs.count != '0' || inputs.force == true
         run: |
           # The whole point of these changes: a deploy that sets nothing still
           # starts. Runs the entrypoint against a scratch directory, the way the
@@ -175,6 +213,8 @@ jobs:
 
           echo "All four boot scenarios passed."
 
+      # Still gated on a real upstream delta: a forced run has nothing to push,
+      # and pushing an empty merge would only wake Railway for no reason.
       - name: Push the merge
         if: steps.check.outputs.count != '0'
         run: git push origin main
