@@ -10,7 +10,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.1] - 2026-10-21
 
-Housekeeping after the release: no behavior change.
+Version housekeeping, plus one fix for the tray.
+
+### Fixed
+
+- **Closing the terminal no longer takes the gateway down with it.** "Hide to
+  tray" started the gateway attached to the tray process, so the gateway died
+  whenever the tray did — and the tray died with the terminal that launched it,
+  which is why the icon appeared and then nothing was serving. The gateway is
+  now started detached, so it outlives both.
+
+  Detaching it costs the exit path nothing: `stopGateway` drains over HTTP
+  before it ever reaches for `kill()`, so **Exit** in the tray still stops the
+  gateway. What detachment does remove is the ability to wait on the child's
+  exit, so the tray polls `/health` instead — measured: with the tray killed,
+  the gateway keeps answering.
 
 ### Changed
 

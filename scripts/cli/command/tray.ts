@@ -17,7 +17,29 @@ import { printUpdateInstructions } from "./update";
  * an empty console tab open for the tray's whole lifetime, and that window is
  * owned by Windows Terminal — not by this process, so it cannot be found and
  * hidden from inside.
+ *
+ * The gateway it starts is detached, which is what makes the health poll below
+ * necessary — see {@link TRAY_HEALTH_POLL_MS}.
  */
+
+/**
+ * How often the tray asks whether the gateway is still answering.
+ *
+ * 10 s: often enough that an operator who stops the gateway by hand sees the
+ * icon go away, and far below the cost of a request. A detached gateway can no
+ * longer be waited on, so this poll is the only signal left.
+ */
+const TRAY_HEALTH_POLL_MS = 10_000;
+
+/**
+ * Consecutive misses to forgive before a dead gateway closes the tray.
+ *
+ * One refusal is not a stopped gateway — a probe can lose a race with startup
+ * or a slow request — and closing the icon on one would make startup feel
+ * random.
+ */
+const TRAY_HEALTH_MISSES_BEFORE_CLOSE = 3;
+
 export async function startTray(): Promise<void> {
   const port = resolvePort();
   const drainToken = ensureDrainToken();
@@ -137,7 +159,13 @@ export async function startTray(): Promise<void> {
 
   try {
     await tray.ready();
-    gateway = await startGateway(port, drainToken);
+    // Detached, unlike every other caller: the gateway must outlive this
+    // process. Attached, it dies with the tray — and the tray dies with the
+    // terminal that launched it, so closing that terminal took the gateway
+    // down too and "Hide to tray" left nothing serving. `stopGateway` drains
+    // over HTTP before it ever reaches for `kill()`, so detaching costs the
+    // exit path nothing: the tray can still stop the gateway on Exit.
+    gateway = await startGateway(port, drainToken, { detached: true });
     // The launcher that spawned this tray is blocked on a signal file: it
     // cannot read our stdio, because the tray is detached. Without this write
     // it waits out its 60 s deadline and reports a failure for a tray that is
@@ -146,17 +174,28 @@ export async function startTray(): Promise<void> {
     console.log(`Cartethyia is running at ${dashboardUrl}`);
     void refreshVersion();
 
+    let misses = 0;
+    // A detached child's `exited` never settles on Windows, so the old
+    // `await current.exited` would have parked here forever and the tray would
+    // never notice the gateway going away. Poll its health endpoint instead:
+    // that answers for a process we no longer own, which is the whole point of
+    // detaching it. The probe is the same one startup used, so a gateway that
+    // is up reads as up regardless of who spawned it.
     while (!closing) {
-      const current: Bun.Subprocess | null = gateway;
-      if (!current) {
-        await Bun.sleep(100);
+      await Bun.sleep(TRAY_HEALTH_POLL_MS);
+      if (closing || gateway === null) continue;
+      const alive = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(2_000),
+      }).then((response) => response.ok).catch(() => false);
+      if (alive) {
+        misses = 0;
         continue;
       }
-      const code = await current.exited;
-      if (gateway !== current || closing) continue;
+      misses += 1;
+      if (misses < TRAY_HEALTH_MISSES_BEFORE_CLOSE) continue;
       gateway = null;
-      console.error(`Cartethyia exited with code ${code}.`);
-      await close(code ?? 1);
+      console.error("Cartethyia stopped answering; the tray is closing.");
+      await close(1);
     }
   } catch (error) {
     await close(1);
