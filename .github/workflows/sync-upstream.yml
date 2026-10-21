@@ -1,0 +1,180 @@
+name: Sync upstream
+
+# Keeps this fork current with risunCodex/Cartethyia, which is upstream for the
+# application and releases often (73 commits in one afternoon is normal for it).
+#
+# A GitHub fork never follows its parent on its own, so this workflow does the
+# sync. It is deliberately conservative: it merges, then proves the Railway
+# additions still work against the new code, and pushes only if both hold. A
+# failure leaves `main` untouched and shows up as a red run — the fork simply
+# stays where it was, which is the safe outcome.
+#
+# The push to `main` triggers a Railway deploy. That is fine only with a volume
+# mounted at /app/data: the generated encryption key lives there, so a new
+# container reads the same key and stored provider credentials stay readable.
+# Without that volume, every sync loses them.
+
+on:
+  schedule:
+    # Every 6 hours. Upstream is active, so hourly would mostly be noise.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Pushes made with the default token do not trigger other workflows,
+          # which is what this run wants: no recursion.
+          persist-credentials: true
+
+      - name: Add upstream and fetch it
+        run: |
+          git remote add upstream https://github.com/risunCodex/Cartethyia.git
+          git fetch --no-tags upstream main
+
+      - name: Report what is new
+        id: check
+        run: |
+          count="$(git rev-list --count HEAD..upstream/main)"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if [ "$count" = "0" ]; then
+            echo "Already current with upstream." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Merging ${count} new upstream commit(s)." >> "$GITHUB_STEP_SUMMARY"
+            git log --oneline HEAD..upstream/main >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Merge upstream
+        if: steps.check.outputs.count != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit upstream/main; then
+            {
+              echo "### Merge conflict"
+              echo
+              echo "Upstream changed a file this fork customizes for Railway. \`main\` is unchanged."
+              echo "Resolve it locally:"
+              echo
+              echo '```'
+              echo "git fetch upstream && git merge upstream/main"
+              echo '```'
+              echo
+              git diff --name-only --diff-filter=U
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      # The Railway additions are the reason this fork exists. Upstream touching
+      # one of these files is not a merge conflict, because git only conflicts
+      # when BOTH sides changed the same region — an upstream edit elsewhere in
+      # Dockerfile merges cleanly and can silently drop a Railway fix. These
+      # checks fail the run instead.
+      - name: Verify the Railway additions survived
+        if: steps.check.outputs.count != '0'
+        run: |
+          set -eu
+          fail() {
+            echo "::error::$1"
+            echo "### Railway addition lost: $1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          [ -f railway.json ] || fail "railway.json is gone"
+          [ -f .env.railway ] || fail ".env.railway is gone"
+          [ -f docker-entrypoint.sh ] || fail "docker-entrypoint.sh is gone"
+
+          grep -qxF '!.env.railway' .dockerignore \
+            || fail ".dockerignore no longer re-includes .env.railway (the build would fail)"
+          grep -qF 'COPY .env.railway ./' Dockerfile \
+            || fail "Dockerfile no longer copies .env.railway into the builder"
+          grep -qF 'COPY --from=builder' Dockerfile \
+            || fail "Dockerfile lost its runtime stage copies"
+          grep -qF '.env.runtime' docker-entrypoint.sh \
+            || fail "the entrypoint no longer reads /app/.env.runtime"
+          grep -qF '.encryption-key' docker-entrypoint.sh \
+            || fail "the entrypoint no longer generates and reuses the encryption key"
+          grep -qF 'RAILWAY_PUBLIC_DOMAIN' docker-entrypoint.sh \
+            || fail "the entrypoint no longer derives the public origin"
+          grep -qF 'exec su-exec' docker-entrypoint.sh \
+            || fail "the entrypoint no longer drops privileges with su-exec"
+          grep -qF 'su-exec' Dockerfile \
+            || fail "the image no longer installs su-exec"
+
+          # The pinned Bun version must match the one the lockfile was built with.
+          bun_expected="$(tr -d '[:space:]' < .bun-version)"
+          bun_image="$(sed -n 's/^ARG BUN_VERSION=//p' Dockerfile | head -n1)"
+          [ "$bun_expected" = "$bun_image" ] \
+            || fail "Dockerfile pins Bun ${bun_image} but .bun-version is ${bun_expected}"
+
+      - name: Lint the Dockerfile
+        if: steps.check.outputs.count != '0'
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+
+      - name: Lint the entrypoint
+        if: steps.check.outputs.count != '0'
+        run: |
+          shellcheck --version > /dev/null
+          shellcheck --shell=sh docker-entrypoint.sh
+
+      - name: Boot the entrypoint without any variables
+        if: steps.check.outputs.count != '0'
+        run: |
+          # The whole point of these changes: a deploy that sets nothing still
+          # starts. Runs the entrypoint against a scratch directory, the way the
+          # container does, and asserts the three values it must produce.
+          work="$(mktemp -d)"
+          sed "s#/app#$work#g" docker-entrypoint.sh > "$work/entrypoint.sh"
+          chmod +x "$work/entrypoint.sh"
+          cp .env.railway "$work/.env.runtime"
+
+          # 1. No variables, no domain: must start, must fall back to localhost.
+          env -i PATH="$PATH" HOME="$HOME" "$work/entrypoint.sh" /usr/bin/env > "$work/out1" 2> "$work/err1" \
+            || { echo "::error::the entrypoint refuses to start with no variables"; cat "$work/err1"; exit 1; }
+          grep -q '^CARTETHYIA_PUBLIC_ORIGIN=http://localhost:' "$work/out1" \
+            || { echo "::error::expected the localhost origin fallback"; grep PUBLIC_ORIGIN "$work/out1"; exit 1; }
+          grep -qE '^CARTETHYIA_ENCRYPTION_KEY=[0-9a-f]{64}$' "$work/out1" \
+            || { echo "::error::expected a generated 64-hex encryption key"; exit 1; }
+
+          # 2. A second boot reuses the stored key instead of generating a new one.
+          key1="$(grep '^CARTETHYIA_ENCRYPTION_KEY=' "$work/out1")"
+          env -i PATH="$PATH" HOME="$HOME" "$work/entrypoint.sh" /usr/bin/env > "$work/out2" 2> /dev/null
+          key2="$(grep '^CARTETHYIA_ENCRYPTION_KEY=' "$work/out2")"
+          [ "$key1" = "$key2" ] \
+            || { echo "::error::the encryption key changed between boots; stored credentials would be unreadable"; exit 1; }
+
+          # 3. A Railway domain takes precedence over the localhost fallback.
+          env -i PATH="$PATH" HOME="$HOME" RAILWAY_PUBLIC_DOMAIN=example.up.railway.app \
+            "$work/entrypoint.sh" /usr/bin/env > "$work/out3" 2> /dev/null
+          grep -qx 'CARTETHYIA_PUBLIC_ORIGIN=https://example.up.railway.app' "$work/out3" \
+            || { echo "::error::expected the origin to derive from RAILWAY_PUBLIC_DOMAIN"; exit 1; }
+
+          # 4. An explicit service variable wins over both.
+          env -i PATH="$PATH" HOME="$HOME" \
+            CARTETHYIA_PUBLIC_ORIGIN=https://custom.example.com \
+            RAILWAY_PUBLIC_DOMAIN=example.up.railway.app \
+            "$work/entrypoint.sh" /usr/bin/env > "$work/out4" 2> /dev/null
+          grep -qx 'CARTETHYIA_PUBLIC_ORIGIN=https://custom.example.com' "$work/out4" \
+            || { echo "::error::an explicit CARTETHYIA_PUBLIC_ORIGIN must win"; exit 1; }
+
+          echo "All four boot scenarios passed."
+
+      - name: Push the merge
+        if: steps.check.outputs.count != '0'
+        run: git push origin main
