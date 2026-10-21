@@ -82,6 +82,13 @@ under **Settings → Operations**, without a restart.
 
 ### Fixed
 
+- **Settings is now tabbed instead of one long scroll.** Security, Privacy,
+  Operations, and Data are separate tabs, and only the selected section is
+  mounted — previously all four mounted at once, so every panel's query fired
+  on page load. The nested cards are gone too: the page rendered a card inside
+  a card, doubling borders and padding. The section is reflected in the URL, so
+  a link to `#operations` opens that tab and the view can be shared.
+
 - **The backup size limit no longer claims 8 GiB the install cannot accept.**
   It promised a ceiling far above the listener's own body cap, so the number
   described a limit nothing could reach: an upload above the listener's cap was
