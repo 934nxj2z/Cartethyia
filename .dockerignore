@@ -1,65 +1,38 @@
-# Version control
-.git
-.gitignore
-.gitattributes
+# Only files the image build actually consumes are sent to the build context.
+#
+# Start from "exclude everything", then allow exactly the inputs the Dockerfile
+# copies. The fork's tree also holds tests, documentation and agent state that no
+# layer needs, so an allowlist keeps the context small and makes a missing build
+# input fail loudly instead of shipping silently.
+#
+# `.env.railway` must survive this file. docker-entrypoint.sh loads it as the boot
+# fallback for a standalone deploy, and the runtime stage copies it out of the
+# builder. Upstream's `.env*` rule dropped it silently, which failed the build at
+# `COPY --from=builder /build/.env.railway`. It holds no secret: the key in it is
+# a placeholder the entrypoint refuses to start on.
+*
+!Dockerfile
+!docker-entrypoint.sh
+!.env.railway
+!package.json
+!bun.lock
+!tsconfig.json
+!dashboard/package.json
+!src
+!scripts
+!migrations
+!dashboard
 
-# Node.js and package management
+# Never ship local secrets, caches, or build output. The `*` rule above already
+# excludes these; they are named so the intent survives a change to that rule.
+.env
+.env.local
+.env.*.local
 node_modules
-npm-debug.log
-yarn-error.log
-.pnp
-.pnp.js
-
-# Build and distribution
-/build
-/dist
-scripts/*.test.ts
-
-# Local dev artifacts. `bin` holds vendored platform-specific proxy binaries for
-# local development; the image ships none, so the entry only keeps them out of
-# the build context. `.cache` holds generated runtime configs.
-bin
-.cache
-
-# Development tools and IDE
-.vscode
-.idea
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Agent working state: `.claude/worktrees/` holds full repository copies, so
-# excluding it keeps the build context from ballooning while an agent runs.
-.claude
-# Environment files and secrets
-.env*
-!.env.example
-*.pem
-*.key
-*.crt
-*.pfx
-*.dump
-*.sql
-backups
-!migrations/
-!migrations/**
-# Testing
-coverage
-.nyc_output
-*.lcov
-# Tests live under the root test tree; source is production-only.
-test
-# Documentation
-README.md
-LICENSE
-CHANGELOG.md
-
-# CI/CD
-.github
-.gitlab-ci.yml
-.circleci
-.travis.yml
-
-# Project-specific
-docker-compose*.yml
+node_modules/**
+**/node_modules
+**/node_modules/**
+**/dist
+**/*.test.ts
+.git
+.git/**
