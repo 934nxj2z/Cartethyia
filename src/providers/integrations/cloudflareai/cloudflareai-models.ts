@@ -59,7 +59,9 @@ export const CLOUDFLAREAI_MODELS: readonly ModelDefinition[] = [
   ["claude-opus-4.7", 1_000_000, 128_000] as const,
   ["claude-opus-4.8", 1_000_000, 128_000] as const,
   ["claude-opus-5", 1_000_000, 128_000] as const,
-  ["claude-sonnet-4.5", 1_000_000, 64_000] as const,
+  // 200K, matching the other two 4.5 rows: the million-token window starts at
+  // Opus 4.6, so the 4.5 trio is 200K across the board.
+  ["claude-sonnet-4.5", 200_000, 64_000] as const,
   ["claude-sonnet-4.6", 1_000_000, 128_000] as const,
   ["claude-sonnet-5", 1_000_000, 128_000] as const,
 ].map(cloudflareaiModel);
