@@ -85,8 +85,8 @@ translated to 422. `ssrf_rejected` returns 400. Reuse the established code and
 status for the same condition.
 
 `detailsPolicy` controls whether `details` reaches the client. `settings` passes
-`"omit"` (`settings/contracts.ts:140`) because a preferences patch echoes the whole
-bag; do not widen it without a reason.
+`"omit"` because a preferences patch echoes the whole bag; do not widen it
+without a reason.
 
 ## Guards that are load-bearing
 
@@ -112,7 +112,7 @@ plus `bun run dashboard:typecheck` when the mirror changed and
 
 The boundary specific to this skill is the router: console suites in
 `test/console/` mount the real router through `createTestGateway`
-(`test/helpers/gateway.ts:336`, console mounted unless `options.console ===
+(`test/helpers/gateway.ts`, console mounted unless `options.console ===
 false`), so a test there exercises the guards too — see
 `test/console/remote-debug-access.test.ts` for that shape. New pure helpers get
 their own suite; `test/console/query-limit.test.ts` is the model.
@@ -120,11 +120,11 @@ their own suite; `test/console/query-limit.test.ts` is the model.
 ## Pitfalls
 
 - **Path shadowing.** `/:providerId` swallows a later literal. `connection-test`
-  is declared before it in `providers/catalog/routes.ts:159-162` for exactly this
+  is declared before it in `providers/catalog/routes.ts` for exactly this
   reason; the comment says so.
 - **Optional `ctx` fields.** `modelStrikes` is optional, so the model-ban routes
-  are not mounted at all when it is absent (`domain-registration.ts:224`). A route
-  that silently disappears is worse than one that 500s; keep that explicit.
+  are not mounted at all when it is absent. A route that silently disappears is
+  worse than one that 500s; keep that explicit.
 - **`as unknown as Elysia` on every route factory.** The beta's route-tree types
   do not line up. It is load-bearing, not sloppiness — do not "fix" it.
 - **Do not import `transport/` into the console.** Declare the structural

@@ -172,8 +172,8 @@ function opencodeDesktopHeaders(
  * dispatch, captured verbatim from a real 2.0.26 client dispatch.
  *
  * Upstream rejects tool-less or *partially* agent-shaped requests with
- * `FreeTierError` (upstream 403). Verified live 2026-10-14: all eleven here
- * return 200, and so do ten (`execute` dropped), while a five-tool subset
+ * `FreeTierError` (upstream 403). Verified live 2026-10-14: the full set here
+ * returns 200, and so does one with `execute` dropped, while a five-tool subset
  * (`bash, edit, glob, grep, read`) — and any smaller set — still returns 403.
  * The gate reads the tool set, not any single name, so backfilling "the core
  * tools" is not enough: backfill the whole set. They are plain
