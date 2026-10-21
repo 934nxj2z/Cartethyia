@@ -10,6 +10,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.2] - 2026-10-21
 
+### Breaking changes — manual step after upgrading
+
+- **The default API key may need rotating once.** The key format changed to
+  `pn-carte-`; keys minted before it carry the old `carte_` prefix. Old keys
+  keep working — lookup is by hash, never by prefix — so nothing is rejected
+  outright. The failure is quieter than that: a caller still holding a key
+  recorded under the old format (a CLI config, a client that saved it, a
+  `.env` written by an earlier version) keeps sending a credential that no
+  longer matches anything, and Model Lab reports only "Request failed".
+
+  If Model Lab or a client fails after upgrading, open **API Keys**, rotate
+  **Default Cartethyia API key**, and paste the new key where the old one was
+  used. The 401 now says so instead of "unknown, revoked, or expired".
+
+  **Fresh installs are unaffected** — they generate a key in the current
+  format at first boot. Only installs carried forward from an earlier version,
+  or ones that saved the key somewhere, need the step.
+
+### Changed
+
+- **A 401 for a bad key now says what to do.** It was `invalid_request`, a code
+  named after the shape of the request, which sent callers hunting for a
+  malformed body when the credential was the problem. It is
+  `authentication_failed` now, and the message names the rotate step above
+  instead of telling an operator to issue a new key — something that cannot be
+  done to the default key, which has no delete and only rotates.
+
+- **`.env.example` no longer suggests seeding `CARTETHYIA_API_KEY`.** The
+  console generates and shows the default key at first boot; putting it in the
+  environment means the secret sits in a file that gets copied around. The
+  variable still works, it is simply no longer offered as a default.
+
 ### Fixed
 
 - **Kiro's `claude-haiku-5.5` reported the 4.5 limits.** It carried 200K/64K,
@@ -17,6 +49,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   5.x model in the same file uses 1M/128K. Haiku moved to the million-token
   window and the doubled output ceiling with the rest of its generation, so the
   ceiling was half what the model accepts.
+
+- **Four more catalog rows carried a neighbour's limits.** `claude-sonnet-4.5`
+  claimed a 1M window in Kiro, Claude and Cloudflare while Opus 4.5 and Haiku
+  4.5, in the same files, were 200K — the 4.5 trio predates the million-token
+  window, which arrives with Opus 4.6. Inferhub's `cc/claude-sonnet-4-6`
+  claimed 64K while the Opus 4.6 row above it was 128K.
+
+- **Nine withdrawn free rows left the OpenRouter-backed catalog.** Gemma 4
+  (both rows), Nemotron 3 Super, both Laguna rows, both Inkling rows, Xing4.0
+  and `openrouter/auto` are gone from the shared free roster, so one removal
+  covers Cline, Kilo Code and OpenRouter. `openrouter/auto` published no
+  limits of its own anyway — a router's pricing is -1 — so the committed row
+  was a guess about a window decided at dispatch.
+
+- **Error and empty states are centered everywhere.** The shared primitives in
+  `ui/state.tsx` were already centered, so the ones that read as left-aligned
+  were the call sites not using them: Accounts rendered no empty branch at all
+  when a filter matched nothing, Studio's "No chats yet." was a bare `<p>` in a
+  column, and every state inside a dialog or scroll region reserved the
+  route-level 220px centering floor, turning a one-line message into a
+  scrollbar. Badges, toasts and inline form errors stay left-aligned, which is
+  correct for something sitting in a row.
 
 - **A Cursor quota refusal no longer reports the word "error".** Cursor delivers
   `resource_exhausted` as a failed terminal event, not as a thrown error, and
