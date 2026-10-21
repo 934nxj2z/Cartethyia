@@ -14,8 +14,17 @@
  * Regenerate the manifest after a migration step with:
  *
  * ```bash
- * STYLE_GUARD_UPDATE=1 bun test test/style-guard.test.ts
+ * cd dashboard && STYLE_GUARD_UPDATE=1 bun test test/style-guard.test.ts
  * ```
+ *
+ * Run it from the `dashboard/` directory, because the paths in the manifest are
+ * relative to `dashboard/src` and the runner passes the scope as a path from the
+ * repo root. This suite touches no network, so a bare `bun test` is fine here —
+ * unlike the suites that need the runner for its CA bundle.
+ *
+ * The manifest is keyed by path relative to `src/`, and `auditTree` needs the
+ * absolute root to slice that path correctly — passing a relative root silently
+ * produces truncated keys that match nothing, which reads as "no debt".
  *
  * The manifest is committed, so lowering a number is a reviewable act rather
  * than an invisible side effect.

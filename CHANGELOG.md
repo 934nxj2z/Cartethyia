@@ -8,6 +8,29 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.1] - 2026-10-21
+
+Housekeeping after the release: no behavior change.
+
+### Changed
+
+- **`dist/` is rebuilt**, so the bundled dashboard and binary match 2.5.0
+  rather than the 20 October build they were carrying. The provider icons, the
+  "Jinhsi" sidebar badge, and the corrected CPU tile were all in the tree but
+  not in the shipped artifacts.
+
+### Fixed
+
+- **The dashboard manifest carries the release version.** `dashboard/package.json`
+  was left at 2.5.0 when the root moved to 2.5.1. Nothing publishes that package,
+  so nothing broke — but a check asserts the two agree, and it would have failed
+  on the next bump.
+- **The styling-ratchet regeneration command in its own comment was wrong.** It
+  named a `--scope`/filter invocation the test runner does not accept, so
+  following it produced a usage error and no manifest. It now names the command
+  that actually runs, and records that a relative root silently truncates every
+  path key, which reads as a tree with no debt.
+
 ## [2.5.0] "Jinhsi" - 2026-10-21
 
 Release preparation includes 69 commits since 2.4.6.
