@@ -510,15 +510,19 @@ function AuditPanel({ tabAction }: { tabAction: ReactNode }): ReactNode {
       </CardBody>
       <CardBody className="p-0 flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 flex flex-col overflow-y-auto p-0 bg-transparent text-inherit">
+          {/* `compact`: these render inside a scroll region rather than on a
+              route, so they must not reserve the route-level centering floor. */}
           {query.isPending && entries.length === 0 ? (
-            <LoadingState label="Loading audit trail…" />
+            <LoadingState compact label="Loading audit trail…" />
           ) : query.isError && entries.length === 0 ? (
             <ErrorState
+              compact
               message={getErrorMessage(query.error, "Unable to load audit trail.")}
               onRetry={() => void query.refetch()}
             />
           ) : entries.length === 0 ? (
             <EmptyState
+              compact
               title="No audit entries yet"
               message="Privileged mutations (provider changes, key rotations, backups, bans) will appear here."
               icon={<ShieldCheck size={20} />}

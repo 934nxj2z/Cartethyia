@@ -55,15 +55,19 @@ export function ModelBansDialog({ onClose }: { readonly onClose: () => void }): 
             >
               Active bans ({bans.length})
             </h4>
+            {/* `compact` throughout: these render in a dialog body rather than a
+                route, so they must not reserve the route-level centering floor. */}
             {bansQuery.isPending ? (
-              <LoadingState label="Loading banned users…" />
+              <LoadingState compact label="Loading banned users…" />
             ) : bansQuery.isError ? (
               <ErrorState
+                compact
                 message={getErrorMessage(bansQuery.error, "Could not load banned users.")}
                 onRetry={() => void bansQuery.refetch()}
               />
             ) : bans.length === 0 ? (
               <EmptyState
+                compact
                 title="No banned users"
                 message="No client address is currently banned for model abuse."
                 icon={<ShieldOff size={20} />}

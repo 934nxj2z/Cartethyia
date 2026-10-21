@@ -1478,10 +1478,12 @@ function PoolHealthDialog({
             </Button>
           </div>
         )}
-        {query.isPending ? <LoadingState label="Loading pool activity…" /> : null}
-        {query.isError ? <ErrorState message="Failed to load pool activity" onRetry={() => void query.refetch()} /> : null}
+        {/* `compact`: this panel sits inside a scroll region, so the state must
+            not reserve the route-level centering floor. */}
+        {query.isPending ? <LoadingState compact label="Loading pool activity…" /> : null}
+        {query.isError ? <ErrorState compact message="Failed to load pool activity" onRetry={() => void query.refetch()} /> : null}
         {!query.isPending && !query.isError && events.length === 0 ? (
-          <EmptyState title="No pool activity" message="Proxy checks, disable events, and recoveries will appear here." />
+          <EmptyState compact title="No pool activity" message="Proxy checks, disable events, and recoveries will appear here." />
         ) : null}
         {events.length > 0 ? (
           <div
