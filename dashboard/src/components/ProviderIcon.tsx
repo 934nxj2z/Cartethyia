@@ -80,6 +80,12 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   kiro: { file: "kiro", ext: "webp" },
   kimchi: { file: "kimchi", ext: "webp" },
   commandcode: { file: "commandcode", ext: "webp" },
+  cursor: { file: "cursor", ext: "webp" },
+  trae: { file: "trae", ext: "webp" },
+  // The China deployment is the same Trae brand mark; without this entry
+  // `traecn` falls through to the generic placeholder while `trae` renders the
+  // real logo, so the two realms look unrelated in the provider list.
+  traecn: { file: "trae", ext: "webp" },
 };
 
 function assetFor(icon: string): { file: string; ext: "svg" | "webp" } {
