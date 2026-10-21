@@ -44,7 +44,7 @@ function addUsageDelta(
   }
   delta.requests += 1;
   // Same definition as every read-side error count, including the HTTP-status
-  // exclusions (404/499/503): this rollup is durable, so a request counted here
+  // exclusions (404/499/503/504): this rollup is durable, so a request counted here
   // stays counted after its raw row is pruned and cannot be corrected later.
   if (isGatewayError(row.status, row.httpStatus)) delta.errors += 1;
   delta.inputTokens += row.inputTokens ?? 0;

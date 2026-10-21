@@ -43,7 +43,12 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { captureProviderExchange, shouldCaptureProviderBodyForRequest } from "../attempt-finalize";
+import {
+  captureProviderExchange,
+  providerCaptureMaxBytes,
+  resolveCaptureDepthForRequest,
+  shouldCaptureProviderBodyForRequest,
+} from "../attempt-finalize";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
 import type { AttemptLeaseOwnership } from "../leases";
 import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
@@ -165,11 +170,20 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     networkPoolId,
     prepared.authorization.snapshot.tenant_id,
   );
+  const captureBody = outboundFetch
+    ? await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state)
+    : false;
+  const captureDepth = await resolveCaptureDepthForRequest(
+    deps.db,
+    prepared.authorization.snapshot.tenant_id,
+    state,
+  );
   const wrappedOutboundFetch = outboundFetch
     ? captureProviderExchange(
         outboundFetch,
         providerCapture,
-        await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state),
+        captureBody,
+        providerCaptureMaxBytes(captureDepth),
       )
     : undefined;
   const dispatchContext = buildUpstreamDispatchContext({

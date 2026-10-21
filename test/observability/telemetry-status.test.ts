@@ -21,7 +21,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
-  CAPACITY_HTTP_STATUSES,
+  NON_DEFECT_HTTP_STATUSES,
   GATEWAY_ERROR_HTTP_MIN,
   GATEWAY_ERROR_STATUSES,
   gatewayErrorSql,
@@ -69,13 +69,22 @@ describe("isGatewayErrorHttpStatus", () => {
   test("an ordinary server error counts", () => {
     expect(isGatewayErrorHttpStatus(500)).toBe(true);
     expect(isGatewayErrorHttpStatus(502)).toBe(true);
-    expect(isGatewayErrorHttpStatus(504)).toBe(true);
   });
 
-  test("every capacity status is excluded", () => {
-    // The gateway correctly refusing work it cannot do right now. That is an
-    // operator-capacity signal, not a defect.
-    for (const status of CAPACITY_HTTP_STATUSES) {
+  test("a timeout is not a gateway defect", () => {
+    // 504 is a deadline that expired, not a malfunction: the request deadline,
+    // the stream-stall watchdog, an HTTP/2 read-idle or WebSocket receive
+    // timer, an upstream that stopped mid-stream. The gateway stopped waiting,
+    // which is what it is supposed to do.
+    expect(isGatewayErrorHttpStatus(504)).toBe(false);
+    expect(isGatewayError("failed", 504)).toBe(false);
+    expect(isGatewayError("truncated", 504)).toBe(false);
+  });
+
+  test("every non-defect status is excluded", () => {
+    // Capacity, availability, and deadlines: the gateway behaved correctly and
+    // the outcome belongs to somebody else.
+    for (const status of NON_DEFECT_HTTP_STATUSES) {
       expect({ status, counted: isGatewayErrorHttpStatus(status) }).toEqual({
         status,
         counted: false,
@@ -181,14 +190,16 @@ describe("the constants the SQL form is built from", () => {
     expect([...GATEWAY_ERROR_STATUSES]).toEqual(["failed", "truncated"]);
   });
 
-  test("the capacity statuses are the documented exceptions", () => {
-    expect([...CAPACITY_HTTP_STATUSES]).toEqual([503, 529]);
+  test("the non-defect statuses are the documented exceptions", () => {
+    // 503/529 are capacity and availability; 504 is a deadline. None of the
+    // three is the gateway failing at its job.
+    expect([...NON_DEFECT_HTTP_STATUSES]).toEqual([503, 504, 529]);
   });
 
-  test("no capacity status falls below the error floor", () => {
-    // A capacity exception below 500 would be redundant (the class rule already
+  test("no non-defect status falls below the error floor", () => {
+    // An exception below 500 would be redundant (the class rule already
     // excludes it) and would hide that the list is about `5xx` semantics.
-    for (const status of CAPACITY_HTTP_STATUSES) {
+    for (const status of NON_DEFECT_HTTP_STATUSES) {
       expect(status).toBeGreaterThanOrEqual(GATEWAY_ERROR_HTTP_MIN);
     }
   });
@@ -198,7 +209,7 @@ describe("the constants the SQL form is built from", () => {
     // suites do. This asserts the one structural property that makes the two
     // forms share a definition: the fragment is built by `sql.join`ing the
     // configured constants, so a change to `GATEWAY_ERROR_STATUSES` or
-    // `CAPACITY_HTTP_STATUSES` reaches the SQL without a second edit. The
+    // `NON_DEFECT_HTTP_STATUSES` reaches the SQL without a second edit. The
     // rendered text is collected recursively because drizzle nests the joined
     // lists inside the outer fragment.
     const column = { name: "http_status" } as never;
@@ -207,7 +218,7 @@ describe("the constants the SQL form is built from", () => {
     expect(rendered).toContain("failed");
     expect(rendered).toContain("truncated");
     expect(rendered).toContain(String(GATEWAY_ERROR_HTTP_MIN));
-    for (const status of CAPACITY_HTTP_STATUSES) {
+    for (const status of NON_DEFECT_HTTP_STATUSES) {
       expect(rendered).toContain(String(status));
     }
   });

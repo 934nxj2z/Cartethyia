@@ -79,7 +79,9 @@ const TRAE_CN_ROWS: readonly TraeModelRow[] = [
  * (DeepSeek-V4 rows: 200k active, 1M selectable), so reading `dev` makes a
  * client under-request the window it is entitled to. The maximum is per model
  * and is **not** uniform: the GPT rows cap at 272k and Kimi-K2.5 / MiniMax-M2.7
- * offer no selectable upgrade at all, staying at 200k.
+ * offer no selectable upgrade at all, staying at 200k. `gpt-5.4` is the
+ * exception: upstream raised its selectable maximum to 1M, so it is filed at
+ * 1M while the rest of the GPT rows stay at 272k.
  *
  * `out` is what the same model is filed at in the CodeBuddy roster where that
  * roster carries it (DeepSeek-V4 384k, MiniMax-M3 512k, Kimi-K2.5 262k,
@@ -98,13 +100,13 @@ const TRAE_CN_ROWS: readonly TraeModelRow[] = [
  * one.
  */
 const TRAE_INTL_ROWS: readonly TraeModelRow[] = [
-  { id: "gpt-5.4", displayName: "GPT-5.4", ctx: 272000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5.4", displayName: "GPT-5.4", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5.2", displayName: "GPT-5.2", ctx: 272000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5.2-codex-paygo", displayName: "GPT-5.2-Codex", ctx: 272000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5.1-paygo", displayName: "GPT-5.1", ctx: 272000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5-paygo", displayName: "GPT-5", ctx: 272000, out: 128_000, vision: true, reasoning: true, surface: "agent" },
   { id: "Dola-Seed-2.0-Code", displayName: "Seed-2.1-Turbo", ctx: 1000000, out: 131_072, vision: true, reasoning: true, surface: "agent" },
-  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash", ctx: 1000000, out: 384_000, vision: false, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash", ctx: 1000000, out: 384_000, vision: true, reasoning: true, surface: "agent" },
   { id: "deepseek-v4-flash-0731", displayName: "DeepSeek-V4-Flash", ctx: 1000000, out: 384_000, vision: false, reasoning: true, surface: "agent" },
   { id: "deepseek-v4-pro-0813", displayName: "DeepSeek-V4-Pro", ctx: 1000000, out: 384_000, vision: false, reasoning: true, surface: "agent" },
   { id: "kimi-k3", displayName: "Kimi-K3", ctx: 1000000, out: 131_072, vision: true, reasoning: true, surface: "agent" },

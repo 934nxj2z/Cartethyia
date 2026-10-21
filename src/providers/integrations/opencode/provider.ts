@@ -527,6 +527,6 @@ export const OPENCODE_GO_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "qwen3.8-max", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 131072, reasoning: true }),
   defineModel({ id: "minimax-m3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "deepseek-v4-pro", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
-  defineModel({ id: "deepseek-v4.1-flash", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 384000, reasoning: true }),
+  defineModel({ id: "deepseek-v4.1-flash", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 384000, reasoning: true, vision: true }),
   defineModel({ id: "hy3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
 ];

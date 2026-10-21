@@ -637,11 +637,33 @@ export function classifyAccountError(
       lower.includes("no access to model") ||
       lower.includes("model_not_supported") ||
       lower.includes("not available in your region"));
+  /**
+   * The upstream accepted the request and put it in a queue behind other
+   * callers — it is busy, not rejecting the caller's credential.
+   *
+   * Qoder answers `403 {"code":"10605","message":"{\"isQueued\":true,
+   * \"modelKey\":\"dfmodel\",\"queueCount\":1395,...}"}`. The 403 is what made
+   * this misclassify: the generic `(401 || 403) && accountEvidence` arm claimed
+   * it as `auth_invalidated`, so a healthy account was parked as "Re-login
+   * required" purely because the provider was busy, and an operator was sent
+   * to re-authenticate a credential that was never rejected.
+   *
+   * Matched on the queue evidence rather than on the bare `10605`, so an
+   * unrelated 403 that happens to share the code is not swept in. The bodies
+   * are nested JSON, so the tell is the key, not a parse of the envelope.
+   */
+  const queuedUpstream =
+    providerCode === "10605" ||
+    lower.includes("isqueued") ||
+    lower.includes("queuecount") ||
+    lower.includes("queuetype") ||
+    (lower.includes("queue") && lower.includes("modelkey"));
   const authSignal =
     !quotaSignal &&
     !policyRejection &&
     !hostedToolFailure &&
     !modelEntitlementFailure &&
+    !queuedUpstream &&
     (providerCode === "authentication_failed" ||
       folded.includes("invalid api key") ||
       folded.includes("incorrect api key") ||
@@ -805,6 +827,7 @@ export function classifyAccountError(
     statusCode === 503 ||
     statusCode === 529 ||
     providerCode === "model_capacity" ||
+    queuedUpstream ||
     lower.includes("model overloaded") ||
     lower.includes("capacity exceeded") ||
     lower.includes("temporarily unavailable");

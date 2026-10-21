@@ -40,6 +40,27 @@ export async function shouldCaptureProviderBody(
 }
 
 /**
+ * Per-stage cap for the provider request/response tee at one capture depth.
+ *
+ * The tee is what the drawer's "Provider Request" and "Provider Response"
+ * panels read, so its cap is the most a provider panel can ever show. It used
+ * to be a flat 256 KiB at every depth: on a large request the translated
+ * provider body was clipped to 256 KiB before the shared record budget ever
+ * ran, so a tenant who raised the depth to Maximum — 16 MiB — still saw a
+ * quarter-megabyte provider request and an empty provider response. Derived
+ * from the same depth tiers as the record budget, so raising the depth now
+ * raises both.
+ *
+ * Capped at a quarter of the depth's total budget: four panels share it, and
+ * one of them must never be able to spend the whole thing.
+ */
+export function providerCaptureMaxBytes(depth?: TelemetryPayloadDepth): number {
+  if (depth === "moderate") return 2 * 1024 * 1024;
+  if (depth === "maximum") return 4 * 1024 * 1024;
+  return 256 * 1024;
+}
+
+/**
  * Same answer as {@link shouldCaptureProviderBody}, memoized on the request.
  *
  * The preference is a tenant setting, so it cannot change between attempts of
@@ -60,6 +81,28 @@ export async function shouldCaptureProviderBodyForRequest(
     | { readonly ok: true; readonly mode: string }
     | { readonly ok: false };
   return resolved.ok === true && resolved.mode === "full";
+}
+
+/**
+ * The tenant's capture depth, memoized on the request like the mode above.
+ *
+ * Read *after* {@link shouldCaptureProviderBodyForRequest} has populated the
+ * memo, so the two answers come from one preference read. It sizes the
+ * provider tee: a tenant who raised the depth is asking for more of every
+ * panel, and a flat cap would answer with the same clipped body regardless.
+ */
+export async function resolveCaptureDepthForRequest(
+  db: CartethyiaDatabase,
+  tenantId: string | null,
+  state: { payloadCapturePreference?: unknown },
+): Promise<TelemetryPayloadDepth> {
+  if (state.payloadCapturePreference === undefined) {
+    state.payloadCapturePreference = await resolvePayloadCapture(db, tenantId);
+  }
+  const resolved = state.payloadCapturePreference as
+    | { readonly ok: true; readonly depth: TelemetryPayloadDepth }
+    | { readonly ok: false };
+  return resolved.ok === true ? resolved.depth : "minimum";
 }
 
 /**
@@ -103,7 +146,6 @@ export function parseCapturedBody(value: unknown): unknown {
   }
 }
 
-const PROVIDER_CAPTURE_MAX_BYTES = 256 * 1024;
 const PROVIDER_CAPTURE_AWAIT_MS = 2_000;
 const CAPTURABLE_RESPONSE_TYPES = /^(text\/|application\/(json|x-ndjson|sse))/i;
 
@@ -258,6 +300,7 @@ export function captureProviderExchange(
   inner: ValidatedOutboundFetch,
   sink: ProviderExchangeCapture,
   captureBody = true,
+  maxBytes = providerCaptureMaxBytes(),
 ): ValidatedOutboundFetch {
   return async (input, init) => {
     const url =
@@ -276,14 +319,12 @@ export function captureProviderExchange(
       // unbounded translated request body per attempt — up to `maxAttempts` of
       // them, all alive until the loop returns — costs more than it can tell
       // an operator.
-      ...(rawBody === null
-        ? {}
-        : { body: parseCapturedBody(rawBody.slice(0, PROVIDER_CAPTURE_MAX_BYTES)) }),
+      ...(rawBody === null ? {} : { body: parseCapturedBody(rawBody.slice(0, maxBytes)) }),
     };
     const response = await inner(input, init);
     sink.response =
       captureBody && shouldCaptureProviderResponse(response)
-        ? readBoundedBody(response.clone(), PROVIDER_CAPTURE_MAX_BYTES).then(parseCapturedBody)
+        ? readBoundedBody(response.clone(), maxBytes).then(parseCapturedBody)
         : Promise.resolve(null);
     // Read regardless of `captureBody`: this is metadata about the dispatch, not
     // payload retention, so a tenant in `metadata` mode still records which

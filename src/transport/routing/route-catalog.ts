@@ -112,14 +112,21 @@ export function buildCapabilityProfile(row: {
   // and `audio` parts; the messages codec encodes the first two but has no
   // audio block (see `AUDIO_CAPABLE_WIRE_FAMILIES`). A bespoke adapter (Cursor)
   // frames its own protocol and has no generic rich-content path.
-  // Treating the codec routes as capable by default keeps pass-through behavior
-  // instead of degrading a caller's attachment to text on the strength of a
-  // metadata guess. An explicit modality still wins, so a catalog can declare
-  // support for a bespoke adapter too. Whether a given upstream model accepts
-  // the part is the upstream's call — a capability declared here only decides
-  // whether the router strips the part before it ever sees it, and the audio
-  // grant is narrowed per wire family at projection time.
+  //
+  // The codec grant is a **fallback for rows with no modality metadata**, not
+  // an override: `defineModel` always seeds `"text"`, so a non-empty array is
+  // an explicit declaration and its contents are authoritative — a row that
+  // declares `["text"]` is a text-only row and the router must strip the image
+  // rather than forward it to an upstream that rejects it. An empty array is a
+  // discovered or legacy row that carried no metadata, and pass-through keeps
+  // a caller's attachment from being degraded on the strength of a guess.
+  // Whether a given upstream model accepts the part is still the upstream's
+  // call — a capability declared here only decides whether the router strips
+  // the part before it ever sees it, and the audio grant is narrowed per wire
+  // family at projection time.
   const codecEncodesRichContent = !providerUsesBespokeWire(row.providerId);
+  const declaredInput = inputMods.length > 0;
+  const richContentByCodec = codecEncodesRichContent && !declaredInput;
   // Reasoning and tools are never stripped here. A `false` flag — whether a
   // discovered row recorded it for lack of metadata, or a catalog row set it
   // explicitly — must not become a silent rewrite of a request the caller
@@ -130,9 +137,9 @@ export function buildCapabilityProfile(row: {
     // because the capability predicates downstream see only this snapshot, not
     // the provider registry.
     bespokeWire: !codecEncodesRichContent,
-    image: inputMods.includes("image") || codecEncodesRichContent,
-    document: inputMods.includes("document") || codecEncodesRichContent,
-    audio: inputMods.includes("audio") || codecEncodesRichContent,
+    image: inputMods.includes("image") || richContentByCodec,
+    document: inputMods.includes("document") || richContentByCodec,
+    audio: inputMods.includes("audio") || richContentByCodec,
     mediaGeneration: outputMods.includes("image"),
     tools: true,
     parallelToolCalls: true,

@@ -86,6 +86,9 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     serviceKinds: ["llm", "websearch", "imageGeneration"],
     credentialUrl: "https://antigravity.google",
     credentialHint: "Signed in with a Google account through the Antigravity login flow.",
+    // Per-account credential, so rotating the egress address buys nothing —
+    // the same reason Hermes, InferHub and Cline skip.
+    defaultSkipProxy: true,
   },
   { id: "muse", displayName: "Muse Code", baseUrl: "https://api.meta.ai" },
   {
@@ -109,6 +112,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     baseUrl: "https://q.us-east-1.amazonaws.com",
     bespokeWire: true,
     hasAdapterUserAgent: true,
+    defaultSkipProxy: true,
     credentialUrl: "https://kiro.dev",
     credentialHint: "Sign in with Google or GitHub in the browser, or use the device-code login with an Identity Center organization, then paste a Kiro API key if you prefer. Prompt caching is not reliably working for Kiro: the upstream recomputes the prompt on every turn, so cached-token savings should not be expected.",
   },
@@ -331,6 +335,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     displayName: "Kilo Code",
     baseUrl: "https://api.kilo.ai/api/openrouter",
     credentialUrl: "https://app.kilo.ai/device-auth",
+    defaultSkipProxy: true,
   },
   {
     // Command Code's adapter stamps its own client identity headers
@@ -366,7 +371,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: `${QODER_REALMS.cn.website}/account/integrations`,
     credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder CN integrations page, or sign in with your Qoder China account.",
   },
-  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
+  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, defaultSkipProxy: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
   // A separate provider, not a region flag on `trae`: the China deployment has
   // its own core host, authorization scheme, and model roster, and a CN account
   // dispatched to the intl host is refused rather than degraded.
@@ -392,6 +397,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     baseUrl: "https://api.individual.githubcopilot.com",
     hasAdapterUserAgent: true,
     credentialUrl: "https://github.com/settings/copilot",
+    defaultSkipProxy: true,
   },
   { id: "perplexity", displayName: "Perplexity", baseUrl: "https://api.perplexity.ai", credentialUrl: "https://www.perplexity.ai/settings/api" },
   // Native web-search providers expose only the search service. Their catalog

@@ -452,3 +452,26 @@ export function assignAccountNames(
     return name;
   });
 }
+
+/**
+ * Splits a paste into requests the server accepts.
+ *
+ * A single batch request is bounded (100 accounts) so one paste cannot open an
+ * unbounded transaction — but an operator importing thousands has a paste far
+ * larger than that cap, and sending it as one request would be rejected
+ * outright. Chunking here keeps every request inside the cap while still being
+ * a bounded number of round-trips instead of one per account.
+ */
+export const MAX_ACCOUNTS_PER_BATCH_REQUEST = 50;
+
+export function chunkCredentials<T>(
+  items: readonly T[],
+  size: number = MAX_ACCOUNTS_PER_BATCH_REQUEST,
+): T[][] {
+  if (size < 1) throw new RangeError("chunk size must be at least 1");
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}

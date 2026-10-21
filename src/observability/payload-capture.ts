@@ -198,11 +198,19 @@ function payloadSignals(values: readonly unknown[]): PayloadSignals {
 /**
  * Shapes a captured payload without persisting it — a pure helper reused by
  * `TelemetryPayloadCapture.capture` and exercised directly in tests. Bodies
- * larger than `maxBytes` (combined, post-redaction, defaulting to the
- * configured capture limit) are dropped and replaced with a truncation
- * marker — no object store exists, so an oversized body is never referenced,
- * only accounted. Payloads remain redacted and bounded during the 15-minute
- * retention window.
+ * are accounted in *drawer order*, and the combined total is bounded by
+ * `maxBytes` (post-redaction, defaulting to the configured capture limit): a
+ * body that no longer fits is replaced with a truncation marker — no object
+ * store exists, so an oversized body is never referenced, only accounted.
+ * Payloads remain redacted and bounded during the 15-minute retention window.
+ *
+ * Drawer order is the allocation order, and that is deliberate: the cap is a
+ * single shared budget, so whatever is accounted first is what survives a
+ * large request. `response_body` is the legacy alias of the client response
+ * and names no panel of its own, so it is accounted **last** — while it was
+ * second, a large client request plus its own duplicate consumed the whole
+ * budget before the Provider Request and Provider Response panels were
+ * reached, and those two read empty for a request that did reach an upstream.
  */
 export function buildPayloadRecord(
   input: PayloadCaptureInput,
@@ -218,25 +226,34 @@ export function buildPayloadRecord(
   // text is not built and its object is not walked for signals.
   const surfaces: ReadonlyArray<readonly [keyof StoredPayload, unknown]> = [
     ["request_body", input.requestBody],
-    ["response_body", input.responseBody],
-    ["client_response_body", input.clientResponseBody],
     ["provider_request_body", input.providerRequestBody],
     ["provider_response_body", input.providerResponseBody],
+    ["client_response_body", input.clientResponseBody],
+    ["response_body", input.responseBody],
   ];
   const stored: Partial<Record<keyof StoredPayload, unknown>> = {};
   const serialized: string[] = [];
   const kept: unknown[] = [];
   let accounted = 0;
-  let truncated = false;
+  const truncatedKeys = new Set<keyof StoredPayload>();
+  /**
+   * Whether a surface kept a *body* — not whether it is merely non-null.
+   *
+   * A surface that lost its body to the cap carries a truncation marker, and
+   * a marker is not content: the drawer renders it in place of a body, but the
+   * Usage list ticks a stage to say "this panel has something to open".
+   */
+  const keptStage = (value: unknown, key: keyof StoredPayload): boolean =>
+    value != null && !truncatedKeys.has(key);
   for (const [key, body] of surfaces) {
-    if (truncated || body === undefined || body === null) {
+    if (body === undefined || body === null) {
       stored[key] = null;
       serialized.push("null");
       continue;
     }
     const text = JSON.stringify(body);
     if (accounted + text.length > maxBytes) {
-      truncated = true;
+      truncatedKeys.add(key);
       stored[key] = null;
       serialized.push("null");
       continue;
@@ -246,18 +263,17 @@ export function buildPayloadRecord(
     serialized.push(text);
     kept.push(body);
   }
-  const marker = truncated
-    ? {
-        _truncated: true,
-        _original_bytes: accounted,
-        _hint: "Truncated by the capture cap — raise Settings → Telemetry payloads → Capture depth to keep more.",
-      }
-    : undefined;
-  if (marker) {
-    for (const [key] of surfaces) {
-      if (stored[key] === null) stored[key] = marker;
-    }
-  }
+  // Only a surface that *had* a body and lost it to the cap is marked. The
+  // previous form stamped the marker onto every null surface, including ones
+  // that never carried anything — a request that never reached an upstream
+  // then reported "truncated" for a provider panel that was never captured,
+  // and the stage bitmask counted a marker as captured content.
+  const marker = (originalBytes: number): unknown => ({
+    _truncated: true,
+    _original_bytes: originalBytes,
+    _hint: "Truncated by the capture cap — raise Settings → Telemetry payloads → Capture depth to keep more.",
+  });
+  for (const key of truncatedKeys) stored[key] = marker(accounted);
   return {
     request_id: input.requestId ?? null,
     captured_at: now,
@@ -270,11 +286,17 @@ export function buildPayloadRecord(
     // Presence, not size: a stage counts as captured when a body was kept for
     // it. `response_body` is the legacy alias of the client response, so it
     // folds into that stage — it never names a panel of its own.
+    // A truncation marker is deliberately not presence: the drawer renders it
+    // in place of a body, but the Usage list ticks stages to say "this panel
+    // has content", and a panel whose body was dropped has none.
     stages:
-      (stored.request_body != null ? 1 : 0) |
-      (stored.provider_request_body != null ? 2 : 0) |
-      (stored.provider_response_body != null ? 4 : 0) |
-      (stored.client_response_body != null || stored.response_body != null ? 8 : 0),
+      (keptStage(stored.request_body, "request_body") ? 1 : 0) |
+      (keptStage(stored.provider_request_body, "provider_request_body") ? 2 : 0) |
+      (keptStage(stored.provider_response_body, "provider_response_body") ? 4 : 0) |
+      (keptStage(stored.client_response_body, "client_response_body") ||
+      keptStage(stored.response_body, "response_body")
+        ? 8
+        : 0),
     signals: payloadSignals(kept),
     _serialized: serialized,
   };

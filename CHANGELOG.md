@@ -8,6 +8,93 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.3] - 2026-10-21
+
+### Changed
+
+- **An unclassified upstream failure cools the account down for 15 minutes.**
+  It was 60 seconds, which returned the account to rotation and re-dialled an
+  upstream that had just answered something this gateway does not understand,
+  so one unknown error was retried every minute. It is still a cooldown with a
+  deadline, never `disabled`, so nothing here can strand an account.
+
+- **The upstream request timeout is 75s, down from 120s.** Clients cap lower
+  than the old default, and a provider that has not answered within 75s is
+  queued or stuck — failing over to another account beats spending the
+  caller's whole budget on one attempt.
+
+- **A timeout is no longer counted as a gateway error.** `504` is a deadline
+  that expired, not a malfunction: the request deadline, the stream-stall
+  watchdog, an HTTP/2 read-idle or WebSocket receive timer. Timeout
+  requests are still recorded, still rendered, and still filterable — they
+  are simply not counted against the gateway's error rate, which otherwise
+  tracks provider latency rather than gateway health.
+
+### Added
+
+- **Restore can be narrowed to selected tables.** Picking a backup file now
+  opens a dialog listing every table it carries, with row counts and a
+  checklist that defaults to all of them. **Restore now** proceeds to the
+  password prompt; **Cancel** abandons it. A table left unchecked is left
+  exactly as it is — selection is a filter, not a rewrite, so "restore one
+  table" no longer overwrites the rest with the file's older copy.
+
+### Fixed
+
+- **Remote Routing stayed off after being switched on.** The API-key update
+  path validated `scopes` and passed them to the store, but the store's update
+  allowlist never included the column, so a grant like `routing:cli_mapping`
+  was accepted and silently dropped. The toggle appeared to save and the badge
+  stayed "no CLI scope".
+
+- **A Qoder model that declares `is_vl: false` is now excluded from image
+  routes.** The router's capability profile granted image support to every row
+  on a canonical-codec provider regardless of what the catalog declared, so
+  the declared modality never mattered and an image was forwarded to an
+  upstream that rejects it. An explicit declaration now wins; the codec grant
+  is the fallback for rows carrying no modality metadata.
+
+- **Request Detail's Provider Request and Provider Response panels were often
+  empty.** Two causes. The client response was stored twice — once under its
+  own key and once under the legacy alias — and the alias was charged against
+  the shared byte budget ahead of both provider panels, so a large request
+  consumed the whole budget before they were reached. And the provider tee was
+  hard-capped at 256 KiB at every capture depth, so raising the depth to
+  Maximum still produced a quarter-megabyte translated request. The alias is
+  now accounted last, and the tee follows the depth (256 KiB / 2 MiB / 4 MiB).
+
+- **A queued upstream is no longer reported as a dead credential.** Qoder
+  answers `403 {"code":"10605", ... "isQueued":true, "queueCount":1395}` when
+  it is busy. The generic 403 arm claimed it as `auth_invalidated`, so a
+  healthy account was parked as "Re-login required" purely because the
+  provider had a queue, and an operator was sent to re-authenticate a
+  credential that was never rejected. It is now a model-scoped capacity
+  cooldown. Real credential rejections are still recognised.
+
+- **WorkBuddy's User-Agent used the product brand instead of the wire token.**
+  It sent `WorkBuddy AI/<v>` where an official client sends
+  `workbuddy-ai/<v>`. The international gateway answers the branded spelling
+  with 403 code `11140`, the same refusal a wrong-brand header gets.
+
+- **Cline `api_key` accounts are no longer probed for quota.** The probe asked
+  `/api/v1/models`, which Cline answers with "make sure you're using the
+  latest version of Cline and re-authenticate" — the same wording it uses for
+  a dead credential. The probe read it as "invalid or revoked", so the sweep
+  reported a working account as needing re-authentication on every pass. These
+  accounts now report quota as unavailable and make no upstream call.
+
+- **Trae `gpt-5.4` reports a 1M context window.** It was filed at 272k.
+
+- **`deepseek-v4.1-flash` and `hy4-preview` are image-capable.** Corrected
+  across the Trae, CodeBuddy/WorkBuddy, OpenCode and TokenHarbor catalogs.
+
+### Changed — routing defaults
+
+- **Antigravity, Trae, Kilo Code, GitHub Copilot and Kiro now dispatch direct
+  by default**, joining Hermes, Cline and InferHub. Each is credential-keyed,
+  so a rotating egress address buys nothing. Not a hard lock: an explicit
+  routing row still wins, so any of them can be put behind a pool.
+
 ## [2.5.2] - 2026-10-21
 
 ### Breaking changes — manual step after upgrading

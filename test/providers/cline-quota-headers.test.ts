@@ -125,15 +125,20 @@ describe("Cline quota headers", () => {
   });
 
   test("an api-key account never reaches the OAuth-only billing surface", async () => {
-    // Unchanged behavior, pinned because the header fix touched this file: a
-    // 401 from /models is dispatchable, a 401 from users/me is not.
+    // An api_key account used to be probed on /models. Cline answers that with
+    // the same "update and re-authenticate" refusal it returns for a dead
+    // credential and for an implausible client identity, so the probe read it
+    // as a revoked key and the sweep reported a working account as needing
+    // re-authentication on every pass. There is no quota for these accounts to
+    // read, so the account now makes no upstream call at all and reports
+    // "not available" — it cannot reach /users/me, and must not reach /models.
     let requested: string | undefined;
     const fetcher = (async (url: unknown): Promise<Response> => {
       requested = String(url);
       return jsonResponse({ data: [] });
     }) as unknown as typeof fetch;
     const result = await fetchClineQuota(`${CLINE_API_KEY_PREFIX}key-123`, fetcher);
-    expect(requested?.endsWith("/models")).toBe(true);
-    expect(result.error).toBeNull();
+    expect(requested).toBeUndefined();
+    expect(result.error).toBe("Quota endpoint is not available for this provider.");
   });
 });

@@ -157,7 +157,14 @@ export const CONFIG_SPEC = {
   },
 
   // Upstream request timeout + retry backoff
-  CARTETHYIA_UPSTREAM_TIMEOUT_MS: { kind: "int", default: 120_000, min: 5_000, max: 600_000 },
+  //
+  // Strictly under 90s: a client whose own deadline is 90s must never be
+  // waiting on a gateway that is still holding a request open past it, and a
+  // provider that has not answered within 75s is not answering — the request
+  // is queued upstream or the egress is stuck, and the honest move is to fail
+  // over to another account rather than burn the caller's whole budget on one.
+  // 120s outlived the clients that call this, which cap lower.
+  CARTETHYIA_UPSTREAM_TIMEOUT_MS: { kind: "int", default: 75_000, min: 5_000, max: 600_000 },
   CARTETHYIA_STREAM_STALL_TIMEOUT_MS: {
     kind: "int",
     default: 360_000,
@@ -181,7 +188,24 @@ export const CONFIG_SPEC = {
   CARTETHYIA_ACCOUNT_QUOTA_COOLDOWN_MS: { kind: "int", default: 3_600_000, min: 0, max: 86_400_000 },
   CARTETHYIA_ACCOUNT_MODEL_CAPACITY_COOLDOWN_MS: { kind: "int", default: 120_000, min: 0, max: 86_400_000 },
   CARTETHYIA_ACCOUNT_TRANSIENT_COOLDOWN_MS: { kind: "int", default: 30_000, min: 0, max: 86_400_000 },
-  CARTETHYIA_ACCOUNT_UNCLASSIFIED_COOLDOWN_MS: { kind: "int", default: 60_000, min: 0, max: 86_400_000 },
+  /**
+   * An unmapped upstream failure cools the account down for 15 minutes.
+   *
+   * It used to be 60s, which put the account straight back into rotation and
+   * re-dialled an upstream that had just answered something this gateway does
+   * not understand — so the same unknown error was retried every minute, and
+   * an account that was actually broken contributed a steady stream of failed
+   * attempts instead of one. Fifteen minutes is long enough for a transient
+   * provider condition to clear on its own and short enough that no operator
+   * action is needed to recover it. It is still a cooldown with a deadline,
+   * never `disabled`, so nothing here can strand an account.
+   */
+  CARTETHYIA_ACCOUNT_UNCLASSIFIED_COOLDOWN_MS: {
+    kind: "int",
+    default: 900_000,
+    min: 0,
+    max: 86_400_000,
+  },
   CARTETHYIA_ACCOUNT_COOLDOWN_ESCALATION_MAX_MS: { kind: "int", default: 3_600_000, min: 0, max: 86_400_000 },
   CARTETHYIA_POOL_COOLDOWN_MS: { kind: "int", default: 120_000, min: 0, max: 86_400_000 },
   CARTETHYIA_ACCOUNT_AUTH_REJECTED_COOLDOWN_MS: { kind: "int", default: 300_000, min: 0, max: 86_400_000 },

@@ -19,6 +19,7 @@
  * re-authentication.
  */
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
+import type { Table } from "drizzle-orm";
 import {
   models,
   providerAccounts,
@@ -29,7 +30,12 @@ import {
 } from "../../persistence/schema";
 import { ConsoleDomainError } from "../shared/errors";
 import { tablesForSection, tableName } from "./contracts";
-import type { BackupSection, RestoreWarning, ValidatedRestore } from "./contracts";
+import type {
+  BackupSection,
+  RestoreWarning,
+  ValidatedRestore,
+  ValidatedTable,
+} from "./contracts";
 import {
   applyRestore,
   decompressBackup,
@@ -88,6 +94,53 @@ export interface ImportResult {
   readonly warnings: readonly RestoreWarning[];
   readonly report?: ImportReport;
   readonly format: "native" | "nine_router";
+}
+
+/**
+ * Which parts of a backup file a restore should actually write.
+ *
+ * Absent or empty means "everything", which is the historical behavior and
+ * what the dashboard's checklist defaults to. A table named here but absent
+ * from the file is simply not restored — it is not an error, because the
+ * checklist is built from an inspection of *this* file and a selection never
+ * invents a table.
+ */
+export interface BackupRestoreSelection {
+  /** Table names to restore; absent or empty restores every table present. */
+  readonly tables?: readonly string[];
+}
+
+/**
+ * Narrows a validated backup to the tables the operator selected.
+ *
+ * The tenant row is the one thing that is not independently selectable: it is
+ * not a table in either section (`BACKUP_SECTIONS` are config and telemetry),
+ * so it never appears on the checklist, and every tenant-scoped table
+ * cascades from it. Dropping it because it was not named would make a partial
+ * restore fail on a foreign key for a table the operator *did* ask for. So it
+ * rides along with any config selection and is written only when one is made.
+ *
+ * A table named in the selection but missing from the file is a no-op rather
+ * than an error: the checklist is built from an inspection of this file, but
+ * the selection is validated as names only, and refusing to restore anything
+ * over one stale name would be worse than ignoring it.
+ */
+function restrictToSelection(
+  validation: ValidatedRestore,
+  selection: BackupRestoreSelection | undefined,
+): ValidatedRestore {
+  const wanted = selection?.tables;
+  if (wanted === undefined || wanted.length === 0) return validation;
+  const selected = new Set(wanted);
+  const tables = new Map<Table, ValidatedTable>();
+  for (const [table, entry] of validation.tables) {
+    if (selected.has(tableName(table))) tables.set(table, entry);
+  }
+  return {
+    ...validation,
+    tables,
+    tenantRows: tables.size > 0 ? validation.tenantRows : [],
+  };
 }
 
 function sectionsOrDefault(sections: readonly BackupSection[] | undefined): readonly BackupSection[] {
@@ -246,6 +299,7 @@ export class BackupService {
     password: unknown,
     payload: unknown,
     tenantId: string,
+    selection?: BackupRestoreSelection,
   ): Promise<ImportResult> {
     if (typeof password !== "string" || !(await this.options.verifyPassword(password))) {
       throw new ConsoleDomainError("unauthorized", 401, "password is incorrect");
@@ -258,11 +312,11 @@ export class BackupService {
 
     if (detected.kind === "nine_router") {
       const { payload: converted, report } = convert9RouterBackup(detected.payload, tenantId);
-      const result = await this.apply(converted, tenantId);
+      const result = await this.apply(converted, tenantId, selection);
       return { ...result, report, format: "nine_router" };
     }
 
-    const result = await this.apply(detected.payload, tenantId);
+    const result = await this.apply(detected.payload, tenantId, selection);
     return { ...result, format: "native" };
   }
 
@@ -348,13 +402,15 @@ export class BackupService {
   private async apply(
     payload: unknown,
     tenantId: string,
+    selection?: BackupRestoreSelection,
   ): Promise<{ restored: Record<string, number>; skipped: Record<string, number>; warnings: readonly RestoreWarning[] }> {
     const validation = validateRestorePayload(payload, tenantId);
     if (!validation.ok) {
       throw new ConsoleDomainError("invalid_request", 400, validation.error);
     }
     try {
-      const compatible = await omitRowsForUnavailableProviders(this.options.db, validation.value, tenantId);
+      const scoped = restrictToSelection(validation.value, selection);
+      const compatible = await omitRowsForUnavailableProviders(this.options.db, scoped, tenantId);
       const applied = await applyRestore(this.options.db, compatible, restoreOrder(), tenantId);
       return { ...applied, warnings: compatible.warnings };
     } catch (error) {

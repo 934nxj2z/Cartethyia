@@ -189,12 +189,20 @@ function parseModelQuotas(payload: Record<string, unknown>): ProviderQuotaWindow
     const family = modelFamily(collapseAntigravityVariant(modelId));
     const familyLabel = FAMILY_LABELS[family.key] ?? family.label;
     for (const entry of modelQuotaEntries(model)) {
-      const fraction = number(entry.info.remainingFraction);
-      if (fraction === null) continue;
+      // A bucket with no fraction but a reset time is exhausted, not unknown:
+      // the upstream omits the field when there is nothing left to report, so
+      // dropping it let a healthy sibling window mask a lane that is blocked
+      // until reset. Only a bucket with neither signal is genuinely unknown.
+      // This matches what the summary path already does for a disabled bucket.
+      const reported = number(entry.info.remainingFraction);
+      const resetAt = isoDate(entry.info.resetTime);
+      const exhausted = reported === null && resetAt !== null;
+      if (reported === null && !exhausted) continue;
+      const fraction = reported ?? 0;
       const kind = entry.kind ?? summaryWindowKind(entry.info);
       const label = kind === undefined ? familyLabel : `${familyLabel} (${SUMMARY_WINDOW_LABELS[kind]})`;
       const key = `${family.key}:${kind ?? "model"}`;
-      const window = fractionWindow(key, label, fraction, isoDate(entry.info.resetTime));
+      const window = fractionWindow(key, label, fraction, resetAt);
       grouped.set(key, keepWorse(grouped.get(key), window));
     }
   }

@@ -183,9 +183,11 @@ export async function startMenu(): Promise<void> {
         console.log("");
         console.log(`   ${updateCommand()}`);
         console.log("");
+        console.log("This terminal will stay open for 180s so you can copy the command, then exit.");
         running = false;
-        process.exitCode = 0;
-        return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 180_000));
+        console.log("Session ended. Run the command above to update.");
+        process.exit(0);
       },
       async () => {
         // Drain first, then start the tray.

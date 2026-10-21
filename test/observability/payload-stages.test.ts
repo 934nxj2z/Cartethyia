@@ -55,3 +55,67 @@ describe("payload stage presence", () => {
     expect(record.stages).toBe(2);
   });
 });
+
+describe("payload budget order", () => {
+  const base = {
+    tenantId: "t1",
+    requestId: "r1",
+    tenantOptIn: true,
+    scope: "tenant" as const,
+    requestBody: null,
+    responseBody: null,
+  };
+  // The reported symptom: a ~744 KiB client request and a ~55 KiB client
+  // response, panels 2 and 3 blank. The client response was stored *twice* —
+  // once as `client_response_body` and once as the legacy `response_body`
+  // alias — and the alias was accounted second, ahead of both provider
+  // stages. On a 1 MiB minimum budget the duplicate spent the remainder
+  // before the provider panels were reached, so a request that did reach an
+  // upstream reported no provider exchange at all.
+  const big = (chars: number): string => "x".repeat(chars);
+
+  test("the provider stages are funded before the legacy response alias", () => {
+    // Measured against the reported shape on a 1 MiB minimum budget: a
+    // 743,600-byte client request, a 55 KB client response stored twice, and
+    // 200 KB provider bodies. The alias accounted second spends the remainder
+    // before either provider stage is reached, so both read empty; accounted
+    // last, the provider request survives.
+    const record = buildPayloadRecord(
+      {
+        ...base,
+        requestBody: big(743_600),
+        responseBody: big(55_000),
+        clientResponseBody: big(55_000),
+        providerRequestBody: big(200_000),
+        providerResponseBody: big(200_000),
+      },
+      new Date(),
+      1_048_576,
+    );
+    expect(record.request_body).not.toBeNull();
+    expect(record.provider_request_body).not.toBeNull();
+    expect(record.stages & 2).toBe(2);
+  });
+
+  test("a truncated panel is marked, not silently blank", () => {
+    const record = buildPayloadRecord(
+      { ...base, requestBody: big(600), providerRequestBody: big(600) },
+      new Date(),
+      700,
+    );
+    const marker = record.provider_request_body as Record<string, unknown>;
+    expect(marker._truncated).toBe(true);
+    // A marker is not captured content: the stage must read uncaptured so the
+    // Usage list does not tick a panel whose body was never kept.
+    expect(record.stages & 2).toBe(0);
+  });
+
+  test("a panel that never carried a body is null, not marked truncated", () => {
+    // The old form stamped the marker onto every null surface, so a request
+    // that never reached an upstream claimed it had been truncated.
+    const record = buildPayloadRecord({ ...base, requestBody: { a: 1 } });
+    expect(record.provider_request_body).toBeNull();
+    expect(record.provider_response_body).toBeNull();
+    expect(record.response_body).toBeNull();
+  });
+});

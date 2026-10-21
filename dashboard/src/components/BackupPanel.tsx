@@ -10,10 +10,11 @@ import { toast } from "../lib/toast";
 import { downloadBytes, downloadTextFile } from "../lib/download";
 import { readBackupFile } from "../lib/backup-file";
 import { getErrorMessage } from "../data/api";
-import { useDeleteAllBackup, useExportBackup, useRestoreBackup } from "../hooks/backup";
+import { useDeleteAllBackup, useExportBackup, useInspectBackup, useRestoreBackup } from "../hooks/backup";
 import { Dialog } from "./ui/dialog";
 import type { BackupImportReport } from "../data/contracts";
 import type { RestoreWarning } from "../../../src/console/backup/contracts";
+import type { BackupInspection } from "../../../src/console/backup/service";
 import type { DeleteAllScope } from "../../../src/console/backup/store";
 
 /**
@@ -114,10 +115,14 @@ export function BackupPanel(): ReactNode {
   const [format, setFormat] = useState<string | null>(null);
   const [deleteScopes, setDeleteScopes] = useState<ReadonlySet<DeleteAllScope>>(new Set());
   const [pendingRestoreFile, setPendingRestoreFile] = useState<File | null>(null);
+  const [inspection, setInspection] = useState<BackupInspection | null>(null);
+  const [selectedTables, setSelectedTables] = useState<ReadonlySet<string>>(new Set());
+  const [inspectError, setInspectError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const exportBackup = useExportBackup();
   const restoreBackup = useRestoreBackup();
   const deleteAllBackup = useDeleteAllBackup();
+  const inspectBackup = useInspectBackup();
   const toggleDeleteScope = (scope: DeleteAllScope) => {
     setDeleteScopes((current) => {
       const next = new Set(current);
@@ -173,14 +178,56 @@ export function BackupPanel(): ReactNode {
     );
   };
 
-  const upload = (file: File) => {
-    setPendingRestoreFile(file);
+  /**
+   * Reads the file, then shows what is in it *before* asking for a password.
+   *
+   * The old flow went straight to the password dialog, so the operator
+   * re-authenticated for a restore they could not yet see the scope of — and
+   * a backup carries more than one section, so "restore" always meant all of
+   * it. Inspection is free and writes nothing, so it comes first and its
+   * checklist becomes the selection.
+   */
+  const upload = async (file: File) => {
     setRestored(null);
     setRestoreWarnings(null);
     setRestoreError(null);
     setReport(null);
     setFormat(null);
+    setInspectError(null);
+    setInspection(null);
+    setSelectedTables(new Set());
+    setPendingRestoreFile(file);
+    try {
+      const parsed = await readBackupFile(file);
+      const result = await inspectBackup.mutateAsync({ backup: parsed });
+      setInspection(result);
+      // Default to everything the file carries and the schema supports. An
+      // operator who wants all of it should not have to click every row, and
+      // an unsupported table cannot be restored either way.
+      setSelectedTables(new Set(result.rows.filter((row) => row.supported).map((row) => row.table)));
+    } catch (error: unknown) {
+      setPendingRestoreFile(null);
+      toast.error("Could not read that backup", getErrorMessage(error, "The file is not a readable backup."));
+    }
+  };
+  const toggleTable = (table: string) => {
+    setSelectedTables((current) => {
+      const next = new Set(current);
+      if (next.has(table)) next.delete(table);
+      else next.add(table);
+      return next;
+    });
+  };
+  const closeInspect = () => {
+    setInspection(null);
+    setPendingRestoreFile(null);
+    setInspectError(null);
+  };
+  /** Commits the checklist: the password prompt is the last step, not the first. */
+  const beginRestore = () => {
+    if (pendingRestoreFile === null || selectedTables.size === 0) return;
     setPassword("");
+    setRestoreError(null);
     setPasswordFor("restore");
   };
   const performRestore = async () => {
@@ -191,13 +238,22 @@ export function BackupPanel(): ReactNode {
       // The compressed download is gzip bytes on disk, so the file cannot be read
       // as text — see `readBackupFile`.
       const parsed = await readBackupFile(file);
-      const result = await restoreBackup.mutateAsync({ password, backup: parsed, onProgress: (progress) => setTransfer((current) => ({ ...progress, startedAt: current?.startedAt ?? Date.now() })) });
+      const result = await restoreBackup.mutateAsync({
+        password,
+        backup: parsed,
+        // "All selected" is sent as an explicit list rather than omitted: the
+        // server treats an absent list as "the whole file", and the checklist
+        // may have deselected a table the file does carry.
+        tables: [...selectedTables],
+        onProgress: (progress) => setTransfer((current) => ({ ...progress, startedAt: current?.startedAt ?? Date.now() })),
+      });
       setRestored(result.restored);
       setRestoreWarnings(result.warnings);
       setReport(result.report ?? null);
       setFormat(result.format);
       closePassword();
       setPendingRestoreFile(null);
+      setInspection(null);
       toast.success(
         result.warnings.length === 0 ? "Restore complete." : "Restore completed with warnings.",
         result.warnings.length === 0
@@ -265,7 +321,7 @@ export function BackupPanel(): ReactNode {
                 className="sr-only"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-                  if (file) upload(file);
+                  if (file) void upload(file);
                   event.target.value = "";
                 }}
               />
@@ -320,6 +376,90 @@ export function BackupPanel(): ReactNode {
         </CardBody>
       </Card>
     </div>
+    <Dialog
+      open={inspection !== null}
+      onClose={closeInspect}
+      title="Restore from backup"
+      description="Choose which parts of this file to restore, then confirm with your console password."
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={closeInspect}>Cancel</Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={selectedTables.size === 0}
+            onClick={beginRestore}
+          >
+            Restore now
+          </Button>
+        </>
+      }
+    >
+      <Stack gap="12px">
+        {inspection !== null ? (
+          <>
+            <p className="text-badge text-text-tertiary">
+              {inspection.format === "nine_router"
+                ? "Router export — it is converted at restore time, so every table it produces is restored."
+                : `${inspection.total} rows · exported ${inspection.exportedAt || "unknown date"}`}
+            </p>
+            {inspection.rows.length > 0 ? (
+              <fieldset className="grid grid-cols-1 gap-4 min-w-0 border-0 m-0 p-0">
+                <legend className="mb-3 text-text-secondary text-badge font-semibold">
+                  Restore these tables
+                </legend>
+                <div className="flex justify-end gap-4">
+                  <button
+                    type="button"
+                    className="text-badge text-accent hover:underline"
+                    onClick={() =>
+                      setSelectedTables(
+                        new Set(
+                          inspection.rows.filter((row) => row.supported).map((row) => row.table),
+                        ),
+                      )
+                    }
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="text-badge text-text-secondary hover:underline"
+                    onClick={() => setSelectedTables(new Set())}
+                  >
+                    Select none
+                  </button>
+                </div>
+                {inspection.rows.map((row) => (
+                  <label
+                    key={`${row.section}:${row.table}`}
+                    className="flex items-start gap-4 px-5 py-4 border border-inner-border rounded-control bg-surface-2 text-caption leading-snug cursor-pointer hover:border-border-strong hover:bg-hover has-checked:border-accent has-checked:bg-accent-soft"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedTables.has(row.table)}
+                      disabled={!row.supported}
+                      onChange={() => toggleTable(row.table)}
+                    />
+                    <span className="flex flex-col gap-1 min-w-0">
+                      <strong className="text-text-primary">{row.table}</strong>
+                      <small className="text-text-tertiary text-badge">
+                        {row.count} rows · {row.section}
+                        {row.supported ? "" : " · not in the current schema, will be skipped"}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
+            {inspectError !== null ? (
+              <p role="alert" className="text-caption text-red">{inspectError}</p>
+            ) : null}
+          </>
+        ) : null}
+      </Stack>
+    </Dialog>
     <Dialog
       open={passwordFor !== null}
       onClose={closePassword}

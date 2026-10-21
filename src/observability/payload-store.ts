@@ -157,12 +157,22 @@ async function appendFrameToPath(
   };
 }
 
+/**
+ * The frame's body keys, in the same order `buildPayloadRecord` serializes
+ * them.
+ *
+ * The record hands the writer one string per body already serialized, so the
+ * two orders must agree or every body lands under the wrong key. The order is
+ * drawer order with the legacy `response_body` alias last, for the same reason
+ * the record accounts it last: it names no panel of its own and must not
+ * spend the shared byte budget ahead of the provider stages.
+ */
 const FRAME_BODY_KEYS = [
   "request_body",
-  "response_body",
-  "client_response_body",
   "provider_request_body",
   "provider_response_body",
+  "client_response_body",
+  "response_body",
 ] as const;
 
 /**

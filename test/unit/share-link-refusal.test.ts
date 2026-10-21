@@ -18,7 +18,7 @@
  */
 import { afterAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { DrizzleShareLinkStore, type ShareLinkRefusal } from "../../src/persistence/stores/share-store";
+import { DrizzleShareLinkStore, generateShareSlug, hashShareToken, type ShareLinkRefusal } from "../../src/persistence/stores/share-store";
 import { hashSecret } from "../../src/security/crypto";
 import { getDb } from "../../src/persistence/boot";
 import { dbDescribe, getTestPool, requireDatabase } from "../helpers/database";
@@ -63,10 +63,15 @@ interface SeedOptions {
   readonly keyMode?: "share" | "personal";
 }
 
-/** A sharing key plus the link pointing at it, returning the token hash. */
+/**
+ * A sharing key plus the link pointing at it, returning the raw address.
+ *
+ * The resolver takes the public path segment, not a hash: it owns hashing, so
+ * a slug-shaped address and a token-shaped one both reach their own column.
+ */
 async function seedLink(options: SeedOptions = {}): Promise<string> {
   const keyMode = options.keyMode ?? "share";
-  const tokenHash = randomUUID().replace(/-/g, "").repeat(2).slice(0, TOKEN_HASH_LENGTH);
+  const token = randomUUID().replace(/-/g, "").repeat(2).slice(0, TOKEN_HASH_LENGTH);
   const pool = await getTestPool();
   const key = await pool.query<{ id: string }>(
     `insert into api_keys
@@ -90,23 +95,55 @@ async function seedLink(options: SeedOptions = {}): Promise<string> {
      values ($1, $2, $3, $4, $5, $6)`,
     [
       String(key.rows[0]!.id),
-      tokenHash,
+      hashShareToken(token),
       Buffer.from("ciphertext"),
       keyMode === "share" ? "enroll" : "handoff",
       options.active ?? true,
       options.expiresAt ?? null,
     ],
   );
-  return tokenHash;
+  return token;
 }
 
-/** The refusal a token reports, or "resolved" if the link serves. */
-async function refusalFor(tokenHash: string): Promise<ShareLinkRefusal | "resolved"> {
-  const outcome = await new DrizzleShareLinkStore(db()).resolveShareLinkOutcome(tokenHash);
+/** The refusal an address reports, or "resolved" if the link serves. */
+async function refusalFor(address: string): Promise<ShareLinkRefusal | "resolved"> {
+  const outcome = await new DrizzleShareLinkStore(db()).resolveShareLinkOutcome(address);
   return outcome.ok ? "resolved" : outcome.refusal;
 }
 
 dbDescribe("share link refusal", () => {
+  test("a link resolves under its slug and under its bearer token", async () => {
+    // Both are public addresses for one row, stored in different forms: the
+    // slug in the clear, the token only as a hash. A resolver that compared
+    // both columns against the hash could never match the slug, so the URL
+    // the console handed out answered "not found" while it was still fresh.
+    const pool = await getTestPool();
+    const token = randomUUID().replace(/-/g, "").repeat(2).slice(0, TOKEN_HASH_LENGTH);
+    const slug = generateShareSlug();
+    const key = await pool.query<{ id: string }>(
+      `insert into api_keys
+         (tenant_id, key_hash, key_mode, label, scopes, model_access_mode, enabled, revoked_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+      [
+        await ensureTenant(),
+        null,
+        "share",
+        "share template",
+        JSON.stringify(["routing:invoke"]),
+        "whitelist",
+        true,
+        null,
+      ],
+    );
+    await pool.query(
+      `insert into share_links (api_key_id, token_hash, token_encrypted, slug, kind, active, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [String(key.rows[0]!.id), hashShareToken(token), Buffer.from("ciphertext"), slug, "enroll", true, null],
+    );
+    expect(await refusalFor(slug)).toBe("resolved");
+    expect(await refusalFor(token)).toBe("resolved");
+  });
+
   test("a paused key refuses with `disabled`", async () => {
     expect(await refusalFor(await seedLink({ enabled: false }))).toBe("disabled");
   });
@@ -116,15 +153,15 @@ dbDescribe("share link refusal", () => {
   });
 
   test("an expired link refuses with `expired`", async () => {
-    const tokenHash = await seedLink({ expiresAt: new Date(Date.now() - 60_000) });
-    expect(await refusalFor(tokenHash)).toBe("expired");
+    const token = await seedLink({ expiresAt: new Date(Date.now() - 60_000) });
+    expect(await refusalFor(token)).toBe("expired");
   });
 
   test("a deactivated link is reported revoked, not expired", async () => {
     expect(await refusalFor(await seedLink({ active: false }))).toBe("revoked");
   });
 
-  test("an unknown token refuses with `not_found`", async () => {
+  test("an unknown address refuses with `not_found`", async () => {
     expect(await refusalFor("n".repeat(TOKEN_HASH_LENGTH))).toBe("not_found");
   });
 
@@ -135,7 +172,7 @@ dbDescribe("share link refusal", () => {
   });
 
   test("a paused key cannot be revealed by the handoff kind either", async () => {
-    const tokenHash = await seedLink({ keyMode: "personal", enabled: false });
-    expect(await refusalFor(tokenHash)).toBe("disabled");
+    const token = await seedLink({ keyMode: "personal", enabled: false });
+    expect(await refusalFor(token)).toBe("disabled");
   });
 });

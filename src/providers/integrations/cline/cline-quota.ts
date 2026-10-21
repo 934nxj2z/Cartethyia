@@ -1,7 +1,6 @@
 import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { authCredential, getJson, record, text } from "../../quota/quota-contracts";
+import { authCredential, getJson, record, text, unsupportedQuota } from "../../quota/quota-contracts";
 import { parseLimitWindows } from "../../quota/quota-limit-windows";
-import { probeApiKeyConnectivity } from "../../quota/quota-support";
 import { getClineCliVersion, getClineSdkVersion } from "../../operations/client-versions";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 
@@ -87,16 +86,14 @@ export async function fetchClineQuota(
   credential: string,
   fetcher: FetchLike,
 ): Promise<ProviderQuotaResult> {
-  // API-key accounts carry no OAuth envelope and upstream exposes no quota
-  // surface for them, so an api key must never reach the OAuth-only
-  // users/me endpoint (a 401 there is not dispatchable either). The account
-  // test for keys is plain validity via /models.
+  // An api_key account has no OAuth envelope, and Cline's quota surface
+  // answers 401 for one — the upstream's message asks the operator to
+  // re-authenticate, which is a false verdict: the key is fine and the gateway
+  // never had a quota to read. Report "not available" and make no upstream
+  // call. A probe here also cannot distinguish a dead key from Cline refusing
+  // the client, so the only honest answer is that quota is unavailable.
   if (credential.startsWith(CLINE_API_KEY_PREFIX)) {
-    return probeApiKeyConnectivity(
-      CLINE_PROVIDER_ID,
-      credential.slice(CLINE_API_KEY_PREFIX.length),
-      fetcher,
-    );
+    return unsupportedQuota(CLINE_PROVIDER_ID);
   }
   const fields = authCredential(credential);
   const access = text(fields.accessToken);

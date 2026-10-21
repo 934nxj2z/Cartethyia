@@ -68,3 +68,101 @@ describe("account error classification", () => {
     expect(classification.mutatesAccount).toBe(true);
   });
 });
+
+describe("a queued upstream is capacity, not a dead credential", () => {
+  /**
+   * The reported failure: Qoder answers `403 {"code":"10605", ...}` with
+   * `isQueued:true` and a `queueCount`. The 403 made the generic auth arm
+   * claim it, so a healthy account was parked as `auth_invalidated` — the
+   * console's "Re-login required" — purely because the provider was busy.
+   * The credential was never rejected; refreshing it cannot shorten a queue.
+   */
+  const queued = (): GatewayError =>
+    new GatewayError(
+      "upstream_error" as never,
+      403,
+      `{"code":"10605","message":"{\\"isQueued\\":true,\\"modelKey\\":\\"dfmodel\\",\\"queueCount\\":1395,\\"queueType\\":\\"\\"}"}`,
+      { providerCode: "10605" } as never,
+      "upstream" as never,
+    );
+
+  test("a queued 403 is a model-capacity cooldown", () => {
+    const classification = classifyAccountError(queued(), {
+      origin: "upstream",
+      scope: "account",
+      providerId: "qoder",
+      modelId: "deepseek-v4.1-flash",
+    });
+    expect(classification.category).toBe("model_capacity");
+    expect(classification.status).toBe("cooldown");
+  });
+
+  test("it is never reported as credential invalidation", () => {
+    // The whole point: the console must not offer "Re-login required" for an
+    // account that is queued behind 1395 other callers.
+    const classification = classifyAccountError(queued(), {
+      origin: "upstream",
+      scope: "account",
+      credentialEvidence: true,
+      providerId: "qoder",
+      modelId: "deepseek-v4.1-flash",
+    });
+    expect(classification.category).not.toBe("auth_invalidated");
+  });
+
+  test("queue evidence is recognised without the provider code", () => {
+    // The body is nested JSON, so the tell is the key rather than a parse.
+    const error = new GatewayError(
+      "upstream_error" as never,
+      403,
+      `{"isQueued":true,"modelKey":"dfmodel","queueCount":12}`,
+      {} as never,
+      "upstream" as never,
+    );
+    const classification = classifyAccountError(error, {
+      origin: "upstream",
+      scope: "account",
+      providerId: "qoder",
+      modelId: "deepseek-v4.1-flash",
+    });
+    expect(classification.category).toBe("model_capacity");
+  });
+
+  test("a real credential rejection is still recognised", () => {
+    // Guard against the mirror mistake: excluding queued bodies must not
+    // swallow an auth rejection that happens to be a 403.
+    const error = new GatewayError(
+      "authentication_failed" as never,
+      403,
+      "invalid api key",
+      {} as never,
+      "upstream" as never,
+    );
+    const classification = classifyAccountError(error, {
+      origin: "upstream",
+      scope: "account",
+      providerId: "qoder",
+    });
+    expect(classification.category).toBe("auth_invalidated");
+  });
+});
+
+describe("an unclassified failure is a cooldown, never a parked account", () => {
+  test("an unmapped upstream error cools down for 15 minutes", () => {
+    const error = new GatewayError(
+      "upstream_error" as never,
+      400,
+      "something this gateway does not understand",
+      {} as never,
+      "upstream" as never,
+    );
+    const classification = classifyAccountError(error, {
+      origin: "upstream",
+      scope: "account",
+      providerId: "qoder",
+    });
+    expect(classification.category).toBe("unknown");
+    expect(classification.status).toBe("cooldown");
+    expect(classification.cooldownMs).toBe(900_000);
+  });
+});

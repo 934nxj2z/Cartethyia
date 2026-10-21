@@ -28,6 +28,8 @@ import {
   completionContext,
   estimatedUsage,
   parseCapturedBody,
+  providerCaptureMaxBytes,
+  resolveCaptureDepthForRequest,
   shouldCaptureProviderBodyForRequest,
   terminalFailure,
 } from "./attempt-finalize";
@@ -238,6 +240,13 @@ export async function handleProviderProxyRequest(
                   deps.db,
                   prepared.authorization.snapshot.tenant_id,
                   state,
+                ),
+                providerCaptureMaxBytes(
+                  await resolveCaptureDepthForRequest(
+                    deps.db,
+                    prepared.authorization.snapshot.tenant_id,
+                    state,
+                  ),
                 ),
               ),
             }

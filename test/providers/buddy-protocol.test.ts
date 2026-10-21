@@ -296,11 +296,13 @@ describe("Buddy upstream protocol alignment", () => {
     expect(cnHeaders["origin"]).toBe("https://www.workbuddy.cn");
     expect(cnHeaders["referer"]).toBe("https://www.workbuddy.cn/");
     expect(cnHeaders["x-domain"]).toBe("www.workbuddy.cn");
-    // The WorkBuddy profile: brand, WorkBuddy AI, then the CLI suffix, with the
-    // version the monitor carries rather than a pinned build.
-    expect(cnHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
+    // The WorkBuddy profile: brand, then the wire token `workbuddy-ai` (NOT
+    // the display brand "WorkBuddy AI" — the gateway 403s on the branded
+    // spelling), then the CLI suffix. Versions come from the monitor rather
+    // than a pinned build.
+    expect(cnHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ workbuddy-ai\/\S+ CLI\/\S+$/);
     // CN and international differ only in host identity, so the profile is the same.
-    expect(intlHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
+    expect(intlHeaders["user-agent"]).toMatch(/^WorkBuddy\/\S+ workbuddy-ai\/\S+ CLI\/\S+$/);
     expect(cnHeaders["x-product"]).toBe(intlHeaders["x-product"]);
   });
 
@@ -433,7 +435,8 @@ describe("Buddy upstream protocol alignment", () => {
     expect(capturedUrl).toBe("https://www.codebuddy.cn/v2/billing/meter/get-user-resource");
     expect(capturedHeaders?.get("x-domain")).toBe("www.workbuddy.cn");
     // WorkBuddy profile shape; the version comes from the monitor, not a pin.
-    expect(capturedHeaders?.get("user-agent")).toMatch(/^WorkBuddy\/\S+ WorkBuddy AI\/\S+ CLI\/\S+$/);
+    // The second token is the wire spelling `workbuddy-ai`.
+    expect(capturedHeaders?.get("user-agent")).toMatch(/^WorkBuddy\/\S+ workbuddy-ai\/\S+ CLI\/\S+$/);
   });
 
   test("classifies refill and bonus packages into the same spendable credit pool", async () => {
