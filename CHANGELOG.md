@@ -240,6 +240,14 @@ they have not been pushed.
   at a single number. Upstream states no output limit at all, so the ceiling now
   comes from the row: 384k for DeepSeek-V4, 512k for MiniMax-M3, 131k for GLM.
 
+- **API keys are `pn-carte-` and share keys `sh-carte-`, both with a 16-character
+  tail.** Personal keys were `carte_` and share keys `sh-carte_`, each with a
+  12-character tail. The separator is now a hyphen and the tail is 16
+  characters — 12 bytes base64url-encoded, which is exactly 16 with no padding.
+  Keys already issued keep the prefix they were created with: nothing resolves a
+  key by its prefix, so no stored credential stops working, and regeneration is
+  what moves a row to the new form.
+
 - **Qoder's plan refusal is scoped per model.** Code `112` was treated as
   `auth_invalidated`, which cooled the whole account for what is a statement
   about one model on one account. It now enters the model-scoped unreachable

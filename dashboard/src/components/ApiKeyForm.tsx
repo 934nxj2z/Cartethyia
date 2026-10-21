@@ -529,7 +529,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
             <Input label="Name" value={label} onChange={(e) => setLabel(e.target.value)}
               placeholder="ci-key…" disabled={busy} autoFocus />
             <Input label="Key prefix" value={prefix} onChange={(e) => setPrefix(e.target.value)}
-              placeholder="carte_ (default)…" disabled={busy || customKey.trim().length > 0} />
+              placeholder="pn-carte- (default)…" disabled={busy || customKey.trim().length > 0} />
           </div>
           {keyMode === "personal" && (
             <Input label="Custom API key value (optional)" value={customKey}
