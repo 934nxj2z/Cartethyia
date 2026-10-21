@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   TRAE_REALMS,
   TRAE_REGION_CORE_HOSTS,
+  TRAE_AGENT_FUNCTION,
   TRAE_AGENT_CHAT_PATH,
   TRAE_CHAT_PATH,
   traeCoreCandidates,
@@ -9,7 +10,12 @@ import {
 } from "../../src/providers/integrations/trae/trae-realm";
 import { TRAE_CN_MODELS, TRAE_INTL_MODELS, traeMaxContextWindow } from "../../src/providers/integrations/trae/trae-catalog";
 import { buildTraeHeaders, traeDeviceIdentity } from "../../src/providers/integrations/trae/trae-headers";
-import { buildTraeChatBody, parseTraeSse } from "../../src/providers/integrations/trae/trae-protocol";
+import {
+  buildTraeChatBody,
+  isTraeAgentEndpoint,
+  parseTraeSse,
+  toTraeAgentBody,
+} from "../../src/providers/integrations/trae/trae-protocol";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
 function request(overrides: Partial<CanonicalRequest> = {}): CanonicalRequest {
@@ -78,23 +84,35 @@ describe("trae rosters", () => {
     expect(deepseek?.contextLimit).toBe(1_000_000);
   });
 
-  test("picker rows point at the agent path, legacy rows at the chat path", () => {
-    // The two surfaces select models by different keys, so a picker id sent to
-    // llm_raw_chat answers `4023 model is unknown` on every host. Pinning the
-    // endpoint per row is what keeps them from crossing.
-    const picker = TRAE_INTL_MODELS.find((m) => m.modelId === "deepseek-v4.1-flash");
-    const legacy = TRAE_INTL_MODELS.find((m) => m.modelId === "gpt-4o");
-    expect(picker?.endpointPath).toBe(TRAE_AGENT_CHAT_PATH);
-    expect(legacy?.endpointPath).toBe(TRAE_CHAT_PATH);
+  test("every intl row points at the agent path", () => {
+    // The intl catalog is agent-only: the legacy chat ids (gpt-4o,
+    // gemini_2.5_flash, deepseek-V3, …) are rejected on this surface with
+    // `4001 param is invalid`, and the agent ids are rejected on the chat path
+    // with `4023 model is unknown`. No row may fall back to the chat path.
+    expect(TRAE_INTL_MODELS.length).toBeGreaterThan(0);
+    for (const model of TRAE_INTL_MODELS) {
+      expect(model.endpointPath).toBe(TRAE_AGENT_CHAT_PATH);
+    }
   });
 
-  test("the legacy deepseek ids are gone from intl", () => {
-    // Superseded by the picker's DeepSeek-V4 rows; keeping them offered three
-    // near-duplicates of one model.
+  test("the legacy chat ids are gone from intl", () => {
+    // Superseded by the picker's roster, and unreachable here: none of them
+    // resolve on the agent surface.
     const ids = new Set(TRAE_INTL_MODELS.map((m) => m.modelId));
-    for (const gone of ["deepseek-R1", "deepseek-V3", "deepseek-V3-0324"]) {
+    for (const gone of ["gpt-4o", "gemini_2.5_flash", "deepseek-R1", "deepseek-V3", "deepseek-V3-0324"]) {
       expect(ids.has(gone)).toBe(false);
     }
+  });
+
+  test("context windows are per model, not uniform", () => {
+    // Reading a single maximum across the roster would report 1M for the GPT
+    // rows, which cap at 272k, and would overstate Kimi-K2.5 / MiniMax-M2.7,
+    // which offer no selectable upgrade above 200k.
+    const find = (id: string): number | undefined =>
+      TRAE_INTL_MODELS.find((m) => m.modelId === id)?.contextLimit ?? undefined;
+    expect(find("gpt-5.4")).toBe(272_000);
+    expect(find("deepseek-v4.1-flash")).toBe(1_000_000);
+    expect(find("kimi-k2.5")).toBe(200_000);
   });
 });
 
@@ -254,6 +272,57 @@ describe("buildTraeChatBody", () => {
 
   test("an empty model name is refused", () => {
     expect(() => buildTraeChatBody("", request(), "intl")).toThrow();
+  });
+});
+
+describe("toTraeAgentBody", () => {
+  test("the model key moves to config_name and config_source is added", () => {
+    // The agent surface ignores `model_name` entirely, and without
+    // `config_source` it resolves the right upstream model and then streams
+    // nothing — which looks like a dead model rather than a missing field.
+    const body = toTraeAgentBody(buildTraeChatBody("deepseek-v4.1-flash", request(), "intl"));
+    expect(body.config_name).toBe("deepseek-v4.1-flash");
+    expect(body.config_source).toBe(1);
+    expect("model_name" in body).toBe(false);
+  });
+
+  test("function names the roster", () => {
+    // Absent, the call fails before model resolution with
+    // `[LLMUtilsChat.resolveByUsage] function is empty`.
+    const body = toTraeAgentBody(buildTraeChatBody("gpt-5.2", request(), "intl"));
+    expect(body.function).toBe(TRAE_AGENT_FUNCTION);
+  });
+
+  test("messages and generation controls survive the rewrite", () => {
+    const source = buildTraeChatBody(
+      "kimi-k3",
+      request({ generation_controls: { temperature: 0.3, max_tokens: 32 } }),
+      "intl",
+    );
+    const body = toTraeAgentBody(source);
+    expect(body.messages).toEqual(source.messages);
+    expect(body.temperature).toBe(0.3);
+    expect(body.max_tokens).toBe(32);
+  });
+});
+
+describe("isTraeAgentEndpoint", () => {
+  test("a missing route falls back to the agent surface", () => {
+    // The intl catalog is agent-only, so a target with no route must not
+    // silently land on the chat path, which rejects every model in it.
+    expect(isTraeAgentEndpoint(undefined)).toBe(true);
+    expect(isTraeAgentEndpoint(null)).toBe(true);
+    expect(isTraeAgentEndpoint("")).toBe(true);
+  });
+
+  test("the chat path is not the agent path", () => {
+    expect(isTraeAgentEndpoint(TRAE_CHAT_PATH)).toBe(false);
+    expect(isTraeAgentEndpoint(TRAE_AGENT_CHAT_PATH)).toBe(true);
+  });
+
+  test("an absolute URL still resolves by suffix", () => {
+    expect(isTraeAgentEndpoint(`https://coresg-normal.trae.ai${TRAE_AGENT_CHAT_PATH}`)).toBe(true);
+    expect(isTraeAgentEndpoint(`https://coresg-normal.trae.ai${TRAE_CHAT_PATH}`)).toBe(false);
   });
 });
 

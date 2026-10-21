@@ -20,7 +20,14 @@ import { getTraeVersion } from "../../operations/client-versions";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { TRAE_CN_MODELS, TRAE_INTL_MODELS, traeMaxContextWindow } from "./trae-catalog";
 import { buildTraeHeaders } from "./trae-headers";
-import { buildTraeChatBody, parseTraeSse, TRAE_CHAT_ENDPOINT } from "./trae-protocol";
+import {
+  buildTraeChatBody,
+  isTraeAgentEndpoint,
+  parseTraeSse,
+  toTraeAgentBody,
+  TRAE_AGENT_ENDPOINT,
+  TRAE_CHAT_ENDPOINT,
+} from "./trae-protocol";
 import { TRAE_REGION_CORE_HOSTS, traeCoreCandidates, type TraeRealm } from "./trae-realm";
 
 export interface TraeAdapterOptions {
@@ -115,6 +122,17 @@ class TraeAdapter implements ProviderAdapter {
     const version = getTraeVersion();
     const auth = traeAuth(secret, context.credential.account_id);
     const body = buildTraeChatBody(modelId, request, this.realm);
+    /**
+     * The endpoint follows the model, not the provider.
+     *
+     * Trae's two surfaces are disjoint and neither serves the other's ids, so
+     * the roster's own `endpoint_path` decides. Falling back to the agent path
+     * rather than the chat one matters: the intl catalog is agent-only, and a
+     * caller whose target carries no route would otherwise land on a surface
+     * that rejects every model in it.
+     */
+    const agentSurface = isTraeAgentEndpoint(candidate.endpoint_path);
+    const payload = agentSurface ? toTraeAgentBody(body) : body;
     const headers = buildTraeHeaders({
       realm: this.realm,
       token: auth.token,
@@ -124,16 +142,17 @@ class TraeAdapter implements ProviderAdapter {
     });
 
     const primary = traeCoreForAccount(this.realm, context.credential.auth_state);
+    const path = agentSurface ? TRAE_AGENT_ENDPOINT : TRAE_CHAT_ENDPOINT;
     const url =
       candidate.endpoint_path && candidate.endpoint_path.startsWith("http")
         ? candidate.endpoint_path
-        : `${primary}${TRAE_CHAT_ENDPOINT}`;
+        : `${primary}${path}`;
 
     try {
       const response = await outboundFetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
         signal: lifecycle.signal,
       });
       if (!response.ok) throw await mapUpstreamHttpError(response, this.provider_id);

@@ -62,51 +62,50 @@ const TRAE_CN_ROWS: readonly TraeModelRow[] = [
 ];
 
 /**
- * Intl roster, every row confirmed by a real completion on a live SG account.
+ * Intl roster: the IDE picker's models, every row confirmed by a real
+ * completion on a live SG account.
  *
- * Two surfaces are mixed here and that is deliberate: upstream splits them and
- * a client that only knows one sees half the catalog. Chat rows are answered by
- * `llm_raw_chat` and keyed by `model_name`; agent rows are answered by
- * `llm_utils_chat` and keyed by `config_name`. See
+ * Agent-only, and that is a deliberate narrowing rather than an oversight.
+ * Trae serves two disjoint surfaces and the legacy chat roster (`gpt-4o`,
+ * `gemini_2.5_flash`, `deepseek-V3`, …) belongs to the other one: those ids
+ * are rejected here with `4001 param is invalid`, and the agent ids are
+ * rejected there with `4023 model is unknown`. There is no call that serves
+ * both, so a single-surface catalog is the only honest one; offering the chat
+ * ids would advertise models this provider's dispatch cannot reach. See
  * `documentation/research/trae-agent-vs-chat-surface.md`.
  *
- * The legacy DeepSeek entries (`deepseek-R1`, `deepseek-V3`, `deepseek-V3-0324`)
- * are dropped: the picker's DeepSeek-V4 row supersedes them and the old ids add
- * three near-duplicates to a list where one suffices.
+ * `ctx` is the **selectable maximum** (`context_window_tokens.max`), not the
+ * active `dev` window. Upstream advertises both and they differ by up to 5x
+ * (DeepSeek-V4 rows: 200k active, 1M selectable), so reading `dev` makes a
+ * client under-request the window it is entitled to. The maximum is per model
+ * and is **not** uniform: the GPT rows cap at 272k and Kimi-K2.5 / MiniMax-M2.7
+ * offer no selectable upgrade at all, staying at 200k. `out` is
+ * `model_detail_list[0].max_tokens`, likewise per model — 32k or 64k.
  *
- * `claude3.5` and `aws_sdk_claude37_sonnet` are served by `model_list` but
- * answer `3003 all models failed`, so they stay absent — a roster row that
- * cannot complete is worse than a missing one.
+ * `glm-5.2` is absent: it is in the harness's id map but not in any account
+ * config list, and answers `4001` identically to a bogus id.
  *
- * Numbers come from `batch_get_detail_param`: `context_window_tokens.dev` for
- * the window and `model_detail_list[0].max_tokens` for the output cap. Agent
- * rows report their real upstream in `timing_cost.provider_model_name`, which
- * is often not the id sent (DeepSeek-V4.1-Flash resolves to `ep-2026…-69njn`),
- * so the id is the config name, never the resolved one.
+ * Rows report their real upstream in `timing_cost.provider_model_name`, which
+ * is usually not the id sent (DeepSeek-V4.1-Flash resolves to
+ * `ep-2026…-69njn`), so the id is always the config name, never the resolved
+ * one.
  */
 const TRAE_INTL_ROWS: readonly TraeModelRow[] = [
-  // chat surface — the account's `model_list?type=chat` rows that complete
-  { id: "gemini-2.5-pro-preview-03-25", displayName: "gemini-2.5-pro-preview-03-25", ctx: 1000000, out: 32768, vision: true, reasoning: true },
-  { id: "gemini_2.5_flash", displayName: "gemini_2.5_flash", ctx: 1000000, out: 32768, vision: true, reasoning: false },
-  { id: "gpt-4.1-2025-04-14", displayName: "gpt-4.1-2025-04-14", ctx: 1000000, out: 32768, vision: true, reasoning: false },
-  { id: "gpt-4o", displayName: "gpt-4o", ctx: 1000000, out: 32768, vision: true, reasoning: false },
-  // agent surface — the IDE picker's roster
   { id: "gpt-5.4", displayName: "GPT-5.4", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5.2", displayName: "GPT-5.2", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
-  { id: "gpt-5.2-codex-paygo", displayName: "gpt-5.2-codex-paygo", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gpt-5.2-codex-paygo", displayName: "GPT-5.2-Codex", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5.1-paygo", displayName: "GPT-5.1", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
   { id: "gpt-5-paygo", displayName: "GPT-5", ctx: 272000, out: 32000, vision: true, reasoning: true, surface: "agent" },
-  { id: "Dola-Seed-2.0-Code", displayName: "Seed-2.1-Turbo", ctx: 200000, out: 32000, vision: true, reasoning: true, surface: "agent" },
-  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
-  { id: "deepseek-v4-flash-0731", displayName: "DeepSeek-V4-Flash", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
-  { id: "deepseek-v4-pro-0813", displayName: "DeepSeek-V4-Pro", ctx: 200000, out: 64000, vision: false, reasoning: true, surface: "agent" },
-  { id: "kimi-k3", displayName: "Kimi-K3", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
-  { id: "kimi-k2.7-code", displayName: "Kimi-K2.7-Code", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "Dola-Seed-2.0-Code", displayName: "Seed-2.1-Turbo", ctx: 1000000, out: 32000, vision: true, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash", ctx: 1000000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4-flash-0731", displayName: "DeepSeek-V4-Flash", ctx: 1000000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "deepseek-v4-pro-0813", displayName: "DeepSeek-V4-Pro", ctx: 1000000, out: 64000, vision: false, reasoning: true, surface: "agent" },
+  { id: "kimi-k3", displayName: "Kimi-K3", ctx: 1000000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "kimi-k2.7-code", displayName: "Kimi-K2.7-Code", ctx: 1000000, out: 64000, vision: true, reasoning: true, surface: "agent" },
   { id: "kimi-k2.5", displayName: "Kimi-K2.5", ctx: 200000, out: 32000, vision: false, reasoning: true, surface: "agent" },
-  { id: "gemini-3.1-pro", displayName: "Gemini-3.1-Pro-Preview", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
-  { id: "gemini-3.1-pro-paygo", displayName: "Gemini-3.1-Pro-Preview", ctx: 200000, out: 32000, vision: true, reasoning: true, surface: "agent" },
-  { id: "gemini-3-flash-solo", displayName: "Gemini-3-Flash-Preview", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
-  { id: "minimax-m3", displayName: "MiniMax-M3", ctx: 200000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gemini-3.1-pro", displayName: "Gemini-3.1-Pro-Preview", ctx: 1000000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "gemini-3-flash-solo", displayName: "Gemini-3-Flash-Preview", ctx: 1000000, out: 64000, vision: true, reasoning: true, surface: "agent" },
+  { id: "minimax-m3", displayName: "MiniMax-M3", ctx: 1000000, out: 64000, vision: true, reasoning: true, surface: "agent" },
   { id: "minimax-m2.7", displayName: "MiniMax-M2.7", ctx: 200000, out: 32000, vision: false, reasoning: true, surface: "agent" },
 ];
 

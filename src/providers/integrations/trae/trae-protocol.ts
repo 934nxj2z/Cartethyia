@@ -13,7 +13,14 @@
 // `iter_events` in `trae_client.py`).
 
 import type { CanonicalRequest, ContentPart } from "../../../protocol/canonical-model";
-import { TRAE_CHAT_PATH, TRAE_MODEL_LIST_PATH, TRAE_REALMS, type TraeRealm } from "./trae-realm";
+import {
+  TRAE_AGENT_CHAT_PATH,
+  TRAE_AGENT_FUNCTION,
+  TRAE_CHAT_PATH,
+  TRAE_MODEL_LIST_PATH,
+  TRAE_REALMS,
+  type TraeRealm,
+} from "./trae-realm";
 
 /** Upstream chat body. */
 export interface TraeChatBody {
@@ -229,7 +236,47 @@ export function buildTraeModelListBody(): Record<string, unknown> {
 }
 
 export const TRAE_CHAT_ENDPOINT = TRAE_CHAT_PATH;
+export const TRAE_AGENT_ENDPOINT = TRAE_AGENT_CHAT_PATH;
 export const TRAE_MODEL_LIST_ENDPOINT = TRAE_MODEL_LIST_PATH;
+
+/**
+ * Rewrites a chat-surface body into the agent surface's shape.
+ *
+ * Two changes, both required and neither optional:
+ *
+ * 1. The model key moves from `model_name` to `config_name`, and
+ *    `config_source: 1` is added. Without `config_source` the server resolves
+ *    the right upstream model and then streams nothing at all, which presents
+ *    as a broken model rather than a missing field.
+ * 2. `function` selects the roster. Without it the call fails before model
+ *    resolution with `[LLMUtilsChat.resolveByUsage] function is empty`.
+ *
+ * Everything else — messages, generation controls, session id — is carried
+ * over unchanged; the agent surface reads the same message shape.
+ */
+export function toTraeAgentBody(body: TraeChatBody): Record<string, unknown> {
+  const draft = body as unknown as Record<string, unknown>;
+  const rewritten: Record<string, unknown> = { function: TRAE_AGENT_FUNCTION };
+  for (const [key, value] of Object.entries(draft)) {
+    if (key === "model_name") continue;
+    rewritten[key] = value;
+  }
+  rewritten["config_name"] = draft["model_name"];
+  rewritten["config_source"] = 1;
+  return rewritten;
+}
+
+/**
+ * True when a dispatch target belongs to the agent surface.
+ *
+ * Compared by suffix so an absolute URL target still resolves: a catalog row
+ * may carry a full `https://…/api/agent/v3/llm_utils_chat` rather than a bare
+ * path, and prefixing host logic elsewhere must not flip the surface.
+ */
+export function isTraeAgentEndpoint(endpointPath: string | null | undefined): boolean {
+  if (typeof endpointPath !== "string" || endpointPath.length === 0) return true;
+  return endpointPath.endsWith(TRAE_AGENT_CHAT_PATH);
+}
 
 /** One parsed SSE frame. */
 export interface TraeSseFrame {
