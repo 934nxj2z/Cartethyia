@@ -66,8 +66,17 @@ const response = await fetch(`${host}/api/agent/v3/llm_utils_chat`, {
 
 const text = await response.text();
 const upstream = (text.match(/"provider_model_name":"([^"]*)"/) ?? [])[1] ?? "-";
+// Both fields, not just `response`: a reasoning config streams its thinking
+// while `response` stays empty until the final frame, so reading only the
+// answer reports an empty result on a model that in fact replied.
 const answer = [...text.matchAll(/"response":"([^"]*)"/g)].map((m) => m[1]).join("").trim();
+const reasoning = [...text.matchAll(/"reasoning_content":"([^"]*)"/g)]
+    .map((m) => m[1])
+    .join("")
+    .trim();
 const error = (text.match(/"message":"([^"]*)"/) ?? [])[1] ?? "";
 
 console.log(`${configName}  http=${response.status}  upstream=${upstream}`);
-console.log(answer ? `answer=${JSON.stringify(answer.slice(0, 40))}` : `error=${error}`);
+if (answer) console.log(`answer=${JSON.stringify(answer.slice(0, 40))}`);
+else if (reasoning) console.log(`answer="" (reasoning only) reasoning=${JSON.stringify(reasoning.slice(0, 40))}`);
+else console.log(`error=${error}`);

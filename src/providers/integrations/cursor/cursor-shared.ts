@@ -25,8 +25,16 @@ export const CURSOR_WEBSITE_URL = `https://${CURSOR_WEBSITE_HOST}`;
  */
 export const CURSOR_OAUTH_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 
-/** Client version sent when no local or remote Cursor build version resolves. */
-export const FALLBACK_CLIENT_VERSION = "cli-2026.07.09-a3815c0";
+/**
+ * Client version sent when no local or remote Cursor build version resolves.
+ *
+ * Kept equal to `VERSION_SOURCES.cursor.fallback`: two fallbacks for one
+ * identity drifted apart (the header sent `cli-2026.07.09-a3815c0` while the
+ * badge reported `cli-2026.10.19-6bbf2c4`), so what the console showed an
+ * operator was not what the request carried. Discovery supersedes both on its
+ * first successful fetch.
+ */
+export const FALLBACK_CLIENT_VERSION = "cli-2026.10.19-6bbf2c4";
 
 /** Connect-RPC paths. Run is served by the discovered agent origin, not the API host. */
 export const RUN_PATH = "/agent.v1.AgentService/Run";

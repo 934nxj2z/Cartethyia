@@ -36,11 +36,12 @@ models resolve through `config_name`, and `model_name` is **ignored** on the age
 
 ## The chat surface
 
-`model_list` is `GET /api/ide/v1/model_list?type=chat` (from the page's own client,
-`ModelList` in `main.*.js`). It is **per account region**, not per realm. The SG account
-serves exactly nine, and the key field is `name`, not `model_name`. `type` is a string enum
-with exactly one accepted value: `chat`. Every other string (`agent`, `solo_agent`, `all`,
-empty) and every integer `0..12` returns 400.
+`model_list` is `POST /api/ide/v1/model_list` with body `{"type":"chat"}` — upstream
+validates a body, so a bare GET is not the call. It is **per account region**, not per
+realm. The SG account serves exactly nine, and the key field is `model_name`, with `name`
+and `id` as fallbacks. `type` is a string enum with exactly one accepted value: `chat`.
+Every other string (`agent`, `solo_agent`, `all`, empty) and every integer `0..12`
+returns 400.
 
 ```
 claude3.5                 status=true  type=chat_model  multimodal=true   default=true
@@ -273,10 +274,28 @@ derived ids changed nothing — model resolution is not device-gated.
 
 ## What this means for the gateway
 
-- The chat surface is implemented and working, with a roster of the seven verified rows.
-- The agent surface is one additional endpoint and one additional field (`config_source`).
-  It needs its own module: it selects models by `config_name`, reads `reasoning_content`,
-  and terminates on `event: done` — all three differ from the chat adapter.
-- Read the picker roster from `batch_get_detail_param` with `functions: ["solo_agent"]`,
-  filter `usage == "chat_completion"`, and gate each row on a real completion before
-  publishing it. Do not trust the binary's id map.
+Reflecting what shipped, not what this file first proposed.
+
+- **The intl catalog is agent-only.** The two surfaces share no model id, so a
+  single-surface catalog is the only honest one. Every intl row carries
+  `surface: "agent"` and dispatches to {@link TRAE_AGENT_CHAT_PATH}; a test
+  asserts that for each row and asserts the legacy chat ids are gone. CN remains
+  on the chat path with its own roster.
+- **The agent surface is three fields, not one.** `toTraeAgentBody` renames
+  `model_name` to `config_name` and adds both `config_source: 1` and
+  `function: "solo_agent"` — the table above proves each is load-bearing. It
+  lives inside the same adapter, selected by the *row's* endpoint, and is the
+  default: a target with no route resolves to the agent path rather than
+  silently landing on a surface that rejects every model in the roster.
+- **Discovery is `/model/list`, not the config endpoint.** `discoverTraeModels`
+  POSTs `{"type":"chat"}` (upstream requires a body, so it is not a bare GET)
+  and reads `model_name` first, falling back to `name` then `id`.
+  `batch_get_detail_param` with `functions: ["solo_agent"]` remains the way to
+  enumerate the picker's configs — that is how the 17-model sweep below was
+  built — but no shipped code filters on `usage`.
+- **Reasoning arrives on its own field.** A client must read both `response` and
+  `reasoning_content`; the answer often stays empty until the final frame.
+- **Tool calling is declared with `parameters` as a JSON string** (upstream
+  types it as a Go `string` and rejects an object), and returns `function_call`
+  rather than OpenAI's `function`, spread across frames whose `id` is present
+  exactly when the arguments are not.
