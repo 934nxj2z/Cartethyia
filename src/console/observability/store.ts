@@ -308,9 +308,34 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     );
   }
 
+  /**
+   * Same two numbers `computeHealth` reports, read fresh.
+   *
+   * Deliberately not `computeHealth`: that also scans 24 h of telemetry files,
+   * which is exactly the cost the cache exists to avoid, and a memory watcher
+   * polling every 10 s must not pay it. Kept in the store so the percentage
+   * has one definition rather than two.
+   */
+  async liveMemory(): Promise<{ memory_bytes: number; memory_percent: number }> {
+    const memory = process.memoryUsage();
+    return {
+      memory_bytes: memory.rss,
+      memory_percent: Math.round((memory.rss / Math.max(totalmem(), 1)) * 10000) / 100,
+    };
+  }
+
   private async computeHealth(tenantId: string): Promise<SystemHealthResponse> {
     const memory = process.memoryUsage();
-    const cpuPercent = Math.round((loadavg()[0]! / Math.max(cpus().length, 1)) * 10000) / 100;
+    // `loadavg()` is [0, 0, 0] on every Windows build — there is no such
+    // syscall and Node reports a zeroed tuple rather than failing. Divided by
+    // cores that is a confident-looking 0.0% on a busy gateway, which is worse
+    // than saying nothing: an operator reads it as "idle" and stops looking.
+    // Reported as unavailable instead of as a measurement.
+    const load = loadavg()[0] ?? 0;
+    const cpuPercent =
+      process.platform === "win32" || load === 0
+        ? Number.NaN
+        : Math.round((load / Math.max(cpus().length, 1)) * 10000) / 100;
 
     let databaseHealthy = true;
     let total = 0;

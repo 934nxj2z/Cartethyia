@@ -34,7 +34,13 @@ import {
 import { createResponsesCompactHandler } from "../transport/dispatch/responses-compact";
 import { createSystemoneHandler } from "../transport/dispatch/systemone";
 import { createWebsearchHandler } from "../transport/dispatch/websearch";
-import { createImageGenerationHandler, createVideoGenerationHandler } from "../transport/dispatch/generation";
+import {
+  createAudioSpeechHandler,
+  createAudioTranscriptionHandler,
+  createEmbeddingHandler,
+  createImageGenerationHandler,
+  createVideoGenerationHandler,
+} from "../transport/dispatch/generation";
 import { createTokenCountHandler } from "../transport/dispatch/token-count";
 
 import { createTransportPipeline } from "../transport/guards/pipeline";
@@ -515,6 +521,13 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     // Mounted with no model behind it on purpose: the surface exists so it can
     // be finished when an upstream is known, rather than 404ing like a typo.
     const handleVideoGeneration = createVideoGenerationHandler(generationDeps);
+    // Passthrough surfaces: routed and accounted for, but never interpreted.
+    // No bundled adapter implements embeddings or audio, and inventing a wire
+    // for them would be a guess; what these need to be useful is the route, the
+    // pipeline, and a compatible upstream behind it.
+    const handleEmbedding = createEmbeddingHandler(generationDeps);
+    const handleAudioTranscription = createAudioTranscriptionHandler(generationDeps);
+    const handleAudioSpeech = createAudioSpeechHandler(generationDeps);
     // Shares the generation dependency bundle: same pipeline, and a count is
     // neither chat-shaped nor generation-shaped, so it needs exactly the same
     // routing, leasing, and accounting surface.
@@ -536,6 +549,9 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         routes.post("/search", handleWebsearch);
         routes.post("/images/generations", handleImageGeneration);
         routes.post("/videos/generations", handleVideoGeneration);
+        routes.post("/embeddings", handleEmbedding);
+        routes.post("/audio/transcriptions", handleAudioTranscription);
+        routes.post("/audio/speech", handleAudioSpeech);
         routes.get("/models", handleModelsList);
         routes.get("/models/info", handleModelsDetail);
         routes.get("/models/*", handleModelsDetail);

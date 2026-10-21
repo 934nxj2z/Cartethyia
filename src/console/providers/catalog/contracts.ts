@@ -87,6 +87,9 @@ const VALID_SERVICE_KINDS: Record<ServiceKind, true> = {
   websearch: true,
   imageGeneration: true,
   videoGeneration: true,
+  embedding: true,
+  audioTranscription: true,
+  audioSpeech: true,
 };
 
 export function isServiceKind(value: unknown): value is ServiceKind {

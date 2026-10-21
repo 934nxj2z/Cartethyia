@@ -333,10 +333,14 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
         health.database_in_process ? "In-process DB included" : undefined,
       ].filter(Boolean).join(" · ") || undefined
     : undefined;
+  // Load average has no equivalent on Windows, so an unavailable reading is
+  // the honest result there rather than a measured 0%.
   const cpuDetail = health
-    ? Number.isFinite(health.cpu_cores) && health.cpu_cores > 0
-      ? `1-min load · ${health.cpu_cores} cores`
-      : "Normalized 1-min load"
+    ? Number.isFinite(health.cpu_percent)
+      ? Number.isFinite(health.cpu_cores) && health.cpu_cores > 0
+        ? `1-min load · ${health.cpu_cores} cores`
+        : "Normalized 1-min load"
+      : "Not reported on this platform"
     : undefined;
 
   return (

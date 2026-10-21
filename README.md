@@ -85,18 +85,21 @@ and change routing without restarting anything.
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 
 
-| Route                    | For                                       |
-| ------------------------ | ----------------------------------------- |
-| `/v1/chat/completions`   | OpenAI-style chat                         |
-| `/v1/responses`          | Responses API, including Codex tools      |
-| `/v1/messages`           | Anthropic Messages, including Claude Code |
-| `/v1/models`             | What this key can call                    |
-| `/v1/completions`        | Legacy text completions                   |
-| `/v1/responses/compact`  | Responses compaction                      |
-| `/v1/search`             | Web search                                |
-| `/v1/systemone`          | System One                                |
-| `/v1/images/generations` | Image generation                          |
-| `/v1/videos/generations` | Video generation                          |
+| Route                      | For                                       |
+| -------------------------- | ----------------------------------------- |
+| `/v1/chat/completions`     | OpenAI-style chat                         |
+| `/v1/responses`            | Responses API, including Codex tools      |
+| `/v1/messages`             | Anthropic Messages, including Claude Code |
+| `/v1/models`               | What this key can call                    |
+| `/v1/completions`          | Legacy text completions                   |
+| `/v1/responses/compact`    | Responses compaction                      |
+| `/v1/search`               | Web search                                |
+| `/v1/systemone`            | System One                                |
+| `/v1/images/generations`   | Image generation                          |
+| `/v1/videos/generations`   | Video generation                          |
+| `/v1/embeddings`           | Embeddings                                |
+| `/v1/audio/transcriptions` | Speech to text                            |
+| `/v1/audio/speech`         | Text to speech                            |
 
 
 Generation routes take an opaque body and let the provider's own adapter shape
@@ -107,6 +110,12 @@ among bundled providers only CodeBuddy and WorkBuddy declare it, via
 rather than returning a clip inline. A custom provider is not restricted to
 those: any upstream you point it at can serve either route, and the remote's
 own error is what comes back if it does not.
+
+Embeddings and both audio routes are **passthrough**: the gateway routes them,
+applies admission and accounting, and forwards the body untouched. No bundled
+adapter implements them — there is no wire here to translate — so they are
+useful against a compatible upstream you configure yourself, and a model row
+carrying the matching service kind is all that is needed.
 
 The route picks the wire. After that, routing, admission, retry, and accounting
 are the same.

@@ -118,6 +118,16 @@ they have not been pushed.
   **selectable** context maximum rather than the active one — 180k was being
   published where 1M is selectable — and the live list is cached 300 s per realm.
 
+- **`/v1/embeddings`, `/v1/audio/transcriptions`, and `/v1/audio/speech`** are
+  open as **passthrough** surfaces. The gateway routes them, applies admission,
+  leasing, failover, and accounting, and forwards the body untouched — no
+  bundled adapter implements them, because there is no wire here to translate.
+  They are useful against a compatible upstream you configure yourself, and a
+  model row carrying the matching service kind is all that is needed. These
+  three had previously been listed in the route table with no handler behind
+  them, so they advertised a surface that 404d; a test pinned that absence, and
+  both are updated.
+
 - **`/v1/images/generations` and `/v1/videos/generations`** are exposed on the
   gateway. Both take an opaque body and let the provider's own adapter shape it,
   so what a model accepts is what that provider accepts. Images are served by
@@ -334,6 +344,22 @@ they have not been pushed.
 - **"Test all" reports progress, not a verdict.** It showed pass/fail per
   account while still running, so a partial sweep read as a result. It now shows
   `Tested N/M`.
+
+- **The memory watcher reads memory that is actually current.** The
+  notifications feed sampled RSS through `health`, which is cached for 10 s —
+  and it samples on that exact cadence, so consecutive samples could be the same
+  cached bytes. A growth trend over identical samples cannot fire, and a spike
+  could be reported up to 10 s late with a value from before it. It now reads
+  process memory directly, which costs nothing and is never stale. The cached
+  `health` read is unchanged for the dashboard tile, which is what the cache is
+  for.
+
+- **CPU load no longer reports a fake 0.0% on Windows.** `loadavg()` is
+  `[0, 0, 0]` on every Windows build — there is no such syscall and Node returns
+  a zeroed tuple rather than failing — so divided by cores it produced a
+  confident "0.0%" on a busy gateway, which reads as idle. Reported as
+  unavailable instead, and the tile says load average is not reported on this
+  platform.
 
 ## [2.4.6] — 2026-10-18
 

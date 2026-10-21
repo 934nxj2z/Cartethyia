@@ -50,6 +50,12 @@ test("notification stream sends its initial server-measured memory alert", async
           version: "1.0.0",
         },
       }),
+      // The watcher reads memory fresh rather than through the cached health
+      // read, so the stub has to answer the method it actually calls.
+      liveMemory: async () => ({
+        memory_bytes: 900,
+        memory_percent: 90,
+      }),
     } as unknown as ObservabilityStore,
     fetchRelease: async () => null,
   }));
@@ -66,5 +72,37 @@ test("notification stream sends its initial server-measured memory alert", async
   const frame = new TextDecoder().decode(first.value);
   expect(frame).toContain('event: notification');
   expect(frame).toContain('"kind":"memory-high"');
+  await reader.cancel();
+});
+
+test("the memory watcher samples live memory, not the cached health read", async () => {
+  const app = new Elysia().use(createUpdateRoutes({
+    accessResolver: () => ({
+      id: "operator",
+      tenantId: "tenant-1",
+      admissionIdentity: "operator",
+      scopes: ["dashboard:read"],
+    }),
+    observabilityStore: {
+      health: async () => ({
+        value: { memory_bytes: 900, memory_percent: 90, version: "1.0.0" },
+      }),
+      liveMemory: async () => ({ memory_bytes: 1_000, memory_percent: 12.5 }),
+    } as unknown as ObservabilityStore,
+    fetchRelease: async () => null,
+  }));
+
+  const response = await app.handle(
+    new Request("http://localhost/notifications/stream", {
+      signal: AbortSignal.timeout(2_000),
+    }),
+  );
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new Error("notification stream has no body");
+  const first = await reader.read();
+  const frame = new TextDecoder().decode(first.value);
+  // The cached read says 90%; the live one says 12.5%. An alert here means the
+  // watcher is still reading stale bytes, which is the defect being pinned.
+  expect(frame).not.toContain('"kind":"memory-high"');
   await reader.cancel();
 });

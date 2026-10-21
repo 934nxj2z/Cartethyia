@@ -64,6 +64,9 @@ export const NATIVE_SERVICES: readonly NativeServiceRoute[] = [
   { serviceKind: "websearch", path: "/v1/search" },
   { serviceKind: "imageGeneration", path: "/v1/images/generations" },
   { serviceKind: "videoGeneration", path: "/v1/videos/generations" },
+  { serviceKind: "embedding", path: "/v1/embeddings" },
+  { serviceKind: "audioTranscription", path: "/v1/audio/transcriptions" },
+  { serviceKind: "audioSpeech", path: "/v1/audio/speech" },
 ] as const;
 
 /** Paths served by a native service route, for the ingress body/canonical skip. */

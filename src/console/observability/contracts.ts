@@ -280,6 +280,17 @@ export interface ObservabilityStore {
    * list and the detail views — have no cache entry and no validator.
    */
   health(tenantId: string): Promise<CachedResult<SystemHealthResponse>>;
+  /**
+   * Process memory as it is right now, bypassing the read-through cache.
+   *
+   * `health` is cached for 10 s, which is correct for a dashboard tile and
+   * wrong for anything sampling a trend: a memory watcher polling on that same
+   * 10 s cadence reads the cached bytes often enough that consecutive samples
+   * can be identical, and a monotonic-growth test over identical samples is
+   * meaningless. The values are read in-process and cost nothing, so there is
+   * no reason to serve them stale.
+   */
+  liveMemory(): Promise<{ memory_bytes: number; memory_percent: number }>;
   usage(tenantId: string, period: string): Promise<CachedResult<UsageResponse>>;
   listEvents(tenantId: string, limit: number, cursor?: string): Promise<TelemetryEventListPage>;
   getEvent(

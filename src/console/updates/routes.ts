@@ -103,16 +103,19 @@ export function createUpdateRoutes(config: {
           const publishMemory = async (): Promise<void> => {
             if (closed) return;
             try {
-              const health = (await config.observabilityStore.health(tenantId)).value;
               const at = Date.now();
+              // Fresh, not `health`: that read is cached for 10 s and this
+              // samples on that exact cadence, so the cached bytes would make
+              // consecutive samples identical and a growth trend unreadable.
+              const live = await config.observabilityStore.liveMemory();
               samples = [
                 ...samples,
-                { at, rss: health.memory_bytes, percent: health.memory_percent },
+                { at, rss: live.memory_bytes, percent: live.memory_percent },
               ].filter((sample) => at - sample.at <= MEMORY_GROWTH_WINDOW_MS * 2)
                 .slice(-MAX_MEMORY_SAMPLES);
-              const memory = memoryNotifications(samples, memoryState);
-              memoryState = { high: memory.high, growth: memory.growth };
-              for (const notification of memory.notifications) sender.send("notification", notification);
+              const computed = memoryNotifications(samples, memoryState);
+              memoryState = { high: computed.high, growth: computed.growth };
+              for (const notification of computed.notifications) sender.send("notification", notification);
             } catch {
               // A transient check must not terminate the feed or hide later events.
             }
