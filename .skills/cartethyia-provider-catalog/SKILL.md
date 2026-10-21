@@ -49,7 +49,7 @@ runtime discovery:
 | Purpose | International endpoint | Response shape |
 |---|---|---|
 | Desktop picker snapshot / manual investigation | `GET https://www.codebuddy.ai/v3/config`, `GET https://www.workbuddy.ai/v3/config`, or `GET https://www.workbuddy.cn/v3/config` | `data.agents[].models` is the picker roster; `data.models[]` has metadata |
-| Cartethyia account discovery | CodeBuddy: `/v2/enterprises/personal/models`; WorkBuddy variants: `/v2/enterprises/personal/models` | `data.models[]` plus `data.agents[]`; `disabled` and the `cli` agent roster constrain the result |
+| Cartethyia account discovery | intl: `/v3/config` first, falling back to `/v2/enterprises/personal/models`; CN variants: `/console/enterprises/personal/models` | `data.models[]` plus `data.agents[]`; `disabled` and the `cli` agent roster constrain the result |
 
 WorkBuddy CN is the same WorkBuddy client contract on `www.workbuddy.cn`.
 Its desktop client version is fetched from that host's
