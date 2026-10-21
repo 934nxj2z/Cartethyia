@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Merge upstream
-        if: true
+        if: steps.check.outputs.count != '0'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -84,7 +84,7 @@ jobs:
       # Dockerfile merges cleanly and can silently drop a Railway fix. These
       # checks fail the run instead.
       - name: Verify the Railway additions survived
-        if: true
+        if: steps.check.outputs.count != '0'
         run: |
           set -eu
           fail() {
@@ -121,20 +121,20 @@ jobs:
             || fail "Dockerfile pins Bun ${bun_image} but .bun-version is ${bun_expected}"
 
       - name: Lint the Dockerfile
-        if: true
+        if: steps.check.outputs.count != '0'
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
 
       - name: Lint the entrypoint
-        if: true
+        if: steps.check.outputs.count != '0'
         run: |
           shellcheck --version > /dev/null
           shellcheck --shell=sh docker-entrypoint.sh
 
       - name: Boot the entrypoint without any variables
-        if: true
+        if: steps.check.outputs.count != '0'
         run: |
           # The whole point of these changes: a deploy that sets nothing still
           # starts. Runs the entrypoint against a scratch directory, the way the
@@ -176,5 +176,5 @@ jobs:
           echo "All four boot scenarios passed."
 
       - name: Push the merge
-        if: true
+        if: steps.check.outputs.count != '0'
         run: git push origin main
