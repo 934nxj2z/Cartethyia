@@ -87,7 +87,6 @@ export const KILO_MODELS: readonly ModelDefinition[] = [
   // window the router may select into rather than one model's.
   kiloModel("kilo-auto/free", 256_000, 32_768, { reasoning: true }),
   kiloModel("kilo-auto/small", 262_144, 32_768, { vision: true, reasoning: true }),
-  kiloModel("openrouter/auto", 2_000_000, 128_000, { reasoning: true }),
 ];
 
 /**

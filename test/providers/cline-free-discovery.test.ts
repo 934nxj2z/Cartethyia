@@ -112,13 +112,13 @@ describe("cline auto-fetch: free means free", () => {
 });
 
 describe("the shared free roster", () => {
-  test("all three providers carry the same 17 free ids", () => {
+  test("all three providers carry the same 9 free ids", () => {
     const cline = CLINE_MODELS.filter((m) => m.freeTier === true).map((m) => m.modelId).sort();
     const kilo = KILO_FREE_MODELS.filter((m) => m.freeTier === true).map((m) => m.modelId).sort();
     const openrouter = OPENROUTER_FREE_MODELS.filter((m) => m.freeTier === true)
       .map((m) => m.modelId)
       .sort();
-    expect(cline).toHaveLength(17);
+    expect(cline).toHaveLength(9);
     expect(kilo).toEqual(cline);
     expect(openrouter).toEqual(cline);
   });
@@ -131,18 +131,33 @@ describe("the shared free roster", () => {
 
   test("the billed routers are all that remains in the static catalogs", () => {
     // Everything else was a snapshot of one afternoon; discovery is the
-    // authority and the free roster is the offline floor.
+    // authority and the free roster is the offline floor. `openrouter/auto`
+    // left with the rest of the static catalog — it publishes no limits of its
+    // own, so the committed row was a guess about a router's window.
     expect(KILO_MODELS.map((m) => m.modelId).sort()).toEqual([
       "kilo-auto/free",
       "kilo-auto/small",
-      "openrouter/auto",
     ]);
     // `typesafe/jev-1.13` is not a chat row — it is the System One decision
     // route, and deleting it removes a capability rather than a stale entry.
     expect(OPENROUTER_MODELS.map((m) => m.modelId).sort()).toEqual([
-      "openrouter/auto",
       "typesafe/jev-1.13",
     ]);
+  });
+
+  test("the withdrawn free rows are gone from the shared roster", () => {
+    const withdrawn = [
+      "google/gemma-4-26b-a4b-it:free",
+      "google/gemma-4-31b-it:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "poolside/laguna-s-2.1:free",
+      "poolside/laguna-xs-2.1:free",
+      "thinkingmachines/inkling-small:free",
+      "thinkingmachines/inkling:free",
+      "xingchen-agi/xing4.0-29b-a4b:free",
+    ];
+    const ids = OPENROUTER_FREE_MODELS.map((m) => m.modelId);
+    for (const id of withdrawn) expect(ids).not.toContain(id);
   });
 
   test("deepseek v4 is gone from Cline's static seed", () => {
