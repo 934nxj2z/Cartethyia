@@ -28,9 +28,13 @@ RUN bun run dashboard:build
 
 # Railway: boot fallback for a deploy that builds this repo alone. Railway's
 # railway.json cannot declare variables, so without this the container would
-# start with no CARTETHYIA_ENCRYPTION_KEY. Kept optional: a template deploy gets
-# its variables injected by Railway instead and may omit the file.
-COPY .env.railway* ./
+# start with no CARTETHYIA_ENCRYPTION_KEY.
+#
+# No wildcard: a glob would succeed while copying nothing, and the failure would
+# only surface later as a missing /build/.env.railway in the runtime stage. The
+# matching `.dockerignore` negation keeps the file in the build context.
+COPY .env.railway ./
+RUN test -f /build/.env.railway
 
 # Backend build layer: AOT output is required before standalone compilation.
 COPY scripts ./scripts
