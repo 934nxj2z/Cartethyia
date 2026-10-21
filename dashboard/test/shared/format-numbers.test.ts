@@ -117,6 +117,18 @@ describe("formatUptime", () => {
     expect(formatUptime(61)).toBe("1m 1s");
   });
 
+  test("seconds appear under an hour and disappear above it", () => {
+    // A freshly started gateway is watched closely enough that seconds carry
+    // information — "0m 4s" says it just came up, where "0m" would not. Past an
+    // hour nobody is reading the seconds, and printing them pushes the unit
+    // that matters off a narrow tile.
+    expect(formatUptime(4)).toBe("4s");
+    expect(formatUptime(64)).toBe("1m 4s");
+    expect(formatUptime(59 * 60 + 59)).toBe("59m 59s");
+    expect(formatUptime(3600)).toBe("1h 0m");
+    expect(formatUptime(86_400)).toBe("1d 0h");
+  });
+
   test("a negative uptime clamps to zero instead of rendering a negative day", () => {
     // Clock skew between the process and its start timestamp can produce a
     // small negative; the honest display is "just started".

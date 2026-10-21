@@ -35,6 +35,17 @@ export const DISCORD_INVITE_URL = "https://discord.gg/zFcNPJM6qM";
 export const NPM_PACKAGE = "cartethyia";
 export const NPM_PACKAGE_URL = `https://www.npmjs.com/package/${NPM_PACKAGE}`;
 
+/**
+ * The command an operator runs to upgrade a global install.
+ *
+ * Kept here so the console, the CLI's printed instructions, and the docs cannot
+ * disagree about the flag: `-g` is npm's alias for `--global`, and the shorter
+ * one is what people copy by hand.
+ */
+export const NPM_UPDATE_COMMAND = `npm update -g ${NPM_PACKAGE}`;
+/** Removing a global install, offered beside the upgrade in the update dialog. */
+export const NPM_UNINSTALL_COMMAND = `npm uninstall -g ${NPM_PACKAGE}`;
+
 /** One place a reader can obtain the project. */
 export interface SourceLink {
   readonly id: "github-alt" | "github" | "gitlab" | "npm" | "discord";

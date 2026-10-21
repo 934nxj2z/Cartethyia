@@ -24,21 +24,11 @@ const OPENROUTER_REQUIRED_HEADERS: Readonly<Record<string, string>> = {
  * served by the native System One route, never by the chat surface.
  */
 export const OPENROUTER_MODELS: readonly ModelDefinition[] = [
-  // The router, and only the router. A hand-kept catalog of specific ids was a
-  // snapshot of one afternoon: OpenRouter adds and pulls models within days, so
-  // every committed row outside this one drifts out of truth. Discovery is the
-  // authority, and the free roster below is the offline floor.
-  defineModel({
-    id: "openrouter/auto",
-    providerId: OPENROUTER_PROVIDER_ID,
-    wireFamily: "chat",
-    endpoint: "/chat/completions",
-    // The catalog publishes no limits for a router (pricing is -1, meaning
-    // "decided at dispatch"), so this is the largest window it may select into.
-    ctx: 2_000_000,
-    out: 128_000,
-    reasoning: true,
-  }),
+  // No committed chat rows. OpenRouter adds and pulls models within days, so a
+  // hand-kept list of ids drifts out of truth and discovery is the authority;
+  // the free roster below stays as the offline floor. `openrouter/auto` was the
+  // last committed chat row and went with the rest of the static catalog — it
+  // publishes no limits of its own anyway, since a router's pricing is -1.
   // Not a chat row: it answers `{answers}` to a `{state, questions}` body, and
   // is served by the native System One route. Kept because deleting it removes
   // that route, which is a capability, not a stale catalog entry.

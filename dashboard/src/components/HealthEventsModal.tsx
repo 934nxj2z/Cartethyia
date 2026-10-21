@@ -137,12 +137,14 @@ export function HealthEventsModal({
           >
             Transition Events & Audit ({events.length})
           </h4>
+          {/* `compact` throughout: these render in a dialog body rather than a
+              route, so they must not reserve the route-level centering floor. */}
           {query.isPending ? (
-            <LoadingState label="Loading health events..." />
+            <LoadingState compact label="Loading health events..." />
           ) : query.isError ? (
-            <ErrorState message="Failed to load health events" onRetry={() => void query.refetch()} />
+            <ErrorState compact message="Failed to load health events" onRetry={() => void query.refetch()} />
           ) : events.length === 0 ? (
-            <EmptyState title="No health events recorded" message={summary.emptyMessage} icon={<Activity size={20} />} />
+            <EmptyState compact title="No health events recorded" message={summary.emptyMessage} icon={<Activity size={20} />} />
           ) : (
             <div className="rounded-inset border border-inner-border">
               <DataTable

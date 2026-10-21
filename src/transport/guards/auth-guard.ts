@@ -6,7 +6,7 @@ import { GatewayError } from "../../protocol/gateway-error";
 import type { ProxyRequestStateStore } from "../request/state";
 import { fastPathname } from "../pathname";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
-import { requestToken, resolveApiKeyAuthorization } from "../../security/api-key-auth";
+import { requestToken, resolveApiKeyAuthorization, unknownApiKeyError } from "../../security/api-key-auth";
 import {
   deniedClientRouter,
   detectClientRouter,
@@ -65,8 +65,7 @@ export function createApiKeyAuthenticationMiddleware(deps: {
           "cartethyia",
         );
       });
-      if (!authorization)
-        throw new GatewayError("invalid_request", 401, "This API key is unknown, revoked, or expired. Issue a new key and send it as: Authorization: Bearer <key>.");
+      if (!authorization) throw unknownApiKeyError();
       const decision = createAccessDecision({
         id: authorization.id,
         tenantId: authorization.tenantId,

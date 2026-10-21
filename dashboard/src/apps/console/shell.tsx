@@ -33,12 +33,14 @@ import { BackgroundLayer } from "../../features/customization/BackgroundLayer";
 import { applyCustomization, readCustomizationSettings } from "../../features/customization/settings";
 import { consoleRequest } from "../../data/api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { UpdateDialog, readDismissedUpdate, dismissUpdate } from "../../components/UpdateDialog";
 import { clearPersistedCache, queryClient } from "../../data/query-client";
 import { prefetchRouteIntent } from "../../data/route-prefetch";
 import { useSystemHealth, useLatestRelease, useNotifications } from "../../hooks/system";
 import { useProviders } from "../../hooks/providers";
 import { DASHBOARD_RELEASE_LABEL, DASHBOARD_VERSION } from "../../lib/version";
-import { GITHUB_ALT_RELEASES_URL, GITHUB_ALT_REPO_URL } from "../../lib/links";
+import { formatUptime } from "../../lib/format/numbers";
+import { GITHUB_ALT_REPO_URL } from "../../lib/links";
 import { isNewerRelease, type SystemHealthResponse } from "../../data/contracts";
 import type { SessionUser } from "../../data/contracts";
 
@@ -223,21 +225,6 @@ const UTC_CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   timeZone: "UTC",
 });
 
-function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "Unavailable";
-  const totalSeconds = Math.floor(seconds);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const totalHours = Math.floor(totalMinutes / 60);
-  const hours = totalHours % 24;
-  const days = Math.floor(totalHours / 24);
-  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
-  return `${totalMinutes}m`;
-}
-
 function formatProcessRss(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unavailable";
   const unit = bytes >= 1024 ** 3
@@ -273,7 +260,14 @@ function MetricTile({
   );
 }
 
-function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
+function NotificationsPopover({
+  health,
+  onOpenUpdate,
+}: {
+  health?: SystemHealthResponse;
+  /** Opens the update dialog. A release alert is answered there, not on GitHub. */
+  onOpenUpdate: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -335,8 +329,13 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
     : undefined;
   // Load average has no equivalent on Windows, so an unavailable reading is
   // the honest result there rather than a measured 0%.
+  // Narrowed once: `cpu_percent` is `number | null`, and every consumer needs
+  // the same check. `Number.isFinite` proves it is a number at runtime but does
+  // not narrow the type, so this is the one `!== null` that does.
+  const cpuPercent = health?.cpu_percent ?? undefined;
+  const cpuMeasured = cpuPercent !== undefined && Number.isFinite(cpuPercent);
   const cpuDetail = health
-    ? Number.isFinite(health.cpu_percent)
+    ? cpuMeasured
       ? Number.isFinite(health.cpu_cores) && health.cpu_cores > 0
         ? `1-min load · ${health.cpu_cores} cores`
         : "Normalized 1-min load"
@@ -419,14 +418,28 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
                           </span>
                         </span>
                         {notification.href ? (
-                          <a
-                            className="shrink-0 text-badge font-semibold text-accent"
-                            href={notification.href}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Release
-                          </a>
+                          // A release alert opens the update dialog rather than
+                          // the release page: the page shows what changed, not
+                          // how to install, and the console is the thing that
+                          // can answer that. Other kinds keep their link.
+                          notification.kind === "update-available" ? (
+                            <button
+                              type="button"
+                              className="shrink-0 text-badge font-semibold text-accent"
+                              onClick={onOpenUpdate}
+                            >
+                              Update
+                            </button>
+                          ) : (
+                            <a
+                              className="shrink-0 text-badge font-semibold text-accent"
+                              href={notification.href}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open
+                            </a>
+                          )
                         ) : null}
                       </article>
                     ))}
@@ -466,8 +479,8 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
                   <MetricTile
                     icon={Cpu}
                     label="CPU load"
-                    value={health && Number.isFinite(health.cpu_percent)
-                      ? `${health.cpu_percent.toFixed(1)}%`
+                    value={cpuMeasured && cpuPercent !== undefined
+                      ? `${cpuPercent.toFixed(1)}%`
                       : "Unavailable"}
                     detail={cpuDetail}
                     title="One-minute load average normalized by the number of CPU cores."
@@ -661,6 +674,7 @@ export function DashboardShell({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const healthQuery = useSafeSystemHealth();
   const releaseQuery = useLatestRelease();
   // The running version is the gateway's, not the bundled dashboard's: the
@@ -670,6 +684,21 @@ export function DashboardShell({
   const latestTag = releaseQuery.data?.tag_name?.replace(/^v/, "");
   const updateAvailable = isNewerRelease(localVersion, latestTag);
   const providersQuery = useProviders();
+  // Prompts once per release, not once per load: the point of showing it at all
+  // is that an operator running an old version may never think to look. But a
+  // dialog that returns on every navigation punishes the person who has already
+  // decided not to upgrade, so dismissing records the version and the prompt
+  // stays away until a newer one is published.
+  const promptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!updateAvailable || latestTag === undefined) return;
+    if (readDismissedUpdate() === latestTag) return;
+    // The release query can settle more than once; without this the dialog
+    // would reopen after the operator closed it, within the same page life.
+    if (promptedRef.current === latestTag) return;
+    promptedRef.current = latestTag;
+    setUpdateOpen(true);
+  }, [updateAvailable, latestTag]);
 
   const prefetchIntent = (path: string): void => {
     void prefetchRouteIntent(queryClient, path);
@@ -752,20 +781,24 @@ export function DashboardShell({
               <div className="brand-version-badge">
                 <a href={GITHUB_ALT_REPO_URL} target="_blank" rel="noreferrer" className="brand-version-link">{DASHBOARD_RELEASE_LABEL}</a>
                 {updateAvailable ? (
-                  <a
-                    href={releaseQuery.data?.html_url ?? GITHUB_ALT_RELEASES_URL}
-                    target="_blank"
-                    rel="noreferrer"
+                  // A button, not a link to GitHub: the badge says an update
+                  // exists and the dialog tells the operator how to install it.
+                  // Sending them to a release page instead left them to work
+                  // out the npm command themselves, on a page that does not
+                  // mention it.
+                  <button
+                    type="button"
+                    onClick={() => setUpdateOpen(true)}
                     className="brand-update-badge"
                     title={
                       latestTag === undefined
-                        ? "A newer Cartethyia release is available on GitHub"
-                        : `Update available on GitHub: v${latestTag}`
+                        ? "A newer Cartethyia release is available"
+                        : `Update available: v${latestTag} — how to install it`
                     }
                   >
                     <Rocket size={9} className="shrink-0" aria-hidden="true" />
                     {latestTag === undefined ? "update" : `Update v${latestTag}`}
-                  </a>
+                  </button>
                 ) : null}
               </div>
             </div>
@@ -829,7 +862,10 @@ export function DashboardShell({
 
             <div className="topbar-actions">
               <ThemeToggle />
-              <NotificationsPopover health={healthQuery.data} />
+              <NotificationsPopover
+                health={healthQuery.data}
+                onOpenUpdate={() => setUpdateOpen(true)}
+              />
             </div>
           </header>
 
@@ -849,6 +885,18 @@ export function DashboardShell({
         message="You will need to sign in again to open the console."
         confirmLabel="Sign out"
         danger
+      />
+      <UpdateDialog
+        open={updateOpen}
+        onClose={() => setUpdateOpen(false)}
+        currentVersion={localVersion}
+        {...(latestTag === undefined ? {} : { latestVersion: latestTag })}
+        {...(releaseQuery.data?.html_url === undefined
+          ? {}
+          : { releaseUrl: releaseQuery.data.html_url })}
+        {...(latestTag === undefined
+          ? {}
+          : { onDismissVersion: () => dismissUpdate(latestTag) })}
       />
     </>
   );

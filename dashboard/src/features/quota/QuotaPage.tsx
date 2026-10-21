@@ -123,13 +123,16 @@ function QuotaAccountResetModal({
             {(resets.data?.availableCount ?? 0) === 1 ? "" : "s"}
           </Badge>
         </div>
+        {/* `compact` throughout: these render in a dialog body rather than a
+            route, so they must not reserve the route-level centering floor. */}
 
         {resets.isPending ? (
-          <LoadingState label="Reading saved resets…" />
+          <LoadingState compact label="Reading saved resets…" />
         ) : resets.isError ? (
-          <ErrorState message="Failed to read saved resets" onRetry={() => void resets.refetch()} />
+          <ErrorState compact message="Failed to read saved resets" onRetry={() => void resets.refetch()} />
         ) : credits.length === 0 ? (
           <EmptyState
+            compact
             title="No saved resets"
             message="This account has no saved rate-limit reset credits right now."
             icon={<Zap size={20} />}

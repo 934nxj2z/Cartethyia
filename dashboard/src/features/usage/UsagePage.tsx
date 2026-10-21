@@ -990,6 +990,9 @@ function RequestDetailDrawer({
 
   return (
     <Drawer open={requestId !== null} onClose={onClose} title="Request Detail">
+      {/* `compact` on the error branch: the detail renders in a drawer body,
+          not on a route, so it must not reserve the route-level centering
+          floor. */}
       {detailQuery.isPending ? (
         <Stack gap="12px">
           <div className="animate-pulse h-12 w-[66%] rounded-inset bg-surface-2" />
@@ -997,7 +1000,7 @@ function RequestDetailDrawer({
           <div className="animate-pulse h-48 rounded-control bg-surface-2" />
         </Stack>
       ) : detailQuery.isError || !detail ? (
-        <ErrorState message="Failed to load request detail." onRetry={() => void detailQuery.refetch()} />
+        <ErrorState compact message="Failed to load request detail." onRetry={() => void detailQuery.refetch()} />
       ) : (
         <Stack gap="12px">
           <div className="flex items-center gap-4 rounded-control border border-inner-border bg-surface-2 px-6 py-4 min-w-0">
@@ -1812,22 +1815,20 @@ export default function Usage(): ReactNode {
           }
         />
         <CardBody className="p-0">
+          {/* `compact`: these sit in a card body, not a route, so they must not
+              reserve the route-level 220px centering floor on top of the card's
+              own padding. */}
           {requestsQuery.isPending && requestItems.length === 0 ? (
-            <div className="p-10">
-              <LoadingState label="Loading requests…" />
-            </div>
+            <LoadingState compact label="Loading requests…" />
           ) : requestsQuery.isError && requestItems.length === 0 ? (
-            <div className="p-10">
-              <ErrorState message="Could not load recent requests." onRetry={() => void requestsQuery.refetch()} />
-            </div>
+            <ErrorState compact message="Could not load recent requests." onRetry={() => void requestsQuery.refetch()} />
           ) : requestItems.length === 0 ? (
-            <div className="p-10">
-              <EmptyState
-                title="No requests recorded for this period"
-                message="Route requests through the gateway to populate the table."
-                icon={<Activity size={20} />}
-              />
-            </div>
+            <EmptyState
+              compact
+              title="No requests recorded for this period"
+              message="Route requests through the gateway to populate the table."
+              icon={<Activity size={20} />}
+            />
           ) : (
             <div id="usage-requests-scroll" className="rounded-control border border-inner-border bg-surface-1">
               <RoutingLatencyBar

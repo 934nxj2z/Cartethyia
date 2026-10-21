@@ -96,7 +96,9 @@ export const CLAUDE_MODELS: readonly ModelDefinition[] = [
   claudeMessagesModel("claude-sonnet-5", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-sonnet-4-6", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-opus-4-5", 200_000, 64_000, true),
-  claudeMessagesModel("claude-sonnet-4-5", 1_000_000, 64_000, true),
+  // 200K: the 4.5 trio predates the million-token window, which arrived with
+  // Opus 4.6. Only this row claimed 1M while its own siblings said 200K.
+  claudeMessagesModel("claude-sonnet-4-5", 200_000, 64_000, true),
   claudeMessagesModel("claude-haiku-4-5", 200_000, 64_000, true),
 ];
 

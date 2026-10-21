@@ -124,7 +124,9 @@ const INFERHUB_MODELS_RAW: readonly {
   { id: "cc/claude-opus-4-8", contextLimit: 1000000, outputLimit: 128000 },
   { id: "cc/claude-opus-5", contextLimit: 1000000, outputLimit: 128000 },
   { id: "cc/claude-sonnet-4-5", contextLimit: 200000, outputLimit: 64000 },
-  { id: "cc/claude-sonnet-4-6", contextLimit: 1000000, outputLimit: 64000 },
+  // 128K: Sonnet 4.6 is in the 1M/128K generation, the same as the Opus 4.6
+  // row directly above it and every other 4.6+ row here.
+  { id: "cc/claude-sonnet-4-6", contextLimit: 1000000, outputLimit: 128000 },
   { id: "cc/claude-sonnet-5", contextLimit: 1000000, outputLimit: 128000 },
   // cb/ — CodeBuddy (12 models)
   { id: "cb/claude-opus-4.6", contextLimit: 1000000, outputLimit: 128000 },

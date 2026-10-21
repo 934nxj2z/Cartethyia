@@ -305,6 +305,29 @@ export interface ResolvedApiKey {
   /** Share-template id whose remote CLI mappings are inherited by this child. */
   readonly cliMappingOwnerId?: string;
 }
+
+/**
+ * The 401 a caller gets when a key resolves to nothing.
+ *
+ * One function, not a message repeated at each boundary: three surfaces refuse
+ * an unknown key, and any wording drift between them is a caller guessing which
+ * surface it hit. Unknown, revoked and expired stay deliberately
+ * indistinguishable — distinguishing them would let a caller confirm that a
+ * guessed token once existed — so there is no variant carrying a reason.
+ *
+ * The rotate instruction is unconditional for the same reason. The key that
+ * fails is usually the one seeded at first boot, which cannot be deleted and
+ * only rotates, and an operator hitting this on a personal key loses nothing by
+ * being told the same thing.
+ */
+export function unknownApiKeyError(): GatewayError {
+  return new GatewayError(
+    "authentication_failed",
+    401,
+    "Invalid API key. Rotate the default Cartethyia API key in API Keys and send the new key as: Authorization: Bearer <key>.",
+  );
+}
+
 /** Extracts exactly one supported credential source, preserving public auth statuses. */
 export function requestToken(headers: Headers | Record<string, string>): string {
   const get = (name: string): string | null =>

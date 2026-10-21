@@ -37,6 +37,7 @@ import { resolveByokWireProfile } from "../operations/byok-wire-profile";
 import { recordAccountFailure, recordAccountSuccess } from "../operations/account-health-service";
 import { buildCapabilityProfile } from "../../transport/routing/route-catalog";
 import { classifyUpstreamFailure } from "../../transport/failure-policy";
+import { terminalFailure } from "../../transport/dispatch/attempt-finalize";
 import { GatewayError } from "../../protocol/gateway-error";
 import type { ModelDefinition } from "../provider-model-definition";
 import type { ProviderAdapter, ProviderId } from "../provider-contracts";
@@ -579,13 +580,33 @@ export async function recordProbeHealth(args: {
   readonly invalidator: { invalidate(): unknown } | undefined;
   readonly accountId: string | undefined;
   readonly dispatchError: unknown;
+  /**
+   * The probe's canonical events, when there are any.
+   *
+   * Needed because some adapters deliver a refusal as a terminal event rather
+   * than as a thrown error — Cursor's `resource_exhausted` is the case — so
+   * `dispatchError` stays `undefined` for a Run the upstream refused. Without
+   * the events, that account looked like a success and was recovered.
+   */
+  readonly events?: readonly CanonicalEvent[] | undefined;
   readonly modelId: string;
   readonly upstreamStatusCode: number | undefined;
 }): Promise<void> {
   const { db, invalidator, accountId, dispatchError, modelId, upstreamStatusCode } = args;
-  if (dispatchError !== undefined && accountId) {
+  // A terminal `failed` state is written only by the upstream decoders, so it
+  // is the upstream refusing — the same thing a thrown error would have meant.
+  const terminal = args.events?.find((event) => event.type === "terminal");
+  // Reconstructed through the very function the live dispatch path uses, so a
+  // refusal carries the same code, status, and health classification in both.
+  // Hand-rolling a category here is how the two paths drifted apart.
+  const refusedUpstream =
+    terminal?.type === "terminal" && terminal.state === "failed"
+      ? terminalFailure(terminal)
+      : undefined;
+  const failure = dispatchError ?? refusedUpstream;
+  if (failure !== undefined && accountId) {
     const failureEvidence = {
-      ...classifyUpstreamFailure(dispatchError),
+      ...classifyUpstreamFailure(failure),
       modelId,
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
     };
@@ -593,7 +614,7 @@ export async function recordProbeHealth(args: {
     // already classified as `rate_limit_transient` with a real cooldown by
     // `classifyAccountError`, so writing a status here only clobbered that
     // cooldown with a state nothing recovers from.
-    await recordAccountFailure(db, accountId, dispatchError, failureEvidence)
+    await recordAccountFailure(db, accountId, failure, failureEvidence)
       .then((classification) => {
         if (classification?.mutatesAccount) void invalidator?.invalidate();
       })
@@ -603,7 +624,7 @@ export async function recordProbeHealth(args: {
   // (a cooling account flips back to active instead of staying stale).
   // recordAccountSuccess is a no-op write for already-healthy accounts and
   // never throws.
-  if (dispatchError === undefined && accountId) {
+  if (failure === undefined && accountId) {
     await recordAccountSuccess(db, accountId)
       .then((recovered) => {
         if (recovered) void invalidator?.invalidate();
@@ -703,7 +724,23 @@ export function computeProbeVerdict(args: {
     errorMessage = `${wireFamily} — ${tagged}${upstreamReq ? ` [req ${upstreamReq}]` : ""}`;
 
   } else if (terminal?.type === "terminal" && terminal.state !== "complete") {
-    errorMessage = terminal.stop_reason ?? "Model probe failed";
+    // Read the terminal's own detail before falling back to the stop reason.
+    //
+    // `stop_reason` is a canonical one-word label — "error" — so reporting it
+    // alone turned a Cursor quota refusal into a toast whose entire body was
+    // the word "error". The upstream sentence an operator needs is in
+    // `stop_details`, which is where the adapter parks it and where the live
+    // dispatch path already reads it (see `terminalFailure` in
+    // `attempt-finalize.ts`). The probe path disagreed with the dispatch path
+    // about the same provider response.
+    const detail = terminal.stop_details;
+    const message =
+      typeof detail?.["message"] === "string" && detail["message"].trim().length > 0
+        ? detail["message"].trim()
+        : undefined;
+    const code = typeof detail?.["code"] === "string" ? detail["code"] : undefined;
+    const tag = code === undefined ? "" : ` (${code})`;
+    errorMessage = `${message ?? terminal.stop_reason ?? "Model probe failed"}${tag}`;
   } else {
     errorMessage = undefined;
   }

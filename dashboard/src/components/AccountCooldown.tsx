@@ -49,15 +49,4 @@ export function lastModelCooldownAt(account: ModelCooldownSource): number | null
   return times.length === 0 ? null : Math.max(...times);
 }
 
-/**
- * How many of these accounts have at least one live per-model backoff.
- *
- * A list-level summary has to count the *accounts*, not the backoffs: one
- * account cooling five models is one row the operator should see, and the badge
- * beside it already says how many models that is. Counting raw entries would
- * report a provider with a single account as five separate problems.
- */
-export function modelCoolingCount(accounts: readonly ModelCooldownSource[]): number {
-  return accounts.filter((account) => activeModelCooldowns(account) !== undefined).length;
-}
 

@@ -1155,7 +1155,11 @@ export function StudioPage(): ReactNode {
           >
             New chat
           </Button>
-          {sessions.length === 0 ? <p>No chats yet.</p> : sessions.map((item) => (
+          {/* The session list is a column, so a bare <p> sits flush left.
+              Center it like every other empty state in the dashboard. */}
+          {sessions.length === 0 ? (
+            <p className="self-center text-center text-caption text-text-tertiary">No chats yet.</p>
+          ) : sessions.map((item) => (
             <div key={item.id} className={item.id === session.id ? "flex items-center gap-4 rounded-control p-2 bg-accent-soft" : "flex items-center gap-4 rounded-control p-2"}>
               <button
                 type="button"

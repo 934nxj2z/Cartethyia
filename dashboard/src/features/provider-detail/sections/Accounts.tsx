@@ -27,6 +27,7 @@ import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Inline } from "../../../components/ui/inline";
 import { Stack } from "../../../components/ui/stack";
+import { EmptyState } from "../../../components/ui/state";
 import {
   useCreateProviderAccount,
   useCreateProviderAccountsBatch,
@@ -1067,7 +1068,21 @@ const TEST_ALL_CONCURRENCY = 3;
       </div>
 
       <div className="account-list flex flex-col gap-3 max-h-230 overflow-y-auto pr-1 [container-type:inline-size] [container-name:account-list]" role="list" aria-label="Provider accounts">
-        {sorted.map((account) => (
+        {/* A filter that matches nothing used to render zero rows with only
+            the footer counter to explain why. Say it in the space the rows
+            would have occupied. */}
+        {sorted.length === 0 ? (
+          <EmptyState
+            compact
+            icon={<Search size={20} />}
+            title="No matching accounts"
+            message={
+              normalizedQuery
+                ? `Nothing matches “${normalizedQuery}”. Clear the filter to see all ${accounts.length} account${accounts.length === 1 ? "" : "s"}.`
+                : "This provider has no accounts yet."
+            }
+          />
+        ) : sorted.map((account) => (
           <AccountRow
             key={account.id}
             providerId={providerId}
