@@ -92,6 +92,13 @@ class TraeAdapter implements ProviderAdapter {
   readonly provider_id: ProviderId;
   private readonly realm: TraeRealm;
   private readonly fetchFn: typeof fetch;
+  /**
+   * Maps a frame's `index` to the call id seen for it.
+   *
+   * Argument fragments arrive without the id, so the association has to be
+   * remembered between frames rather than read from the fragment itself.
+   */
+  readonly #toolCallIds = new Map<string, string>();
 
   constructor(options: TraeAdapterOptions = {}) {
     this.provider_id = (options.providerId ?? TRAE_PROVIDER_ID) as ProviderId;
@@ -185,6 +192,16 @@ class TraeAdapter implements ProviderAdapter {
     yield { type: "response_start", sequence_number: seq++, model: requestModel } as CanonicalEvent;
     let stopReason: CanonicalStopReason = "stop";
     let usage: Record<string, unknown> | undefined;
+    /**
+     * Tool calls arrive fragmented across frames and the id is not repeated.
+     *
+     * Upstream streams one `tool_calls` array per frame where only the first
+     * carries `id`, only early frames carry `name`, and `arguments` arrives as
+     * successive JSON fragments. So name is announced once on first sight of
+     * the id and arguments are accumulated; emitting each frame verbatim would
+     * produce several calls with empty ids.
+     */
+    const announced = new Set<string>();
 
     for await (const frame of parseTraeSse(body)) {
       if (frame.event === "done") {
@@ -228,6 +245,7 @@ class TraeAdapter implements ProviderAdapter {
             content: { kind: "reasoning", payload: flatReasoning, summary: flatReasoning },
           } as CanonicalEvent;
         }
+        yield* this.#toolCallDeltas(record["tool_calls"], announced, () => seq++);
         if (typeof record["finish_reason"] === "string") {
           stopReason = STOP_REASONS[record["finish_reason"] as string] ?? "stop";
         }
@@ -277,6 +295,62 @@ class TraeAdapter implements ProviderAdapter {
       state: "complete",
       stop_reason: stopReason,
     } as unknown as CanonicalEvent;
+  }
+
+  /**
+   * Emits canonical tool-call deltas from one `tool_calls` array.
+   *
+   * Upstream nests the payload under `function_call`, not OpenAI's `function`,
+   * and spreads one call over many frames with three different shapes: the
+   * first carries id and name, the middle ones carry `arguments` as successive
+   * JSON fragments with an **empty** id, and the last repeats the id with no
+   * arguments. Grouping by `index` is what ties them together — the id is
+   * absent exactly when the arguments are present, so keying on id would drop
+   * every fragment and yield `arguments: "{}"`.
+   */
+  async *#toolCallDeltas(
+    raw: unknown,
+    announced: Set<string>,
+    nextSeq: () => number,
+  ): AsyncIterable<CanonicalEvent> {
+    if (!Array.isArray(raw)) return;
+    for (const entry of raw) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const call = entry as Record<string, unknown>;
+      const fn = call["function_call"];
+      const fnRecord = typeof fn === "object" && fn !== null ? (fn as Record<string, unknown>) : undefined;
+      const name = typeof fnRecord?.["name"] === "string" ? (fnRecord["name"] as string) : undefined;
+      const args = typeof fnRecord?.["arguments"] === "string" ? (fnRecord["arguments"] as string) : "";
+      const declaredId = typeof call["id"] === "string" ? call["id"] : "";
+      const index = typeof call["index"] === "number" ? call["index"] : 0;
+      const slot = `idx:${index}`;
+
+      if (declaredId.length > 0) {
+        this.#toolCallIds.set(slot, declaredId);
+        // The closing frame repeats a known id with no payload; emitting it
+        // again would append a duplicate empty call.
+        if (announced.has(declaredId)) continue;
+        announced.add(declaredId);
+        yield {
+          type: "tool_call_delta",
+          sequence_number: nextSeq(),
+          call_id: declaredId,
+          name: name ?? "",
+          arguments_delta: "",
+        } as CanonicalEvent;
+        continue;
+      }
+
+      if (args.length === 0) continue;
+      const id = this.#toolCallIds.get(slot);
+      if (id === undefined) continue;
+      yield {
+        type: "tool_call_delta",
+        sequence_number: nextSeq(),
+        call_id: id,
+        arguments_delta: args,
+      } as CanonicalEvent;
+    }
   }
 
   /**

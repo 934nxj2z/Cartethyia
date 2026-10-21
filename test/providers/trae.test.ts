@@ -255,8 +255,32 @@ describe("buildTraeChatBody", () => {
     );
     const call = body.messages[0]?.tool_calls?.[0];
     expect(call?.id).toBe("c1");
-    expect(call?.function.name).toBe("f");
-    expect(call?.function.arguments).toBe('{"a":1}');
+    // `function_call`, not OpenAI's `function`, and Name is required: an
+    // assistant turn replayed with an empty name is rejected before inference
+    // with `required field Name is not set`.
+    expect(call?.function_call.name).toBe("f");
+    expect(call?.function_call.arguments).toBe('{"a":1}');
+  });
+
+  test("tool declarations serialize parameters to a string", () => {
+    // Upstream types `FunctionDefinition.tools.function.parameters` as a Go
+    // string, so a schema object is rejected outright.
+    const body = buildTraeChatBody(
+      "gpt-5.5",
+      request({ tools: [{ name: "get_weather", jsonSchema: { type: "object", properties: { city: { type: "string" } } } }] }),
+      "intl",
+    );
+    const tools = body["tools"] as Array<Record<string, unknown>> | undefined;
+    const fn = tools?.[0]?.["function"] as Record<string, unknown> | undefined;
+    expect(typeof fn?.["parameters"]).toBe("string");
+    expect(JSON.parse(String(fn?.["parameters"])).properties.city.type).toBe("string");
+  });
+
+  test("no tools declared means no tools field", () => {
+    // Sending an empty array still declares the field and upstream validates
+    // it, so an absent declaration must stay absent.
+    const body = buildTraeChatBody("gpt-5.5", request(), "intl");
+    expect("tools" in body).toBe(false);
   });
 
   test("only declared generation fields are forwarded", () => {

@@ -36,6 +36,18 @@ export interface TraeChatBody {
   readonly presence_penalty?: number;
   readonly frequency_penalty?: number;
   readonly session_id?: string;
+  /** Tool declarations; `parameters` is a JSON string, not a schema object. */
+  readonly tools?: readonly TraeToolDeclaration[];
+}
+
+/** One declared tool, in the shape upstream binds. */
+export interface TraeToolDeclaration {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description?: string;
+    readonly parameters: string;
+  };
 }
 
 export interface TraeMessage {
@@ -49,10 +61,19 @@ export type TraeContentPart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "image_url"; readonly image_url: { readonly url: string } };
 
+/**
+ * One tool call, in the shape upstream's protobuf expects.
+ *
+ * The nested key is `function_call`, not OpenAI's `function`, and `Name` is a
+ * **required** field on replay: an assistant turn sent back with
+ * `function: {name: ""}` is rejected before it reaches the model with
+ * `required field Name is not set`. Both spellings therefore have to carry the
+ * name, and the arguments stay a JSON string rather than an object.
+ */
 export interface TraeToolCall {
   readonly id: string;
   readonly type: "function";
-  readonly function: { readonly name: string; readonly arguments: string };
+  readonly function_call: { readonly name: string; readonly arguments: string };
 }
 
 /**
@@ -173,7 +194,7 @@ export function buildTraeChatBody(
         toolCalls.push({
           id: part.call_id,
           type: "function",
-          function: { name: part.name, arguments: toolArguments(part.arguments) },
+          function_call: { name: part.name, arguments: toolArguments(part.arguments) },
         });
         continue;
       }
@@ -216,6 +237,25 @@ export function buildTraeChatBody(
     ai_region: config.region,
     ...(request.session_id ? { session_id: request.session_id } : {}),
   };
+  /**
+   * Tool declarations, with `parameters` serialized to a string.
+   *
+   * Upstream's `FunctionDefinition` types that field as a Go `string`, so an
+   * object is rejected outright: `cannot unmarshal object into Go struct field
+   * FunctionDefinition.tools.function.parameters of type string`. Sending the
+   * schema as a JSON string is the only shape it binds.
+   */
+  const tools = request.tools;
+  if (tools !== undefined && tools.length > 0) {
+    body["tools"] = tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        parameters: toolArguments(tool.jsonSchema),
+      },
+    }));
+  }
   const options: Record<string, unknown> = {
     temperature: controls.temperature,
     top_p: controls.top_p,
