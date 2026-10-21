@@ -62,10 +62,42 @@ under **Settings → Operations**, without a restart.
 - **Upstream timeout**, in seconds (5–600). Applied when the request is
   dispatched, so it can only shorten a deadline that has already started.
 
+- **Max attachment size**, in MB (0.06–100), per image. An oversized inline
+  attachment is refused before send rather than after the upstream rejects it:
+  a block too large poisons every retry and every replayed turn, because the
+  upstream rejects the whole request rather than the one block. A refused block
+  becomes a visible placeholder, never a silent drop, so the model is not left
+  answering a question whose attachment vanished. Applies to the Messages and
+  Gemini wires.
+
+  Raising this asserts your upstreams accept more than the 10 MB default;
+  lowering it is the safer direction. It is per tenant precisely because it is
+  a promise about a provider, not a global resource bound — unlike the ingress
+  body limit below, which cannot be per tenant at all.
+
 - **Telemetry compaction age**, in days (1–365). Hourly files hold every tenant
   together, so the largest age across all tenants wins: compacting later than
   asked only costs disk, while compacting earlier would destroy rows someone
   expected to keep.
+
+### Fixed
+
+- **The backup size limit no longer claims 8 GiB the install cannot accept.**
+  It promised a ceiling far above the listener's own body cap, so the number
+  described a limit nothing could reach: an upload above the listener's cap was
+  cut off before that check ran, failing as a reset connection rather than the
+  413 the constant promised. The bound now follows
+  `CARTETHYIA_SERVER_MAX_BODY_BYTES`, so the message matches what happened and
+  raising that variable is what admits larger backups.
+
+### Not a setting: the request body limit
+
+`CARTETHYIA_SERVER_MAX_BODY_BYTES` (default 4 MB) stays a deployment variable,
+and that is deliberate. It is enforced at ingress — before authentication, when
+the tenant is not yet known — because it is what stops an oversized request
+before it is read into memory. A per-tenant override would require accepting
+and buffering the body first in order to learn whose limit applies, which is
+exactly what the limit exists to prevent.
 
 ### Changed
 

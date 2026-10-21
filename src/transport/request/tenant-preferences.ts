@@ -49,6 +49,32 @@ export async function applyTenantDeadlineOverride(
 }
 
 /**
+ * The tenant's inline-attachment byte ceiling, or `undefined` for the default.
+ *
+ * Read through the shared revision-keyed preference reader, so the cost is a
+ * memory hit rather than a Postgres round trip — this is consulted while
+ * building a request body, on the dispatch path.
+ *
+ * Non-fatal: a settings read outage falls back to the deployment default,
+ * which is the safe direction (the default refuses less, but it never admits
+ * something no upstream will take).
+ */
+export async function resolveTenantImageClampMaxBytes(
+  db: CartethyiaDatabase,
+  tenantId: string | undefined,
+): Promise<number | undefined> {
+  if (tenantId === undefined) return undefined;
+  try {
+    const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
+    const bytes = prefs?.imageClampMaxBytes;
+    if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return undefined;
+    return Math.floor(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Applies request shaping owned by tenant preferences and deployment config:
  * thinking normalization and the Responses reasoning summary override.
  * Failure is non-fatal.

@@ -207,6 +207,9 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       ...(this.config.chat_token_limit_field === undefined
         ? {}
         : { chatTokenLimitField: this.config.chat_token_limit_field }),
+      ...(context.image_clamp_max_bytes === undefined
+        ? {}
+        : { maxBytesOverride: context.image_clamp_max_bytes }),
     });
     if (
       wireFamily !== "messages" &&

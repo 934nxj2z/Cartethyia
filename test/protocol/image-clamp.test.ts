@@ -18,6 +18,7 @@ import {
   type ImageClampReason,
 } from "../../src/protocol/image-clamp";
 import { canonicalToClaudeMessagesPayload } from "../../src/protocol/request/messages";
+import { buildGeminiPayload } from "../../src/protocol/request/gemini";
 import type { CanonicalRequest, ContentPart } from "../../src/protocol/canonical-model";
 
 function imagePayload(bytes: number): { type: string; source: Record<string, unknown> } {
@@ -174,5 +175,90 @@ describe("Claude request path — the clamp runs before send", () => {
       type: "image",
       source: { type: "url", url: "https://example.com/a.png" },
     });
+  });
+});
+
+describe("clampImage with a per-tenant byte ceiling", () => {
+  /**
+   * The override is how a tenant says "my upstreams take more than the
+   * default". What must hold is that it actually moves the decision — an
+   * override that is parsed but ignored would be worse than no setting at all,
+   * because the UI would appear to work while nothing changed.
+   */
+  test("an override raises the ceiling the block is measured against", () => {
+    const over = IMAGE_CLAMP_MAX_BYTES + 1;
+    // Refused at the default…
+    expect(clampImage({ bytes: over }).action).toBe("reject");
+    // …and admitted with the override.
+    expect(clampImage({ bytes: over, maxBytesOverride: over + 1 }).action).toBe("pass");
+  });
+
+  test("an override can also lower it", () => {
+    // The safer direction, and the more common need.
+    expect(clampImage({ bytes: 1000 }).action).toBe("pass");
+    expect(clampImage({ bytes: 1000, maxBytesOverride: 500 }).action).toBe("reject");
+  });
+
+  test("a non-positive or non-finite override falls back to the default", () => {
+    // A malformed preference must not silently admit (or reject) everything.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(clampImage({ bytes: 1000, maxBytesOverride: bad }).action).toBe("pass");
+    }
+    // Above the default and still refused proves the fallback is the default
+    // and not "no ceiling".
+    expect(
+      clampImage({ bytes: IMAGE_CLAMP_MAX_BYTES + 1, maxBytesOverride: 0 }).action,
+    ).toBe("reject");
+  });
+
+  test("the payload builder honours the override end to end", () => {
+    // Proves the plumbing: the option reaches clampImage from the encoder that
+    // adapters actually call, rather than working only in isolation.
+    const bytes = IMAGE_CLAMP_MAX_BYTES + 1024;
+    const request = imageRequest([{ kind: "image", payload: imagePayload(bytes) }]);
+    const refused = canonicalToClaudeMessagesPayload(request);
+    // A refused block becomes a visible placeholder, not a silent drop: the
+    // model must not answer a question whose attachment simply vanished.
+    expect(JSON.stringify(blocks(refused))).toContain("omitted");
+    const admitted = canonicalToClaudeMessagesPayload(request, { maxBytesOverride: bytes + 1024 });
+    expect(JSON.stringify(blocks(admitted))).not.toContain("omitted");
+  });
+});
+
+describe("buildGeminiPayload with a per-tenant byte ceiling", () => {
+  /** A data-URL image whose decoded payload is roughly `bytes` long. */
+  function geminiImage(bytes: number): CanonicalRequest {
+    const data = "A".repeat(Math.ceil(bytes / 3) * 4);
+    return {
+      model: "gemini-3-flash",
+      stream: false,
+      source_surface: "gemini",
+      generation_controls: {},
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              kind: "image",
+              payload: { type: "image", source: { type: "base64", data, media_type: "image/png" } },
+            },
+          ],
+        },
+      ],
+    } as unknown as CanonicalRequest;
+  }
+
+  test("an oversized inline image is refused at the default", () => {
+    const payload = buildGeminiPayload(geminiImage(IMAGE_CLAMP_MAX_BYTES + 10_000));
+    expect(JSON.stringify(payload)).toContain("omitted");
+  });
+
+  test("the override admits the same image", () => {
+    // Proves the option reaches the clamp from the Gemini encoder too, not
+    // only from the Messages one.
+    const payload = buildGeminiPayload(geminiImage(IMAGE_CLAMP_MAX_BYTES + 10_000), {
+      maxBytesOverride: IMAGE_CLAMP_MAX_BYTES + 20_000,
+    });
+    expect(JSON.stringify(payload)).not.toContain("omitted");
   });
 });

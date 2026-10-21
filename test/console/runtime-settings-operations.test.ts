@@ -99,4 +99,18 @@ dbDescribe("operational runtime settings", () => {
     const effective = await resolveEffectiveCompactAfterDays(getDb());
     expect(effective).toBeGreaterThanOrEqual(21);
   });
+
+  test("an attachment ceiling round-trips", async () => {
+    await writeBag({ imageClampMaxBytes: 25 * 1024 * 1024 });
+    expect((await store.get(world.tenantId)).imageClampMaxBytes).toBe(25 * 1024 * 1024);
+  });
+
+  test("an attachment ceiling is clamped to what the clamp can honour", async () => {
+    // 64 KB floor, 100 MB ceiling: outside that the value would either admit
+    // nothing usable or promise more than any upstream takes.
+    await writeBag({ imageClampMaxBytes: 1 });
+    expect((await store.get(world.tenantId)).imageClampMaxBytes).toBe(64 * 1024);
+    await writeBag({ imageClampMaxBytes: 500 * 1024 * 1024 });
+    expect((await store.get(world.tenantId)).imageClampMaxBytes).toBe(100 * 1024 * 1024);
+  });
 });

@@ -189,7 +189,12 @@ class GeminiAdapter implements ProviderAdapter {
     const action = request.stream ? "streamGenerateContent?alt=sse" : "generateContent";
     const url = geminiModelUrl(this.baseUrl, model, action);
 
-    const payload = buildGeminiPayload(request);
+    const payload = buildGeminiPayload(
+      request,
+      ...(context.image_clamp_max_bytes === undefined
+        ? []
+        : [{ maxBytesOverride: context.image_clamp_max_bytes }]),
+    );
     if (
       request.tools?.some(
         (tool) =>

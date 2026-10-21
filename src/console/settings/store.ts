@@ -100,6 +100,11 @@ function normalizeTelemetryCompactAfterDays(value: unknown): number | null {
   return normalizeBoundedNumber(value, 1, 365);
 }
 
+/** Inline attachment ceiling in bytes: 64 KB floor, 100 MB ceiling. */
+function normalizeImageClampMaxBytes(value: unknown): number | null {
+  return normalizeBoundedNumber(value, 64 * 1024, 100 * 1024 * 1024);
+}
+
 function mapRuntimeSettingsRow(
   row: typeof consoleSettings.$inferSelect | undefined,
   redisBackend: RedisBackend,
@@ -130,6 +135,7 @@ function mapRuntimeSettingsRow(
     forceDisableCooldown: prefs.forceDisableCooldown === true,
     upstreamTimeoutSeconds: normalizeUpstreamTimeoutSeconds(prefs.upstreamTimeoutSeconds),
     telemetryCompactAfterDays: normalizeTelemetryCompactAfterDays(prefs.telemetryCompactAfterDays),
+    imageClampMaxBytes: normalizeImageClampMaxBytes(prefs.imageClampMaxBytes),
     updatedAt,
   };
 }
@@ -176,6 +182,8 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
       patchPrefs.telemetryCompactAfterDays = normalizeTelemetryCompactAfterDays(
         patch.telemetryCompactAfterDays,
       );
+    if (patch.imageClampMaxBytes !== undefined)
+      patchPrefs.imageClampMaxBytes = normalizeImageClampMaxBytes(patch.imageClampMaxBytes);
 
     const rows = await this.db
       .insert(consoleSettings)

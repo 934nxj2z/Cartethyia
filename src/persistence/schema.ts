@@ -1076,6 +1076,18 @@ export interface ConsoleSettingsPreferences {
    * scan; see the compaction notes in `event-compaction.ts`.
    */
   telemetryCompactAfterDays?: number | null;
+  /**
+   * Per-tenant ceiling for one inline attachment, in bytes, overriding the
+   * deployment default of 10 MB.
+   *
+   * Raising this asserts that this tenant's upstreams accept larger
+   * attachments. The clamp is a hard send gate precisely because an oversized
+   * block poisons every retry and every replayed turn — the upstream rejects
+   * the whole request rather than the one block — so an override larger than
+   * the provider actually accepts trades that protection away. Lowering it is
+   * the safer direction and the more common need.
+   */
+  imageClampMaxBytes?: number | null;
 }
 
 export const consoleSettings = pgTable("console_settings", {

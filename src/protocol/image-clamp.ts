@@ -56,6 +56,17 @@ export interface ImageClampInput {
   readonly height?: number;
   /** Images in the whole request, including this one. Defaults to this one alone. */
   readonly imageCount?: number;
+  /**
+   * Per-tenant byte ceiling override, in bytes.
+   *
+   * Absent means the deployment default (`IMAGE_CLAMP_MAX_BYTES`). A tenant
+   * raising this asserts that its upstreams accept larger attachments: the
+   * clamp exists so an oversized block cannot poison every retry and every
+   * replayed turn with a request the upstream rejects whole. An override
+   * promising more than the provider accepts turns that protection back off,
+   * which is why it is a deliberate per-tenant choice and not a global knob.
+   */
+  readonly maxBytesOverride?: number;
 }
 
 export interface ImageClampDecision {
@@ -108,7 +119,14 @@ export function imageClampMaxDimensionPx(imageCount: number): number {
 export function clampImage(input: ImageClampInput): ImageClampDecision {
   const imageCount = input.imageCount ?? 1;
   const maxDimensionPx = imageClampMaxDimensionPx(imageCount);
-  const maxBytes = IMAGE_CLAMP_MAX_BYTES;
+  // A non-finite or non-positive override is not a ceiling, it is a mistake:
+  // falling back to the default keeps a malformed preference from silently
+  // admitting (or rejecting) every image.
+  const override = input.maxBytesOverride;
+  const maxBytes =
+    typeof override === "number" && Number.isFinite(override) && override > 0
+      ? Math.floor(override)
+      : IMAGE_CLAMP_MAX_BYTES;
   const longestEdge = Math.max(input.width ?? 0, input.height ?? 0);
   if (longestEdge > maxDimensionPx) {
     return {

@@ -224,6 +224,37 @@ function OperationalPanel(): ReactNode {
               rows someone expected to keep.
             </p>
           </div>
+
+          <div className="settings-field">
+            <Input
+              label="Max attachment size (MB)"
+              id="image-clamp-max-bytes"
+              type="number"
+              value={
+                settings.imageClampMaxBytes === null
+                  ? ""
+                  : String(Math.floor(settings.imageClampMaxBytes / (1024 * 1024)))
+              }
+              placeholder="Deployment default (10 MB)"
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                const mb = raw.length === 0 ? null : Number(raw);
+                save(
+                  {
+                    imageClampMaxBytes:
+                      mb === null || !Number.isFinite(mb) ? null : Math.round(mb * 1024 * 1024),
+                  },
+                  "Attachment size limit updated.",
+                );
+              }}
+            />
+            <p className="mt-1 text-badge text-text-tertiary">
+              Per image, 0.06–100 MB. Blank uses the deployment default. An oversized attachment is
+              refused before send rather than after the upstream rejects it — a block too large
+              poisons every retry and every replayed turn. Raising this asserts your upstreams accept
+              more; lowering it is the safer direction. Applies to the Claude/Messages wire.
+            </p>
+          </div>
         </Stack>
       </CardBody>
     </Card>

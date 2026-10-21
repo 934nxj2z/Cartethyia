@@ -15,7 +15,11 @@ import { messagesAdapter } from "../surface/messages/adapter";
 import { completionAdapter } from "../surface/completion";
 import { forwardedRequestHeaders, proxySuccessHeaders, buildUpstreamDispatchContext, reportedModelFrom } from "./upstream";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { applyTenantPreferences, applyTenantDeadlineOverride } from "../request/tenant-preferences";
+import {
+  applyTenantPreferences,
+  applyTenantDeadlineOverride,
+  resolveTenantImageClampMaxBytes,
+} from "../request/tenant-preferences";
 import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
@@ -135,6 +139,15 @@ export async function handleProviderProxyRequest(
     deps.db,
     (ms) => state.extendDeadline(ms),
   );
+  // Memoized on the request: the ceiling is a tenant setting, so it cannot
+  // change between failover attempts, and each wire encoder that clamps an
+  // image reads it from here instead of paying for a preference read per
+  // attempt.
+  const imageClampMaxBytes = await resolveTenantImageClampMaxBytes(
+    deps.db,
+    prepared.authorization.snapshot.tenant_id,
+  );
+  if (imageClampMaxBytes !== undefined) state.imageClampMaxBytes = imageClampMaxBytes;
   const candidates =
     prepared.eligibleRouteCandidates.length > 0 ? prepared.eligibleRouteCandidates : [prepared.candidate];
   const attemptCandidates = candidates;
@@ -233,6 +246,9 @@ export async function handleProviderProxyRequest(
         headers: inboundHeaders,
         requestId: state.requestId,
         requestIdentity: state,
+        ...(state.imageClampMaxBytes === undefined
+          ? {}
+          : { imageClampMaxBytes: state.imageClampMaxBytes }),
         ...(conversationAffinity ? { conversationAffinity } : {}),
         ...(candidate.user_agent === undefined ? {} : { userAgent: candidate.user_agent }),
         ...(deps.networkBindingFactory

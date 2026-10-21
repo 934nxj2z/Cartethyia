@@ -121,6 +121,7 @@ function applyImageClamp(
   block: ClaudeWireObject,
   imageCount: number,
   payload: unknown,
+  maxBytesOverride?: number,
 ): ClaudeWireObject {
   const source = block["source"];
   const data = isRecord(source) ? source["data"] : undefined;
@@ -131,6 +132,7 @@ function applyImageClamp(
     ...(width === undefined ? {} : { width }),
     ...(height === undefined ? {} : { height }),
     imageCount,
+    ...(maxBytesOverride === undefined ? {} : { maxBytesOverride }),
   });
   if (decision.action === "pass") return block;
   log.warn(
@@ -281,6 +283,7 @@ function partToClaudeBlock(
     idMap: Map<string, string>;
     isOAuth: boolean;
     imageCount: number;
+    maxBytesOverride?: number;
   },
 ): ClaudeWireObject | undefined {
   switch (part.kind) {
@@ -291,6 +294,7 @@ function partToClaudeBlock(
         normalizeImageBlock(part.payload),
         ctx?.imageCount ?? 1,
         part.payload,
+        ctx?.maxBytesOverride,
       );
     case "file":
       return {
@@ -553,14 +557,22 @@ export function claudeFallbacksChain(
 
 export function canonicalToClaudeMessagesPayload(
   request: CanonicalRequest,
-  options: { isOAuth?: boolean } = {},
+  options: { isOAuth?: boolean; maxBytesOverride?: number } = {},
 ): ClaudeWireObject {
   const seen = new Map<string, number>();
   const idMap = new Map<string, string>();
   // The clamp's per-image ceiling depends on how many images the whole request
   // carries, so it is counted once over every part rather than per message.
   const imageCount = allParts(request).filter((part) => part.kind === "image").length;
-  const ctx = { seen, idMap, isOAuth: options.isOAuth ?? false, imageCount };
+  const ctx = {
+    seen,
+    idMap,
+    isOAuth: options.isOAuth ?? false,
+    imageCount,
+    ...(options.maxBytesOverride === undefined
+      ? {}
+      : { maxBytesOverride: options.maxBytesOverride }),
+  };
   const messages: ClaudeWireObject[] = [];
   // Anthropic accepts system content only at the top level. Chat `developer`
   // turns and Responses `instructions` have no `developer` role upstream, and

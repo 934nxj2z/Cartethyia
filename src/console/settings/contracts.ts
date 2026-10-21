@@ -37,6 +37,8 @@ export interface RuntimeSettingsResponse {
   readonly upstreamTimeoutSeconds: number | null;
   /** Per-tenant telemetry compaction age in days; null means deployment default. */
   readonly telemetryCompactAfterDays: number | null;
+  /** Per-tenant inline attachment ceiling in bytes; null means deployment default. */
+  readonly imageClampMaxBytes: number | null;
   readonly updatedAt: string;
 }
 

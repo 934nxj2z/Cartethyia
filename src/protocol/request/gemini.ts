@@ -147,6 +147,7 @@ function geminiMediaPart(part: {
 function toGeminiPart(
   part: CanonicalRequest["messages"][number]["content"][number],
   toolNames: ReadonlyMap<string, string>,
+  maxBytesOverride?: number,
 ): Record<string, unknown>[] {
   if (part.kind === "text") return [{ text: part.text }];
   if (part.kind === "reasoning") {
@@ -173,6 +174,7 @@ function toGeminiPart(
         // whose attachment silently vanished.
         const decision = clampImage({
           bytes: base64DecodedByteLength(split.data),
+          ...(maxBytesOverride === undefined ? {} : { maxBytesOverride }),
         });
         if (decision.action === "reject") {
           // Only the byte ceiling refuses a block. A `downscale` decision is
@@ -255,7 +257,10 @@ function parseJsonObject(value: string): Record<string, unknown> {
   }
 }
 
-export function buildGeminiPayload(request: CanonicalRequest): Record<string, unknown> {
+export function buildGeminiPayload(
+  request: CanonicalRequest,
+  options: { maxBytesOverride?: number } = {},
+): Record<string, unknown> {
   const systemParts: Array<{ text: string }> = [];
   const pushSystemText = (text: string): void => {
     if (!isClaudeBillingHeaderText(text)) systemParts.push({ text });
@@ -275,7 +280,9 @@ export function buildGeminiPayload(request: CanonicalRequest): Record<string, un
     .map((message) => {
       // Gemini roles: user or model (assistant -> model)
       const role = message.role === "assistant" ? "model" : message.role === "tool" ? "user" : "user";
-      const parts = message.content.flatMap((block) => toGeminiPart(block, toolNames));
+      const parts = message.content.flatMap((block) =>
+        toGeminiPart(block, toolNames, options.maxBytesOverride),
+      );
       return { role, parts: parts.length ? parts : [{ text: "" }] };
     });
   const payload: Record<string, unknown> = { contents };
