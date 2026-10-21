@@ -53,16 +53,29 @@ exporting a JSON backup and importing it. The config does not need rebuilding.
 ## 3. npm global package
 
 ```bash
-npm install --global cartethyia
+npm install -g cartethyia
 cartethyia setup
 carte
 ```
 
-`--global` is required. A local `npm install cartethyia` installs the package
-but leaves `cartethyia` and `carte` in `./node_modules/.bin/`, which is not on
-`PATH`, so neither command resolves. For a local install run `npx cartethyia`
-instead. On Linux and macOS a global install may need `sudo`; if it does, see
+`-g` (npm's alias for `--global`) is required. A local `npm install cartethyia`
+installs the package but leaves `cartethyia` and `carte` in
+`./node_modules/.bin/`, which is not on `PATH`, so neither command resolves.
+For a local install run `npx cartethyia` instead. On Linux and macOS a global
+install may need `sudo`; if it does, see
 <https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally>.
+
+Update and uninstall use the same flag:
+
+```bash
+npm update -g cartethyia    # update
+npm uninstall -g cartethyia # uninstall
+```
+
+Updating prints a command instead of running one, because npm cannot replace
+the package directory while a process is executing out of it — on Windows the
+rename fails with `EBUSY`. Stop the gateway, run the printed command, then
+start again.
 
 Setup creates the encryption key, asks Lite or Full, checks the database, and
 stores `.env` in the OS config directory (`%APPDATA%\Cartethyia` on Windows,
@@ -259,3 +272,13 @@ bun run build
 Typechecking is not runtime proof. For behavior changes, also exercise the real
 boundary: a gateway request, a browser surface, a provider flow, or an isolated
 database migration.
+
+### Do not run `bun test` directly
+
+`bun test` is defined, but it is not the gate — it skips the runner, and the
+runner is what makes the TLS-dependent suites pass. `scripts/ci/run.ts` merges
+`test/fixtures/localhost-cert.pem` into a bundle and passes it to the subprocess
+as `NODE_EXTRA_CA_CERTS`. Bun reads that variable only at process start, so a
+direct `bun test` has no extra CA and the outbound HTTP/2 suites fail on the
+handshake. Use `bun run test`, or `bun run test:backend` / `bun run
+dashboard:test` for one scope.

@@ -49,7 +49,7 @@ runtime discovery:
 | Purpose | International endpoint | Response shape |
 |---|---|---|
 | Desktop picker snapshot / manual investigation | `GET https://www.codebuddy.ai/v3/config`, `GET https://www.workbuddy.ai/v3/config`, or `GET https://www.workbuddy.cn/v3/config` | `data.agents[].models` is the picker roster; `data.models[]` has metadata |
-| Cartethyia account discovery | CodeBuddy: `/v2/enterprises/personal/models`; WorkBuddy variants: `/v2/enterprises/personal/models` | `data.models[]` plus `data.agents[]`; `disabled` and the `cli` agent roster constrain the result |
+| Cartethyia account discovery | intl: `/v3/config` first, falling back to `/v2/enterprises/personal/models`; CN variants: `/console/enterprises/personal/models` | `data.models[]` plus `data.agents[]`; `disabled` and the `cli` agent roster constrain the result |
 
 WorkBuddy CN is the same WorkBuddy client contract on `www.workbuddy.cn`.
 Its desktop client version is fetched from that host's
@@ -75,8 +75,11 @@ large installers when a small official metadata response answers the question.
 The CLI version and each bundled SDK version are separate identities. Do not use
 the standalone `@anthropic-ai/sdk` npm latest as Claude Code's bundled version,
 and do not take the first matching version string in a Kiro installer — tie it
-to the active import path. For reference, Claude Code `2.1.296` bundles SDK
-`0.128.0`; Kiro IDE `1.2.56` uses streaming SDK `1.0.39` and SSO SDK `3.980.0`.
+to the active import path. The app version and the SDK version are separate
+numbers and only the SDK is stable: Kiro uses streaming SDK `1.0.39` and SSO SDK
+`3.980.0`, while Claude Code's SDK is `0.128.0`. A pinned app version here is a
+snapshot, not a contract — read `VERSION_SOURCES.<client>.fallback` for the
+value actually shipped, because it moves when discovery succeeds.
 
 After changing a pin, check any derived User-Agent/fingerprint consumers remain
 connected to the same source, add or update a focused assertion in
@@ -162,7 +165,10 @@ an operator who turned proxying back on keeps it on.
   The names, the trap, and the replay evidence are in
   [`cartethyia-trace-replay`](../cartethyia-trace-replay/references/opencode-free-tier.md).
   Free ids are chat-only (`responses` → 400 `ModelProtocolUnsupported`), and
-  `Authorization: Bearer public` is still required.
+  a free dispatch sends `Authorization: Bearer public` as an anonymous sentinel.
+  The header is not what authorizes the call — an absent one answers 200 and a
+  wrong one answers 401 — but omit it and you have changed the wire the client
+  actually produces, which is the only reason it is sent at all.
 - The offline catalog is a packed, brotli-compressed binary blob:
   `src/providers/discovery/catalog/catalog-blob.ts` (generated) +
   `catalog-format.ts` (the `PackedCatalog` reader) +

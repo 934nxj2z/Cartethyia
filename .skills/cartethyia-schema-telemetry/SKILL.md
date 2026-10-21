@@ -12,8 +12,10 @@ Use for a schema change, a baseline update, or a new usage/telemetry field.
 The repository ships one baseline per backend plus the numbered files after it.
 A fresh database builds from `0000_baseline.sql` and then applies **every**
 forward file in order, on both backends (`src/persistence/db-sqlite.ts`,
-`src/persistence/db-pg.ts`) — verified: a fresh database records all 15 files
-and gets tables that only a numbered file creates.
+`src/persistence/db-pg.ts`), and gets tables that only a numbered file creates.
+Do not restate the file count here — it grows with every migration and rots
+silently. Read `migrations/full-postgres/` (and `lite-sqlite3/`) instead; the
+one place the list is legitimately written out is the pinned baseline test.
 
 **Treat `0000_baseline.sql` as append-only history.** It is pinned by a content
 hash: `baselineSchemaMarker()` records `sha256` of the file into

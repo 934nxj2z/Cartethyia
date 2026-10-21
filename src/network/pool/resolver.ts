@@ -18,11 +18,14 @@ import { log } from "../../observability/logger";
 import type { TransportKind, PoolAgent } from "./agent";
 import { isIP } from "node:net";
 import * as tls from "node:tls";
+import * as http2 from "node:http2";
+import type { Duplex } from "node:stream";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { isProxyAgentPair, createHttpProxyAgent, createSocks5Agent, PoolBindingError } from "./agent";
 import { Agent as HttpsAgent } from "node:https";
 import { parseAgentConfig, ProxyConfigError, type AgentConfig } from "../types";
-import type { ProviderWebSocketSession, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
+import type { ProviderWebSocketSession, ValidatedOutboundWebSocket, ValidatedOutboundHttp2Bidi } from "../../providers/provider-contracts";
+import type { Http2BidiEndReason, Http2BidiOpenOptions, ValidatedHttp2BidiStream } from "../http2-bidi";
 
 /** Idle time after which an unused pool agent is destroyed. */
 const POOL_AGENT_IDLE_MS = 10 * 60_000;
@@ -30,6 +33,22 @@ const POOL_AGENT_IDLE_MS = 10 * 60_000;
 const MAX_POOL_AGENTS = 1000;
 /** Minimum gap between idle-time sweeps; the per-resolve scan is the hot cost. */
 const POOL_AGENT_SWEEP_INTERVAL_MS = 30_000;
+/** Time allowed for one HTTP/2 connection (TCP + TLS + preface) to establish. */
+const HTTP2_CONNECT_TIMEOUT_MS = 15_000;
+/** Read-idle bound after which a bidi stream is declared dead. */
+const HTTP2_READ_IDLE_MS = 120_000;
+/** Buffered inbound bytes before a bidi stream is refused as unbounded. */
+const HTTP2_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+/**
+ * Session memory ceiling for one HTTP/2 session.
+ *
+ * Node and Bun count a session's unsent bytes against `maxSessionMemory`
+ * (10 MB by default) and, once over it, fail every new stream with
+ * `ENHANCE_YOUR_CALM`. A bidi Run request and its KV replies run to many
+ * megabytes and the caller holds those bytes anyway, so the default only adds
+ * a failure mode.
+ */
+const HTTP2_SESSION_MAX_MEMORY_MB = 256;
 
 export interface PoolAgentResolverDeps {
   readonly ssrfPolicy?: SsrfPolicy;
@@ -382,6 +401,484 @@ function agentForWebSocket(agent: PoolAgent): import("http").Agent | import("htt
   throw new GatewayError("proxy_pool_unhealthy", 503, "configured WebSocket proxy pool does not support WSS");
 }
 
+/**
+ * Rejects a bidi target that cannot be dialed safely.
+ *
+ * Every one of these is a property of the URL, not of the DNS answer, so it is
+ * checked before any resolution: a credential in the authority would be sent to
+ * whatever host resolves, a non-443 port is not the TLS endpoint the policy
+ * validated, and an IP literal bypasses the hostname the caller allowlists.
+ */
+function assertBidiTarget(url: URL): void {
+  if (url.protocol !== "https:") {
+    throw new GatewayError("invalid_request", 400, "validated HTTP/2 egress requires https");
+  }
+  if (url.username || url.password || url.hash) {
+    throw new GatewayError("invalid_request", 400, "invalid validated HTTP/2 target");
+  }
+  if (url.port !== "" && url.port !== "443") {
+    throw new GatewayError("invalid_request", 400, "validated HTTP/2 egress runs on port 443");
+  }
+  const hostname = url.hostname;
+  if (hostname.length === 0) {
+    throw new GatewayError("invalid_request", 400, "HTTP/2 target hostname is required");
+  }
+  if (isIP(hostname) !== 0) {
+    throw new GatewayError("invalid_request", 400, "HTTP/2 target must be a hostname, not an IP literal");
+  }
+}
+
+/**
+ * Opens one TLS socket to a validated destination.
+ *
+ * Direct egress dials the pinned address with SNI set to the *validated
+ * hostname*: pinning is what stops a DNS rebind between check and connect, and
+ * preserving SNI is what makes the certificate validate against the name the
+ * caller asked for rather than against an address.
+ */
+function dialDirect(
+  destination: ValidatedDestination,
+  signal: AbortSignal,
+): Promise<tls.TLSSocket> {
+  return new Promise<tls.TLSSocket>((resolve, reject) => {
+    const socket = tls.connect({
+      host: destination.resolvedAddress,
+      port: destination.port,
+      servername: destination.hostname,
+      rejectUnauthorized: true,
+      ALPNProtocols: ["h2"],
+    });
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      socket.destroy(new Error("HTTP/2 connection aborted"));
+      reject(new GatewayError("transport_closed", 499, "HTTP/2 connection was cancelled"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(
+        new GatewayError("transport_unavailable", 502, "HTTP/2 connection timed out", {}, "network"),
+      );
+    }, HTTP2_CONNECT_TIMEOUT_MS);
+    socket.once("secureConnect", () => {
+      cleanup();
+      resolve(socket);
+    });
+    socket.once("error", (error) => {
+      cleanup();
+      reject(
+        new GatewayError(
+          "transport_unavailable",
+          502,
+          `HTTP/2 connection failed: ${error.message}`,
+          {},
+          "network",
+        ),
+      );
+    });
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+/**
+ * Opens one TLS socket through a pool agent's CONNECT/SOCKS tunnel.
+ *
+ * The agent owns the dial and re-validates the proxy host per connect, so the
+ * tunnel is the pool's egress; the target TLS handshake then runs inside it
+ * with SNI set to the validated target hostname.
+ */
+function dialThroughPool(
+  agent: PoolAgent,
+  hostname: string,
+  signal: AbortSignal,
+): Promise<tls.TLSSocket> {
+  const pair = isProxyAgentPair(agent)
+    ? agent
+    : agent instanceof HttpsAgent
+      ? { https: agent }
+      : undefined;
+  if (pair === undefined) {
+    throw new GatewayError(
+      "proxy_pool_unhealthy",
+      503,
+      "configured proxy pool does not support HTTPS tunneling",
+    );
+  }
+  return new Promise<tls.TLSSocket>((resolve, reject) => {
+    pair.https.createConnection(
+      { host: hostname, port: 443, servername: hostname },
+      (error: Error | null, socket: Duplex) => {
+        if (error !== null || socket === null) {
+          reject(
+            error instanceof PoolBindingError
+              ? new GatewayError(
+                  "proxy_pool_unhealthy",
+                  503,
+                  "Configured proxy pool could not be established.",
+                  { reason: error.message.slice(0, 200) },
+                  "network",
+                )
+              : new GatewayError(
+                  "transport_unavailable",
+                  502,
+                  `HTTP/2 tunnel failed: ${error?.message ?? "no socket"}`,
+                  {},
+                  "network",
+                ),
+          );
+          return;
+        }
+        const secured = tls.connect({
+          socket: socket as tls.TLSSocket,
+          servername: hostname,
+          rejectUnauthorized: true,
+          ALPNProtocols: ["h2"],
+        });
+        const cleanup = (): void => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", onAbort);
+        };
+        const onAbort = (): void => {
+          cleanup();
+          secured.destroy();
+          reject(new GatewayError("transport_closed", 499, "HTTP/2 connection was cancelled"));
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          secured.destroy();
+          reject(
+            new GatewayError("transport_unavailable", 502, "HTTP/2 connection timed out", {}, "network"),
+          );
+        }, HTTP2_CONNECT_TIMEOUT_MS);
+        secured.once("secureConnect", () => {
+          cleanup();
+          resolve(secured);
+        });
+        secured.once("error", (tlsError) => {
+          cleanup();
+          reject(
+            new GatewayError(
+              "transport_unavailable",
+              502,
+              `HTTP/2 TLS handshake failed: ${tlsError.message}`,
+              {},
+              "network",
+            ),
+          );
+        });
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      },
+    );
+  });
+}
+
+/**
+ * Wraps one connected HTTP/2 stream as a validated bidi stream.
+ *
+ * Inbound bytes are exposed as an async iterable whose consumer pace is the
+ * backpressure: a paused consumer leaves the data unread and lets the HTTP/2
+ * flow-control window close, which is what keeps a multi-megabyte Run from
+ * buffering entirely in memory.
+ */
+class Http2BidiSession implements ValidatedHttp2BidiStream {
+  private status = 0;
+  private responseHeaders: Record<string, string> = {};
+  private responseTrailers: Record<string, string> = {};
+  private readonly chunks: Uint8Array[] = [];
+  private readonly waiters: Array<{
+    resolve(value: IteratorResult<Uint8Array>): void;
+    reject(reason: unknown): void;
+  }> = [];
+  private inboundEnded = false;
+  private inboundFailure: Error | undefined;
+  private ended = false;
+  private terminalReason: Http2BidiEndReason | undefined;
+  private readonly terminalListeners = new Set<(reason: Http2BidiEndReason) => void>();
+  private readIdleTimer: ReturnType<typeof setTimeout> | undefined;
+  private bufferedBytes = 0;
+
+  constructor(
+    private readonly stream: http2.ClientHttp2Stream,
+    private readonly session: http2.ClientHttp2Session,
+    private readonly readIdleMs: number,
+    private readonly maxBufferedBytes: number,
+  ) {
+    stream.on("response", (headers) => {
+      const status = headers[":status"];
+      this.status = typeof status === "string" ? Number(status) : (status ?? 0);
+      this.responseHeaders = flattenHeaders(headers);
+    });
+    stream.on("trailers", (headers) => {
+      this.responseTrailers = flattenHeaders(headers);
+    });
+    stream.on("data", (chunk: Buffer) => {
+      this.armReadIdle();
+      const bytes = new Uint8Array(chunk);
+      this.bufferedBytes += bytes.byteLength;
+      const waiter = this.waiters.shift();
+      if (waiter !== undefined) {
+        this.bufferedBytes -= bytes.byteLength;
+        waiter.resolve({ done: false, value: bytes });
+        return;
+      }
+      this.chunks.push(bytes);
+      // A stream that keeps arriving while nobody reads is unbounded growth,
+      // not backpressure: pause the socket rather than accumulating until the
+      // process is out of memory.
+      if (this.bufferedBytes > this.maxBufferedBytes) {
+        this.fail(
+          new GatewayError(
+            "platform_unavailable",
+            502,
+            "HTTP/2 response exceeded the buffer bound",
+            {},
+            "network",
+          ),
+        );
+      }
+    });
+    stream.on("end", () => this.finishInbound());
+    stream.on("error", (error) => this.fail(error));
+    stream.on("aborted", () =>
+      this.fail(new GatewayError("transport_unavailable", 502, "HTTP/2 stream aborted by remote", {}, "network")),
+    );
+    stream.on("close", () => {
+      this.finishInbound();
+      this.settleTerminal({ kind: "remote-clean-close" });
+    });
+  }
+
+  get response(): { status: number; headers: Readonly<Record<string, string>> } {
+    return { status: this.status, headers: this.responseHeaders };
+  }
+
+  get trailers(): Readonly<Record<string, string>> {
+    return this.responseTrailers;
+  }
+
+  get body(): AsyncIterable<Uint8Array> {
+    const self = this;
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        return {
+          next(): Promise<IteratorResult<Uint8Array>> {
+            return self.nextChunk();
+          },
+          return(): Promise<IteratorResult<Uint8Array>> {
+            self.abort();
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+      },
+    };
+  }
+
+  private nextChunk(): Promise<IteratorResult<Uint8Array>> {
+    const queued = this.chunks.shift();
+    if (queued !== undefined) {
+      this.bufferedBytes -= queued.byteLength;
+      return Promise.resolve({ done: false, value: queued });
+    }
+    if (this.inboundFailure !== undefined) return Promise.reject(this.inboundFailure);
+    if (this.inboundEnded) return Promise.resolve({ done: true, value: undefined });
+    return new Promise<IteratorResult<Uint8Array>>((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
+    });
+  }
+
+  private armReadIdle(): void {
+    clearTimeout(this.readIdleTimer);
+    this.readIdleTimer = setTimeout(() => {
+      this.fail(
+        new GatewayError(
+          "transport_unavailable",
+          504,
+          `HTTP/2 stream read-idle timeout after ${this.readIdleMs}ms — connection presumed dead`,
+          {},
+          "network",
+        ),
+      );
+    }, this.readIdleMs);
+    this.readIdleTimer.unref?.();
+  }
+
+  private finishInbound(): void {
+    clearTimeout(this.readIdleTimer);
+    this.readIdleTimer = undefined;
+    if (this.inboundFailure !== undefined || this.inboundEnded) return;
+    this.inboundEnded = true;
+    const waiter = this.waiters.shift();
+    waiter?.resolve({ done: true, value: undefined });
+  }
+
+  private fail(error: Error): void {
+    if (this.inboundFailure !== undefined) return;
+    this.inboundFailure = error;
+    this.chunks.length = 0;
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+    this.settleTerminal({ kind: "remote-error", error });
+    try {
+      this.stream.destroy(error);
+    } catch {
+      // The stream may already be closing.
+    }
+  }
+
+  private settleTerminal(reason: Http2BidiEndReason): void {
+    if (this.terminalReason !== undefined) return;
+    this.terminalReason = reason;
+    for (const listener of this.terminalListeners) {
+      try {
+        listener(reason);
+      } catch {
+        // An observer cannot destabilize teardown.
+      }
+    }
+    this.terminalListeners.clear();
+  }
+
+  onTerminal(listener: (reason: Http2BidiEndReason) => void): () => void {
+    this.terminalListeners.add(listener);
+    return () => this.terminalListeners.delete(listener);
+  }
+
+  write(chunk: Uint8Array): Promise<void> {
+    if (this.inboundFailure !== undefined) return Promise.reject(this.inboundFailure);
+    if (this.ended) return Promise.reject(new Error("HTTP/2 request side already ended"));
+    return new Promise<void>((resolve, reject) => {
+      const flushed = this.stream.write(chunk, (error) => {
+        if (error !== null && error !== undefined) reject(error);
+      });
+      if (flushed) {
+        resolve();
+        return;
+      }
+      // Backpressured: wait for drain. There is no deadline here — a stream
+      // error or close settles it, and the read-idle watchdog bounds a stream
+      // that stops answering.
+      this.stream.once("drain", () => resolve());
+    });
+  }
+
+  end(): void {
+    if (this.ended) return;
+    this.ended = true;
+    try {
+      this.stream.end();
+    } catch {
+      // Already closed by the peer or by abort.
+    }
+  }
+
+  abort(reason?: unknown): void {
+    if (this.ended && this.terminalReason !== undefined) return;
+    this.ended = true;
+    this.settleTerminal({ kind: "local-close" });
+    try {
+      this.stream.destroy(reason instanceof Error ? reason : undefined);
+    } catch {
+      // Already destroyed.
+    }
+    try {
+      this.session.close();
+    } catch {
+      // Already closing.
+    }
+  }
+}
+
+/** Flattens HTTP/2 header objects into a plain string map. */
+function flattenHeaders(headers: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) out[name] = value.map((entry) => String(entry)).join(", ");
+    else out[name] = String(value);
+  }
+  return out;
+}
+
+/** Opens one validated bidi stream over an already-connected socket. */
+function openBidiStream(
+  socket: tls.TLSSocket,
+  url: URL,
+  headers: Readonly<Record<string, string>>,
+  options: Http2BidiOpenOptions,
+): Promise<ValidatedHttp2BidiStream> {
+  // `createConnection`, not the `socket` option: the socket is already a
+  // validated, ALPN-negotiated TLS connection, and handing it through
+  // `createConnection` is what makes the session adopt it as-is (Node's
+  // `socket` option applies its own TLS expectations on top).
+  const session = http2.connect(`https://${url.hostname}`, {
+    createConnection: () => socket,
+    maxSessionMemory: HTTP2_SESSION_MAX_MEMORY_MB,
+  });
+  return new Promise<ValidatedHttp2BidiStream>((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      session.removeListener("error", onError);
+      session.removeListener("connect", onConnect);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      try {
+        session.destroy();
+      } catch {
+        // Already destroying.
+      }
+      reject(
+        new GatewayError(
+          "transport_unavailable",
+          502,
+          `HTTP/2 session failed: ${error.message}`,
+          {},
+          "network",
+        ),
+      );
+    };
+    const onConnect = (): void => {
+      cleanup();
+      const stream = session.request(
+        {
+          ":method": "POST",
+          ":path": `${url.pathname}${url.search}`,
+          ":authority": url.hostname,
+          ":scheme": "https",
+          ...headers,
+        } as unknown as http2.OutgoingHttpHeaders,
+        { endStream: false },
+      );
+      resolve(
+        new Http2BidiSession(
+          stream,
+          session,
+          options.readIdleMs ?? HTTP2_READ_IDLE_MS,
+          options.maxBufferedBytes ?? HTTP2_MAX_BUFFERED_BYTES,
+        ),
+      );
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      try {
+        session.destroy();
+      } catch {
+        // Already destroying.
+      }
+      reject(
+        new GatewayError("transport_unavailable", 502, "HTTP/2 session timed out", {}, "network"),
+      );
+    }, HTTP2_CONNECT_TIMEOUT_MS);
+    session.once("error", onError);
+    session.once("connect", onConnect);
+  });
+}
+
 class WsSession implements ProviderWebSocketSession {
   readonly #socket: WebSocket;
   readonly #signal: AbortSignal;
@@ -538,6 +1035,69 @@ export class ValidatedNetworkBindingFactory {
         }
       }
       return connectValidatedWebSocket(url, headers, signal, destination, agent);
+    };
+  }
+
+  /**
+   * Validated bidirectional HTTP/2 egress for one writable streaming request.
+   *
+   * Direct egress resolves and validates *every* DNS answer for the hostname,
+   * pins the chosen public address, and keeps TLS SNI pointed at the validated
+   * hostname — so a rebind between check and connect cannot retarget the socket,
+   * and the certificate still validates against the name the caller asked for.
+   * Pooled egress reuses the selected tenant pool's CONNECT/SOCKS tunnel and
+   * accounts the tunnel's bytes to that pool, exactly as `fetch` does.
+   *
+   * Credentials in the authority, fragments, non-443 ports, IP literals, and
+   * hostnames outside `allowHostname` are refused before anything is dialed: a
+   * bidi stream carries the account credential for its whole lifetime, so the
+   * target is checked once here rather than trusted to each caller.
+   */
+  http2Bidi(networkPoolId?: string, tenantId?: string): ValidatedOutboundHttp2Bidi {
+    return async (url, headers, options) => {
+      assertBidiTarget(url);
+      const { hostname } = url;
+      if (options?.allowHostname !== undefined && !options.allowHostname(hostname)) {
+        throw new GatewayError("invalid_request", 400, "HTTP/2 target host is not allowlisted");
+      }
+      const signal = options?.signal ?? AbortSignal.timeout(HTTP2_CONNECT_TIMEOUT_MS);
+      // Validation runs on every new connection, not once per capability: a
+      // long-lived Run is re-opened after a session dies, and a hostname that
+      // resolved safely the first time is not safe the twentieth.
+      const destination = await this.resolve(hostname, signal, 443);
+      if (!isAddressAllowed(destination.resolvedAddress, this.policy)) {
+        throw new GatewayError("invalid_request", 400, "unsafe upstream address rejected");
+      }
+      // Mirrors `fetch`: no pool selected (or none configured) means validated
+      // *direct* egress, which is already resolved and SSRF-checked above.
+      // Requiring a pool whenever a tenant id was supplied made bidi-only
+      // providers (Cursor) unreachable on every install without a pool, even
+      // though the equivalent `fetch` path dials direct there.
+      if (networkPoolId !== undefined || tenantId !== undefined) {
+        if (networkPoolId === undefined || tenantId === undefined || this.poolResolver === undefined) {
+          const socket = await dialDirect(destination, signal);
+          return openBidiStream(socket, url, headers, options ?? {});
+        }
+        let agent: PoolAgent;
+        try {
+          agent = await this.poolResolver.resolveAgent(networkPoolId, tenantId);
+        } catch (error) {
+          if (error instanceof PoolBindingError) {
+            throw new GatewayError(
+              "proxy_pool_unhealthy",
+              503,
+              "Configured proxy pool could not be established.",
+              { poolId: networkPoolId, reason: error.message.slice(0, 200) },
+              "network",
+            );
+          }
+          throw error;
+        }
+        const socket = await dialThroughPool(agent, hostname, signal);
+        return openBidiStream(socket, url, headers, options ?? {});
+      }
+      const socket = await dialDirect(destination, signal);
+      return openBidiStream(socket, url, headers, options ?? {});
     };
   }
 }

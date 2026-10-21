@@ -335,6 +335,13 @@ export function mapModelRow(
     cost: row.cost as ModelCatalogEntry["cost"],
     source: row.source,
     ...(unfiled ? { limitsEstimated: true } : {}),
+    // Three-valued on the wire as it is in the column: only a row that claims
+    // `true` is pro-only. Absence means nobody established the tier, and the
+    // surface must render that as unknown rather than as free.
+    ...(row.proOnly === true ? { proOnly: true } : {}),
+    // Same three-valued rule, from the provider's own directory. Qoder states
+    // `is_free` per row, so a plan change moves the pill without a code change.
+    ...(row.freeTier === true ? { freeTier: true } : {}),
     sourceUpdatedAt: row.sourceUpdatedAt?.toISOString() ?? null,
   } satisfies ModelCatalogEntry;
 }

@@ -223,6 +223,33 @@ describe("detectCredentialKind", () => {
   });
 });
 
+describe("parseCredentialBatch — key:value lines", () => {
+  test("a single key:value line yields the value, not the literal line", () => {
+    // The single-line path used to skip `parseKeyValueLines` and fall through
+    // to `parseSingleLine`, which cannot parse `apiKey: sk-...` as JSON — so it
+    // stored the line's literal text as the secret. The operator got an account
+    // whose credential was the string "apiKey: sk-..." and the real key was
+    // gone. The multi-line path already did this correctly.
+    expect(parseCredentialBatch("apiKey: sk-ant-EXAMPLE")).toEqual([
+      { value: "sk-ant-EXAMPLE", kind: "api_key" },
+    ]);
+  });
+
+  test("a lone refresh-token line is OAuth, not an opaque token", () => {
+    // Same defect: `refreshToken: rt-x` was stored as the literal line text,
+    // so the refresh token never reached the account.
+    const [entry] = parseCredentialBatch("refreshToken: rt-EXAMPLE");
+    expect(entry?.kind).toBe("oauth");
+    expect(entry?.value).toBe(JSON.stringify({ refreshToken: "rt-EXAMPLE" }));
+  });
+
+  test("a multi-line key:value block stays one entry", () => {
+    expect(parseCredentialBatch("apiKey: sk-ant-EXAMPLE\nlabel: ops")).toEqual([
+      { value: "sk-ant-EXAMPLE", kind: "api_key" },
+    ]);
+  });
+});
+
 describe("parseCredentialBatch — single entries", () => {
   test("an empty paste produces no entries", () => {
     expect(parseCredentialBatch("")).toEqual([]);

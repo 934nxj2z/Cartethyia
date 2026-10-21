@@ -256,6 +256,20 @@ export const providerAccounts = pgTable("provider_accounts", {
    */
   accountEmail: text("account_email"),
 
+  /**
+   * The plan the provider reports for this account, last seen by a quota read.
+   *
+   * Persisted rather than read from the quota cache: that cache is a short
+   * in-process TTL and empty on a cold start, so the plan would be unknown
+   * exactly when a freshly booted process makes its first routing decisions.
+   *
+   * Nullable: most providers report no plan at all, and an account never read
+   * must say so rather than have a plan invented for it. Routing reads absence
+   * as "unknown", never as "free" — guessing free would send pro-only traffic
+   * to an account that may well be refused.
+   */
+  quotaPlan: text("quota_plan"),
+
   },
   (table) => [
     uniqueIndex("provider_accounts_identity_uidx").on(
@@ -348,6 +362,30 @@ export const models = pgTable(
     source: text("source"),
     sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Whether the upstream refuses this model on a free plan.
+     *
+     * Nullable three-valued: `true` refused on free, `false` served on free,
+     * `NULL` nobody established it. `NULL` is the state of every model on every
+     * provider that publishes nothing about plan access, and collapsing it to
+     * `false` would assert a measured fact for rows nobody measured.
+     *
+     * A column rather than a derived rule because CodeBuddy publishes nothing
+     * that predicts access — `credits` and `vendor` were both measured against
+     * real dispatches and neither correlates. Only the refusal itself is a
+     * signal, so the answer has to be recorded. See
+     * `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`.
+     */
+    proOnly: boolean("pro_only"),
+    /**
+     * Whether the provider publishes this model as free.
+     *
+     * Mirrors `proOnly` but sourced from the provider's own directory rather
+     * than inferred: Qoder states `is_free` per row, so the tier tracks a plan
+     * change without a code change. Nullable three-valued — absence means the
+     * provider did not state it, which is not the same as billed.
+     */
+    freeTier: boolean("free_tier"),
   },
   (table) => [
     uniqueIndex("models_provider_model_route_uidx").on(
@@ -844,6 +882,19 @@ export const shareLinks = pgTable(
     // link; historical rows written before this column carry NULL and simply
     // cannot be shown again.
     tokenEncrypted: bytea("token_encrypted"),
+    /**
+     * The public slug this page is reachable at, in the clear.
+     *
+     * `tokenEncrypted` is the bearer token under the deployment's encryption
+     * key, so a link cannot be re-displayed once that key changes — which is
+     * exactly what a restore onto a fresh deployment does. Holding the slug
+     * unencrypted keeps every restored share page reachable under the address
+     * it was created with.
+     *
+     * Nullable: rows written before this column have no slug, and inventing one
+     * would publish an address the page never had.
+     */
+    slug: text("slug"),
     kind: text("kind").$type<ShareLinkKind>().notNull().default("enroll"),
     active: boolean("active").notNull().default(true),
     createdAt: createdAtColumn(),
@@ -852,6 +903,9 @@ export const shareLinks = pgTable(
   },
   (table) => [
     uniqueIndex("share_links_token_hash_idx").on(table.tokenHash),
+    // Partial: rows without a slug (written before the column) are not
+    // constrained, so backfilling is never blocked by a uniqueness collision.
+    uniqueIndex("share_links_slug_uidx").on(table.slug).where(sql`${table.slug} IS NOT NULL`),
     index("share_links_api_key_idx").on(table.apiKeyId),
     index("share_links_active_kind_expires_idx").on(table.active, table.kind, table.expiresAt),
     check("share_links_kind_check", sql`${table.kind} IN ('enroll', 'handoff')`),
@@ -1203,6 +1257,17 @@ export const telemetryPayloads = pgTable(
     length: integer("length").notNull(),
     checksum: text("checksum").notNull(),
     version: integer("version").notNull(),
+    /**
+     * Which of the four payload stages were captured, as a bitmask. The Usage
+     * list shows one icon per stage; learning presence from the frame would
+     * cost one inflate per row, so the writer records it here and the list
+     * reads it off the indexed row.
+     *
+     * Bits: 1=request, 2=provider_request, 4=provider_response,
+     * 8=client_response. Nullable: NULL means the row predates this column,
+     * which renders as all icons greyed rather than inventing presence.
+     */
+    stages: integer("stages"),
   },
   (table) => [
     index("telemetry_payloads_request_id_idx").on(table.requestId),

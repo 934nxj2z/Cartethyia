@@ -80,3 +80,24 @@ describe("Select rendering", () => {
     expect(triggerMarkup("")).toContain("Select…");
   });
 });
+
+describe("a published empty-value option", () => {
+  // The routing card's Client identity offers { value: "", label: "None" }.
+  // Refusing it made picking None do nothing: the handler returned before
+  // calling onValueChange, so the stored identity never changed.
+  const NONE_OPTIONS = [
+    { value: "", label: "None" },
+    { value: "Cartethyia/1.0.0", label: "Cartethyia 1.0.0" },
+  ];
+
+  test("is a real selection the caller receives", () => {
+    expect(isSelectableValue("", NONE_OPTIONS)).toBe(true);
+  });
+
+
+  test("a value no option carries is still refused", () => {
+    // The API-format dropdown: no `""` option, so an empty emission is Radix's
+    // placeholder convention and must not be stored.
+    expect(isSelectableValue("", OPTIONS)).toBe(false);
+  });
+});

@@ -1,3 +1,4 @@
+import { healthEventBuffer } from "../../persistence/health-event-flush";
 // Account health: error classification, failure/success recording, recovery and cooldown sweeps.
 import { and, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
@@ -215,6 +216,20 @@ export interface AccountErrorClassification {
   readonly retryAt: Date | null;
   readonly mutatesAccount: boolean;
   /**
+   * True when this write changed a field the routing snapshot actually reads.
+   *
+   * The snapshot projects `provider_accounts.status` and
+   * `.cooldownUntil` and nothing else (`route-catalog.ts:286-287`), so only a
+   * write that moves one of those has to drop it. Everything else a failure
+   * persists — the failure streak, the error text, the category, a
+   * model-scoped cooldown — is invisible to routing, and invalidating for it
+   * forced the next request to rebuild an 11-SELECT snapshot for no reason.
+   *
+   * That made a failure wave self-sustaining: N failed attempts produced N
+   * invalidations, and every following request paid the full rebuild.
+   */
+  readonly routesVisible: boolean;
+  /**
    * True when `cooldownMs` came from the provider's own statement — a parsed
    * `Retry-After`-family header, or a reset quoted in its message — rather than
    * from one of this module's fallback constants.
@@ -390,6 +405,11 @@ export function classifyAccountError(
     reason: origin === "upstream" ? rawUpstreamResponse ?? message.slice(0, 160) : explanation,
     retryAt,
     mutatesAccount,
+    // Set below by the caller that knows which columns it wrote, not here:
+    // the same classification feeds both the account-wide path (status +
+    // cooldownUntil — routing-visible) and the model-scoped path (neither —
+    // invisible). Defaulting true keeps existing callers conservative.
+    routesVisible: true,
     providerStated,
     modelUnsupported,
   });
@@ -457,6 +477,16 @@ export function classifyAccountError(
     !priceRefusal &&
     !deploymentInfraError &&
     (statusCode === 402 ||
+      // Qoder answers an exhausted credit balance with
+      // `{"code":"112","message":"{\"pricingUrl\":...}"}` — the body points at
+      // the pricing page, i.e. "buy more", which is a balance verdict, not an
+      // auth one. It fell through to `auth_invalidated` and the console showed
+      // "Re-login required" on an account whose credential was fine, sending
+      // operators to re-authenticate instead of topping up.
+      // Recognising it here keeps it out of `auth_invalidated`; the branch
+      // below scopes the resulting cooldown to the model, because the account
+      // keeps serving its other models.
+      providerCode === "112" ||
       providerCode === "insufficient_quota" ||
       providerCode === "quota_exceeded" ||
       providerCode === "subscription:free-usage-exhausted" ||
@@ -489,7 +519,9 @@ export function classifyAccountError(
       lower.includes("insufficient balance") ||
       lower.includes("out of credits") ||
       lower.includes("credits exhausted") ||
-      lower.includes("spending limit"));
+      lower.includes("spending limit") ||
+      // Same Qoder family reached by body text when the code is not parsed out.
+      (lower.includes("pricingurl") && lower.includes("qoder.com/pricing")));
   // A deterministic content-policy rejection is NOT credential invalidation.
   // CodeBuddy returns HTTP 403 with provider code 11140 ("request illegal",
   // "did not pass the safety review") — refreshing the token cannot change
@@ -687,6 +719,31 @@ export function classifyAccountError(
   }
 
   if (quotaSignal) {
+    /**
+     * Qoder's `112` is a verdict on the (account, model) pair, not on the
+     * credential or the balance as a whole.
+     *
+     * The body is `{"code":"112","message":"{\"pricingUrl\":…}"}` — a link to
+     * the pricing page, i.e. "this model is not in your plan". Observed
+     * behaviour agrees: the account keeps serving every other model after the
+     * refusal. Parking the whole account therefore took healthy models down
+     * with the one that is not entitled, which is the same mistake the
+     * `model_unreachable` branch already avoids for Cursor and buddy.
+     */
+    const qoderPlanGated = providerCode === "112";
+    if (qoderPlanGated) {
+      const hits = Math.max(1, Math.floor(options?.modelBlockHits ?? 1));
+      const cooldownMs = unsupportedModelCooldownMs(hits);
+      return result(
+        "model_unreachable",
+        "cooldown",
+        cooldownMs,
+        new Date(Date.now() + cooldownMs),
+        reason("Model not included in this account's plan"),
+        origin === "upstream" && options?.modelId !== undefined,
+        true,
+      );
+    }
     // xAI Grok Build's free tier resets on a rolling window. Use a duration
     // stated by the provider when present; otherwise park for the conservative
     // 24-hour fallback.
@@ -997,8 +1054,8 @@ export async function recordAccountFailure(
           lastErrorAt: now,
         })
         .where(eq(providerAccounts.id, accountId));
-      if (!alreadyCooling && typeof client.insert === "function") {
-        await client.insert(healthEvents).values({
+      if (!alreadyCooling) {
+        await writeHealthEvent(client, {
           entityKind: "account",
           accountId,
           // The account's own status, on both sides: a model-scoped throttle
@@ -1015,7 +1072,10 @@ export async function recordAccountFailure(
           createdAt: now,
         });
       }
-      return classification;
+      // `status` and `cooldownUntil` are untouched on this path — only the
+      // (account, model) pair backed off — so the snapshot is still accurate
+      // and must not be dropped.
+      return { ...classification, routesVisible: false };
     }
 
     await client
@@ -1042,8 +1102,8 @@ export async function recordAccountFailure(
       })
       .where(eq(providerAccounts.id, accountId));
 
-    if (typeof client.insert === "function") {
-      await client.insert(healthEvents).values({
+    {
+      await writeHealthEvent(client, {
         entityKind: "account",
         accountId,
         fromStatus: fromStatus as "active" | "cooldown" | "disabled",
@@ -1054,7 +1114,9 @@ export async function recordAccountFailure(
         createdAt: now,
       });
     }
-    return classification;
+    // This path wrote `status` and `cooldownUntil`, both of which the snapshot
+    // projects, so routing has to see it.
+    return { ...classification, routesVisible: true };
   };
 
   try {
@@ -1176,8 +1238,8 @@ export async function recoverAccount(
         lastErrorAt: null,
       })
       .where(eq(providerAccounts.id, accountId));
-    if (typeof client.insert === "function") {
-      await client.insert(healthEvents).values({
+    {
+      await writeHealthEvent(client, {
         entityKind: "account",
         accountId,
         fromStatus: fromStatus as "active" | "cooldown" | "disabled",
@@ -1314,6 +1376,36 @@ export interface AttemptHealthReport {
   readonly snapshotService?: { invalidate(): unknown };
 }
 
+/**
+ * Writes one health audit row, off the request path when a buffer is installed.
+ *
+ * `health_events` is append-only and read by nobody in the request path, so it
+ * does not need to land before the request finishes — unlike the
+ * `provider_accounts` UPDATE beside it, which routing reads and which therefore
+ * stays synchronous and transactional.
+ */
+async function writeHealthEvent(
+  client: CartethyiaDatabase,
+  row: {
+    readonly entityKind: "account";
+    readonly accountId: string;
+    readonly fromStatus: string;
+    readonly toStatus: string;
+    readonly reason: string;
+    readonly errorCategory: string | null;
+    readonly modelId?: string | null;
+    readonly createdAt: Date;
+  },
+): Promise<void> {
+  const buffer = healthEventBuffer();
+  if (buffer !== undefined) {
+    buffer.enqueue({ ...row, modelId: row.modelId ?? null });
+    return;
+  }
+  if (typeof client.insert !== "function") return;
+  await client.insert(healthEvents).values(row as never);
+}
+
 export async function reportAttemptOutcome(
   db: CartethyiaDatabase,
   report: AttemptHealthReport,
@@ -1328,7 +1420,12 @@ export async function reportAttemptOutcome(
     ...report.evidence,
     ...(report.modelId === undefined ? {} : { modelId: report.modelId }),
   }).catch(() => null);
-  if (classification?.mutatesAccount) await report.snapshotService?.invalidate();
+  // Gated on `routesVisible`, not on `mutatesAccount`: a failure that only
+  // cooled one (account, model) pair, or only advanced the streak, changed
+  // nothing routing reads. Invalidating for those rebuilt an 11-SELECT snapshot
+  // on the next request, and under a failure wave each rebuild fed the next
+  // invalidation.
+  if (classification?.routesVisible) await report.snapshotService?.invalidate();
 }
 
 export async function listAccountHealthEvents(

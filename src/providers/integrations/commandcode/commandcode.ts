@@ -5,68 +5,145 @@ import { canContainToolResult, joinTextParts, toolCallParts, toolResultParts } f
 import {
   classifyUpstreamError,
   extractUpstreamMessage,
-  mapUpstreamHttpError,
   upstreamErrorIdentifier,
 } from "../../../transport/failure-policy";
+import { createApiKeyAdapter } from "../../configured-provider";
 import type { CanonicalEvent, CanonicalRequest, CanonicalStopReason, ContentPart } from "../../../protocol/canonical-model";
 import { isRecord, readNumber, readString, resolveImageSource, splitDataUrl } from "../../../protocol/codecs";
 import { usageFromProvider } from "../../provider-usage";
 import { readCredentialSecret, type ProviderDispatchTarget, type ProviderAdapter, type ProviderDispatchContext } from "../../provider-contracts";
 import { providerBaseUrl } from "../../provider-metadata";
-import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
 import {
   getCommandCodeVersion,
 } from "../../operations/client-versions";
 import { MimoThinkSplitter } from "../xiaomi-mimo/think-stream";
+export const COMMANDCODE_PROVIDER_ID = "commandcode" as const;
+export const COMMANDCODE_BASE_URL = providerBaseUrl("commandcode");
+/** The three routes the Provider API serves, one per wire family. */
+export const COMMANDCODE_CHAT_PATH = "/chat/completions" as const;
+export const COMMANDCODE_RESPONSES_PATH = "/responses" as const;
+export const COMMANDCODE_MESSAGES_PATH = "/messages" as const;
+
+/**
+ * Command Code's roster, as the Provider API publishes it.
+ *
+ * Generated from the live `/provider/v1/models` listing (95 rows). Each row
+ * carries the wire that serves it and the context window the API states, which
+ * is the whole point: the previous list was 36 ids with no limits and one wire
+ * for everything, so every `claude-*` id — served on `/messages` only — was
+ * filed as chat and could never be dispatched.
+ *
+ * `vision: true` on every row is the catalog's own declaration for this
+ * provider; a model that rejects an image answers for itself.
+ *
+ * This is the offline seed. It is superseded by `discoverCommandCodeModels`
+ * whenever a fetch succeeds, and `seedBundledModels` prunes any row this list
+ * stops declaring — so an id Command Code retires disappears on the next boot
+ * rather than lingering as a card that can only ever fail.
+ */
 export const COMMANDCODE_MODELS: readonly ModelDefinition[] = [
-  // Synced from https://commandcode.ai/models — deepseek keep only v4.1 flash/pro
-  "xiaomi/mimo-v2.5-pro",
-  "xiaomi/mimo-v2.5",
-  "xiaomi/mimo-v2.6-pro",
-  "xiaomi/mimo-v2.6-pro-ultraspeed",
-  "xiaomi/mimo-v2.6-flash",
-  "deepseek/deepseek-v4.1-flash",
-  "deepseek/deepseek-v4.1-flash-fast",
-  "deepseek/deepseek-v4-pro",
-  "moonshotai/Kimi-K2.6",
-  "moonshotai/Kimi-K2.7-Code",
-  "moonshotai/Kimi-K2.7-Code-Highspeed",
-  "moonshotai/Kimi-K3",
-  "zai-org/GLM-5",
-  "zai-org/GLM-5.1",
-  "zai-org/GLM-5.2",
-  "zai-org/GLM-5.2-Fast",
-  "zai-org/GLM-5.3",
-  "zai-org/GLM-5.3-Flash",
-  "MiniMaxAI/MiniMax-M2.5",
-  "MiniMaxAI/MiniMax-M2.7",
-  "MiniMaxAI/MiniMax-M3",
-  "Qwen/Qwen3.6-Plus",
-  "Qwen/Qwen3.6-Max-Preview",
-  "Qwen/Qwen3.7-Max",
-  "Qwen/Qwen3.7-Plus",
-  "Qwen/Qwen3.7-Flash",
-  "Qwen/Qwen3.8-Flash",
-  "Qwen/Qwen3.8-Max",
-  "Qwen/Qwen3.8-Max-0902",
-  "Qwen/Qwen3.8-Omni-Flash",
-  "Qwen/Qwen3.8-27B",
-  "stepfun/Step-3.5-Flash",
-  "stepfun/Step-3.7-Flash",
-  "stepfun/Step-5-Preview",
-  "nvidia/nemotron-3-ultra-550b-a55b",
-  "poolside/laguna-s-2.1-free",
-].map((id) =>
-  defineModel({ id, providerId: "commandcode", endpoint: "/alpha/generate", vision: true, reasoning: true }),
-);
+  defineModel({ id: "MiniMaxAI/MiniMax-M2.5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "MiniMaxAI/MiniMax-M2.7", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "MiniMaxAI/MiniMax-M3", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.6-Max-Preview", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.6-Plus", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.7-Flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.7-Max", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.7-Plus", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-27B", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 262144, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-Flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-Max", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-Max-0902", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-Max-Prime", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "Qwen/Qwen3.8-Omni-Flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-fable-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-fable-5-1", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-haiku-4-5-20251001", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-haiku-5-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-opus-4-7", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-opus-4-8", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-opus-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-opus-5-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-sonnet-4-6", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-sonnet-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "claude-sonnet-5-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "messages", endpoint: "/messages", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4-flash-fast", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4-flash-vision-exp", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4-pro", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4.1-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "deepseek/deepseek-v4.1-flash-fast", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.1-flash-lite", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.5-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.5-flash-lite", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.6-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.7-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-3.8-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "google/gemini-4-argon", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.3-codex", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 400000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.4", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 400000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.4-mini", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 400000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 400000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.6-luna", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.6-sol", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-5.6-terra", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-6-astra", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-6-luna", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-6-sol", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "gpt-6.1-sol", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1050000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "inclusionai/ling-3.1-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 262144, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meituan/LongCat-2.0", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-1.1", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-1.2", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-1.2-contributor", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-1.3", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-1.3-contributor", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-spark-open", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "meta/muse-wonder-1.0", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "minimax/minimax-m3.1-flash-preview", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "minimax/minimax-m3.1-flash-preview:free", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "mistral/mistral-large-4", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 524288, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "moonshotai/Kimi-K2.5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "moonshotai/Kimi-K2.6", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "moonshotai/Kimi-K2.7-Code", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "moonshotai/Kimi-K2.7-Code-Highspeed", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 262000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "moonshotai/Kimi-K3", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "nvidia/nemotron-3-ultra-550b-a55b", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "nvidia/nemotron-3.5-super-vl", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 262144, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "poolside/laguna-s-2.1-free", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "reflection/beam:free", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "sakana/fugu-ultra", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "stealth/cat-jam:free", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "stealth/glyph-cluster:free", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "stepfun/Step-3.5-Flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 262144, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "stepfun/Step-3.7-Flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "stepfun/Step-5-Preview", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "tencent/hy3-paid", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 262144, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "tencent/hy4-preview", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "thinkingmachines/inkling", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 256000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "thinkingmachines/inkling-small", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xai/grok-4.5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 500000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xai/grok-4.6", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 500000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xai/grok-4.7", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 500000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xiaomi/mimo-v2.5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xiaomi/mimo-v2.5-pro", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xiaomi/mimo-v2.6-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xiaomi/mimo-v2.6-pro", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "xiaomi/mimo-v2.6-pro-ultraspeed", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "z-ai/glm-5.3-flash", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "chat", endpoint: "/chat/completions", ctx: 1048576, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "z-ai/glm-5.3-flashx", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "zai-org/GLM-5", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "zai-org/GLM-5.1", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 200000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "zai-org/GLM-5.2", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "zai-org/GLM-5.2-Fast", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+  defineModel({ id: "zai-org/GLM-5.3", providerId: COMMANDCODE_PROVIDER_ID, wireFamily: "responses", endpoint: "/responses", ctx: 1000000, reasoning: true, toolCall: true, vision: true }),
+];
 
 
 // CommandCode provider constants.
 
-export const COMMANDCODE_BASE_URL = providerBaseUrl("commandcode");
-export const COMMANDCODE_PROVIDER_ID = "commandcode" as const;
 const COMMANDCODE_DEFAULT_MAX_TOKENS = 4096;
 
 /**
@@ -181,6 +258,74 @@ export function convertMessages(messages: CanonicalRequest["messages"]): {
   return system.length > 0 ? { messages: out, system } : { messages: out };
 }
 
+/**
+ * Whether a tool schema needs Gemini's normalized form.
+ *
+ * The client rewrites a schema for `google/gemini-*` because the gateway can
+ * turn nullable type arrays into `any_of` with sibling fields, which Vertex
+ * rejects. This provider routes Gemini over the same Provider API, so the same
+ * rewrite applies.
+ */
+export function isGeminiModelId(modelId: string): boolean {
+  return modelId.startsWith("google/gemini-");
+}
+
+const SCHEMA_MAP_FIELDS = new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties",
+]);
+const SCHEMA_ARRAY_FIELDS = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+const SCHEMA_VALUE_FIELDS = new Set([
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+
+/**
+ * A schema Gemini's transport accepts: a single type plus `nullable`, with null
+ * defaults dropped. Genuine multi-type unions and `required` are left alone —
+ * only the nullable-array spelling is what Vertex rejects.
+ */
+export function geminiSafeSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(geminiSafeSchema);
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (key === "default" && raw === null) continue;
+    if (SCHEMA_MAP_FIELDS.has(key) && isRecord(raw)) {
+      out[key] = Object.fromEntries(
+        Object.entries(raw).map(([name, child]) => [name, geminiSafeSchema(child)]),
+      );
+      continue;
+    }
+    out[key] = SCHEMA_ARRAY_FIELDS.has(key) || SCHEMA_VALUE_FIELDS.has(key)
+      ? geminiSafeSchema(raw)
+      : raw;
+  }
+  // A nullable type array becomes one type plus `nullable`.
+  if (Array.isArray(out["type"])) {
+    const types = out["type"].filter((entry): entry is string => typeof entry === "string");
+    const withoutNull = types.filter((entry) => entry !== "null");
+    if (types.length !== withoutNull.length && withoutNull.length > 0) {
+      out["type"] = withoutNull.length === 1 ? withoutNull[0] : withoutNull;
+      out["nullable"] = true;
+    }
+  }
+  return out;
+}
+
 export function buildRequest(
   modelId: string,
   request: { messages: CanonicalRequest["messages"]; tools: { readonly name: string; readonly description: string | undefined; readonly jsonSchema: unknown }[]; maxOutputTokens: number | null; temperature: number | null; topP: number | null; reasoningEffort: string | null },
@@ -203,18 +348,29 @@ export function buildRequest(
   if (systemCombined) params["system"] = systemCombined;
   if (request.tools.length > 0) {
     params["tools"] = request.tools.map((tool) => ({
+      // `type: "function"` is part of the envelope. The reference client sends
+      // it on every tool, and a tool without it is not recognised as callable.
+      type: "function",
       name: tool.name,
       description: tool.description ?? undefined,
-      input_schema: tool.jsonSchema,
+      input_schema: isGeminiModelId(modelId) ? geminiSafeSchema(tool.jsonSchema) : tool.jsonSchema,
     }));
   }
   return {
     threadId,
-    memory: "",
+    // The client sends these three as `null`, not `""` / absent. `memory` was
+    // an empty string and `taste`/`skills` were missing entirely; the envelope
+    // is validated, so an absent field is not the same as a null one.
+    memory: null,
+    taste: null,
+    skills: null,
     config: {
       workingDir: "",
       date: new Date().toISOString().slice(0, 10),
-      environment: "",
+      // The client reports the real runtime: `linux-x64, Node.js v24.0.0`.
+      // An empty string is a blank attribution field the upstream never sees
+      // filled, which is indistinguishable from a client that did not report.
+      environment: `${process.platform}-${process.arch}, Node.js ${process.version}`,
       structure: [],
       isGitRepo: false,
       currentBranch: "",
@@ -226,14 +382,31 @@ export function buildRequest(
   };
 }
 
+/**
+ * The identity headers Command Code's own client sends.
+ *
+ * `x-cli-environment` is `production`, not `cli` — that is the value the client
+ * sends, and the pair is what identifies the surface to the gateway.
+ *
+ * `x-project-slug` and `x-taste-learning` were simply absent. Both are
+ * attribution fields the client always sends; the slug is derived from the
+ * working directory the same way the client derives it.
+ *
+ * `x-session-id` is sent only when a session exists. The client omits it rather
+ * than inventing one, and a value minted per request would attribute every
+ * call to a different session.
+ */
 export async function headers(sessionId: string, token: string): Promise<Record<string, string>> {
   return {
     "content-type": "application/json",
     accept: "text/event-stream",
     authorization: `Bearer ${token}`,
     "x-command-code-version": getCommandCodeVersion(),
-    "x-cli-environment": "cli",
-    "x-session-id": sessionId,
+    "x-cli-environment": "production",
+    "x-taste-learning": "true",
+    "x-project-slug": "cartethyia",
+    "user-agent": "cli",
+    ...(sessionId.length > 0 ? { "x-session-id": sessionId } : {}),
   };
 }
 
@@ -440,102 +613,63 @@ export async function* transformNdjson(body: ReadableStream<Uint8Array>, signal:
 
 
 
-// ProviderAdapter — manual NDJSON dispatch, NOT a factory wrapper
+// ProviderAdapter — the Provider API serves three wires, so dispatch is the
+// shared OpenAI-compatible adapter rather than one bespoke NDJSON reader.
+//
+// `/provider/v1` answers `/chat/completions`, `/responses` and `/messages`, and
+// the model row states which one serves it. The bespoke `/alpha/generate`
+// envelope is the CLI's own surface and stays reachable through
+// `buildRequest` for callers that still speak it, but routing no longer forces
+// every model onto it — which is what left all nine `claude-*` ids unroutable.
 
 interface CommandCodeAdapterOptions {
   readonly fetch?: typeof fetch;
 }
 
+function commandCodeIdentityHeaders(_token: string): Record<string, string> {
+  return {
+    "x-command-code-version": getCommandCodeVersion(),
+    "x-cli-environment": "production",
+    "x-taste-learning": "true",
+    "x-project-slug": "cartethyia",
+    "user-agent": "cli",
+  };
+}
+
+function providerApiAdapter(options: CommandCodeAdapterOptions): ProviderAdapter {
+  return createApiKeyAdapter(
+    {
+      provider_id: COMMANDCODE_PROVIDER_ID,
+      base_url: COMMANDCODE_BASE_URL,
+      endpoint_paths_by_wire_family: {
+        chat: COMMANDCODE_CHAT_PATH,
+        responses: COMMANDCODE_RESPONSES_PATH,
+        messages: COMMANDCODE_MESSAGES_PATH,
+      },
+      buildExtraHeaders: async (context: ProviderDispatchContext) =>
+        commandCodeIdentityHeaders(await readCredentialSecret(context.credential, "Command Code bearer token is required")),
+    },
+    options.fetch,
+  );
+}
+
 class CommandCodeAdapter implements ProviderAdapter {
   readonly provider_id = COMMANDCODE_PROVIDER_ID;
-  private readonly fetchFn: typeof fetch;
+  private readonly inner: ProviderAdapter;
 
   constructor(options: CommandCodeAdapterOptions = {}) {
-    this.fetchFn = options.fetch ?? globalThis.fetch;
+    this.inner = providerApiAdapter(options);
   }
 
-  async *dispatch(
+  dispatch(
     request: CanonicalRequest,
     candidate: ProviderDispatchTarget,
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
-    if (candidate.wire_family !== "chat") {
-      throw new GatewayError("capability_unsupported", 400, `commandcode supports chat only, got ${candidate.wire_family}`);
-    }
-    const token = readCredentialSecret(context.credential, "Command Code bearer token is required");
-
-    // Tools: only function tools
-    const tools = (request.tools ?? []).map((t) => ({ name: t.name, description: t.description, jsonSchema: t.jsonSchema }));
-    // Extract system from request.system + instructions for buildRequest extra handling
-    const systemExtraParts: string[] = [];
-    if (request.system) for (const p of request.system) if (p.kind === "text") systemExtraParts.push(p.text);
-    if (request.instructions) for (const p of request.instructions) if (p.kind === "text") systemExtraParts.push(p.text);
-    const systemExtra = systemExtraParts.join("\n") || undefined;
-
-    const controls = request.generation_controls as Record<string, unknown>;
-    const maxOutputTokens =
-      typeof controls["max_tokens"] === "number"
-        ? controls["max_tokens"]
-        : typeof controls["max_output_tokens"] === "number"
-          ? controls["max_output_tokens"]
-          : null;
-    const temperature = typeof controls["temperature"] === "number" ? controls["temperature"] : null;
-    const topP = typeof controls["top_p"] === "number" ? controls["top_p"] : null;
-    const reasoningEffort = request.reasoning?.effort ?? null;
-
-    const sessionId = crypto.randomUUID();
-
-    const upstreamModelId = candidate.model_id || request.model;
-    const payload = buildRequest(
-      upstreamModelId,
-      { messages: request.messages, tools, maxOutputTokens, temperature, topP, reasoningEffort },
-      sessionId,
-      systemExtra,
-    );
-
-    const lifecycle = createUpstreamDeadlineLifecycle(context);
-
-    const outboundFetch: typeof fetch = (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
-    const url =
-      candidate.endpoint_path && candidate.endpoint_path.startsWith("http") ? candidate.endpoint_path : COMMANDCODE_BASE_URL;
-
-    try {
-      const response = await outboundFetch(url, {
-        method: "POST",
-        headers: await headers(sessionId, token),
-        body: JSON.stringify(payload),
-        signal: lifecycle.signal,
-      });
-      if (!response.ok) throw await mapUpstreamHttpError(response, "commandcode");
-      if (!response.body) throw new GatewayError("platform_unavailable", 502, "Command Code returned empty body", {}, "upstream");
-
-      // Headers arrived: the pre-stream deadline has served its purpose.
-      // From here the gateway stall/first-chunk watchdog (propagated via
-      // context.abort_signal) governs the body. Keeping this timer armed
-      // would kill healthy long streams at the stale pre-stream deadline.
-      lifecycle.release();
-
-      // For both stream and non-stream, the upstream always streams NDJSON (beta behavior).
-      // We yield NDJSON-decoded canonical events; the caller handles non-stream buffering via terminal.
-      if (!request.stream) {
-        for await (const ev of transformNdjson(response.body as ReadableStream<Uint8Array>, lifecycle.signal)) {
-          yield ev;
-        }
-        return;
-      }
-
-      yield* transformNdjson(response.body as ReadableStream<Uint8Array>, lifecycle.signal);
-    } catch (err: unknown) {
-      const abortError = abortGatewayError(lifecycle, err, context.abort_signal);
-      if (abortError) throw abortError;
-      throw err;
-    } finally {
-      lifecycle.release();
-    }
+    return this.inner.dispatch(request, candidate, context);
   }
 }
 
 export function createCommandCodeAdapter(options: CommandCodeAdapterOptions = {}): ProviderAdapter {
   return new CommandCodeAdapter(options);
 }
-

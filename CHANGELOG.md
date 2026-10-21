@@ -8,9 +8,19 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.5.0] "Jinhsi" - 2026-10-21
+
+Release preparation includes 69 local commits ahead of the configured upstream;
+they have not been pushed.
 
 ### Added
+
+- **The Notifications bell streams gateway alerts.** While the console is
+  open, it samples gateway memory every 10 seconds and checks for new releases
+  every minute. It reports high RSS (85% of system RAM) and sustained RSS growth
+  (20% over a minute), plus available updates. These are live-only server
+  notifications; they are not persisted, and a stalled GitHub check does not
+  block memory sampling.
 
 - **The providers page can hide providers with no account.** A 73-row catalog
   where an operator has connected three still meant scrolling past seventy
@@ -53,7 +63,116 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   can get an account blocked on, so a provider only flips when an account or an
   operator opts in; unset leaves every header byte-identical to before.
 
+- **Cursor is a bundled provider.** It speaks Connect-RPC over protobuf on a
+  bidirectional HTTP/2 stream, so it is reached through validated HTTP/2 egress
+  rather than `fetch`, and its Run origin is resolved per dispatch from
+  `GetServerConfig` instead of being a configured base URL.
+
+  Its tool loop spans **two client requests on one upstream Run**: the first
+  returns a tool call and the second submits that tool's result on the same Run,
+  so the Run — and the account and pool slot it holds — outlive the request that
+  opened them. A continuation is authorized by server-recorded tenant, API key,
+  provider, and account, not by the call id alone; a mismatch is refused, and a
+  call that is no longer pending fails explicitly rather than starting a Run the
+  model is not waiting on. An unanswered Run expires on its own
+  (`RUN_IDLE_TTL_MS`) so a tool round the client never answered cannot hold a
+  stream and a slot indefinitely.
+
+  Only an `mcp_args` call whose namespace and function name match a tool the
+  request declared is executed. Cursor's own shell, filesystem, and workspace
+  tools are answered `rejected`, never run. Images are sniffed and size-checked
+  before the Run is dialed, and image URLs must be HTTPS and are not followed
+  through redirects. Unrecognized bytes are rejected even when labelled as a
+  supported image type.
+
+  There is no quota collector and no static catalog: no Cursor quota endpoint is
+  established, and the roster is per-account and per-plan. See
+  [Cursor provider](documentation/features/cursor-provider.md).
+
+- **Trae is a working provider, on both realms.** `trae` and `traecn` are two
+  providers, not one region flag: separate core, account, and pay hosts, and a
+  CN `Cloud-IDE-JWT` against an intl `Bearer` plus a live client version — the
+  CN host answers 4015 without it. Login is the browser PKCE flow the login page
+  actually runs (login host resolved via `GetLoginGuidance`, callback path
+  `/authorize`, `AuthCode` redeemed through `public/oauth/ExchangeToken`),
+  refresh is rotation-aware, and a personal access token imports as a
+  refreshable credential. A port collision during login is now a 409
+  `oauth_callback_port_unavailable` instead of a hang; `CARTETHYIA_OAUTH_CALLBACK_PORT`
+  (default `59653`) moves it.
+
+  Dispatch selects the region host per account — an SG token is refused by the
+  US core with 1001 — and follows the row's own endpoint, which matters because
+  Trae serves two **disjoint** surfaces: chat
+  (`/api/ide/v1/llm_raw_chat`, keyed by `model_name`) and agent
+  (`/api/agent/v3/llm_utils_chat`, keyed by `config_name` plus `config_source`).
+  The picker's models live only on the agent surface, so the intl catalog is
+  agent-only. Tool calling works there: `parameters` is a JSON *string* upstream,
+  responses nest under `function_call`, and fragmented deltas are reassembled by
+  index.
+
+- **Qoder publishes names you can call.** Upstream keys are opaque slots
+  (`dfmodel`, `cmodel`), so the catalog now publishes caller-facing names
+  (`deepseek-v4.1-flash`, `cantus`) and dispatch translates them back; a slot
+  with a known name appears under that one id only. A second realm, `qodercn`,
+  has its own gateway host, OAuth client, roster, and icon. The roster reads the
+  **selectable** context maximum rather than the active one — 180k was being
+  published where 1M is selectable — and the live list is cached 300 s per realm.
+
+- **`/v1/embeddings`, `/v1/audio/transcriptions`, and `/v1/audio/speech`** are
+  open as **passthrough** surfaces. The gateway routes them, applies admission,
+  leasing, failover, and accounting, and forwards the body untouched — no
+  bundled adapter implements them, because there is no wire here to translate.
+  They are useful against a compatible upstream you configure yourself, and a
+  model row carrying the matching service kind is all that is needed. These
+  three had previously been listed in the route table with no handler behind
+  them, so they advertised a surface that 404d; a test pinned that absence, and
+  both are updated.
+
+  A **custom** provider is read as able to serve every service kind, so all
+  three are reachable without touching the manifest. The widening is taken from
+  the canonical tuple rather than a second list, so a surface added later is
+  reachable immediately instead of silently excluded.
+
+- **`/v1/images/generations` and `/v1/videos/generations`** are exposed on the
+  gateway. Both take an opaque body and let the provider's own adapter shape it,
+  so what a model accepts is what that provider accepts. Images are served by
+  Gemini, Antigravity, Codex, and the Buddy family. Video is declared only by
+  CodeBuddy and WorkBuddy, via `seedance-2.5`, submitted as an async task the
+  adapter polls to completion rather than returning a clip inline. A **custom**
+  provider is not limited to either list — `providerServiceKinds` grants an
+  unregistered upstream all three kinds, so any OpenAI-compatible host you point
+  at can serve both routes, and a remote that lacks them answers with its own
+  error rather than a gateway refusal.
+
+- **`models.free_tier`** (migration `0019`, both dialects): whether the provider
+  publishes a model as free. Nullable and three-valued — `true` free, `false`
+  billed, `NULL` unstated — because Qoder omits `is_free` on several rows and
+  collapsing that absence into `false` would assert a fact nobody measured. The
+  dashboard shows it as a tier badge, and the badge never moves a row between
+  catalog groups.
+
+- **An L2 cache with cross-process invalidation.** `src/persistence/shared-cache.ts`
+  adds `readShared`/`writeShared` for small values and
+  `publishInvalidation`/`subscribe` for large derived ones — the route snapshot
+  costs 11 SELECTs, so a console write now broadcasts instead of every process
+  re-deriving it. Wired into auth (keyed by token hash), the settings revision,
+  and the route snapshot. Inert without Redis: `REDIS_URL` is what makes it
+  cross-process, and without it behavior is exactly today's in-process caching.
+
 ### Changed
+
+- **Copilot Luna Auto now exposes one canonical efficient model id.**
+  `gpt-6-luna` selects the `efficiency` tier. The separate
+  `gpt-6-luna-low`, `gpt-6-luna-medium`, and `gpt-6-luna-high` catalog entries
+  are removed; the latter two no longer appear from account discovery either.
+
+- **Chat decoding recovers tool calls when an upstream emits the captured
+  `<tool_calls:…>` envelope as assistant text.** Previously the XML-like call
+  and argument tags appeared in the answer and no tool ran. Complete envelopes
+  are now recovered across SSE chunk boundaries; only names declared by the
+  request can become calls, and the same markup in the reasoning channel is
+  removed without executing it. An incomplete envelope is neither run nor
+  surfaced.
 
 - **gzip now applies only where it said it did.** The compression wrapper is
   scoped by a path allowlist (`/console/api/` and `/metrics`) inside
@@ -116,7 +235,52 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   also moves to `www.codebuddy.cn`, the host the reference bills that realm on,
   while `X-Domain` stays the domain recorded at login.
 
+- **Qoder output ceilings are per model, not one clamp.** A hardcoded 32k
+  applied to every row alike, which is what made the whole catalog look capped
+  at a single number. Upstream states no output limit at all, so the ceiling now
+  comes from the row: 384k for DeepSeek-V4, 512k for MiniMax-M3, 131k for GLM.
+
+- **API keys are `pn-carte-` and share keys `sh-carte-`, both with a 16-character
+  tail.** Personal keys were `carte_` and share keys `sh-carte_`, each with a
+  12-character tail. The separator is now a hyphen and the tail is 16
+  characters — 12 bytes base64url-encoded, which is exactly 16 with no padding.
+  Keys already issued keep the prefix they were created with: nothing resolves a
+  key by its prefix, so no stored credential stops working, and regeneration is
+  what moves a row to the new form.
+
+- **Qoder's plan refusal is scoped per model.** Code `112` was treated as
+  `auth_invalidated`, which cooled the whole account for what is a statement
+  about one model on one account. It now enters the model-scoped unreachable
+  ladder (6 h, doubling, capped at 24 h). An insufficient-quota refusal still
+  cools the account, because that one really is about the account.
+
+- **Cursor's client version is discovered, not pinned.** `x-cursor-client-version`
+  is `cli-<version>-<sha7>`, and both halves come from the official download API
+  — the only source that returns them together. The constant that was previously
+  hardcoded is now only what a cold process sends before the first fetch.
+
+- **Health writes no longer invalidate the whole route snapshot.**
+  Classification carries whether a write is visible to routing, and the
+  model-scoped path — which touches neither `status` nor `cooldownUntil` —
+  reports false. OAuth credentials are also cached with a TTL bound to token
+  expiry, removing a SELECT plus a decrypt from every attempt.
+
+- **Claude caching anchors on the last system block.** The breakpoint moved from
+  the first block to the last, so a stable prefix actually stays stable. Expect
+  one cache-miss wave on upgrade as fingerprints change.
+
+- **Hermes egress and identity.** The egress pool is skipped by default
+  (Cloudflare answers 403 for pool addresses) and the Client-identity control is
+  locked to the adapter's own User-Agent. `stepfun/step-5-preview:free` is
+  removed — retired upstream, now a 404 — and `poolside/laguna-xs-2.1:free`
+  drops from 131072 to 32768 output tokens.
+
 ### Fixed
+
+- **Console recovery clears stale login lockouts.** The local `carte` reset
+  previously removed console users but left the per-login failure buckets in
+  `console_lockouts`; recreating the account from the same IP therefore stayed
+  temporarily blocked. The reset now clears both in one transaction.
 
 - **A probe no longer retires an egress on the first connection failure.**
   `bun run probe:egress` reported "fails the first time, works on retry"
@@ -160,6 +324,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   from its precompressed sibling. Both separators are now matched, with a
   generated-looking check so plain words like `console-backgrounds.jpg` are
   still excluded.
+
+- **Cursor responses are no longer discarded.** `decodeServerMessages` was
+  dropping the final frame because Cursor sets `END_STREAM` on the frame that
+  carries the answer — every response was thrown away and the Run looked like a
+  heartbeat deadlock. Refusals arrive as Connect JSON envelopes inside a 200
+  stream and are now raised as `quota_exceeded`/502 instead of being read as
+  success, and a Run with a pending tool call is no longer torn down before the
+  result comes back. Separately, `grok-4.6` is no longer rewritten to
+  `cursor-grok-4.6` upstream; that rewrite made every Grok Run answer
+  "AI Model Not Found".
+
+- **A failed credential lookup no longer leaks, and no longer 500s.** The log
+  line carried the SQL statement **and the API key hash** at request rate. It is
+  now a sanitized message, a 503 `accounts_unavailable` instead of a 500, a 1 s
+  short-circuit so a degraded store does not stampede, and a flush backoff.
+
+- **A single `apiKey: sk-…` credential line is stored as a key.** It was
+  previously saved as the literal `key: value` line, so the key was lost and
+  every dispatch using it failed auth.
+
+- **Discovery reads what the provider states.** Output limits were falling back
+  to 64,192 on a 384k model because `max_completion_tokens` was not read;
+  `capabilities.input` and declared `reasoning`/`tool_call` were pinned instead
+  of parsed. All three now come from the upstream row.
+
+- **"None" in Client identity now sticks.** Selecting it fell back to the
+  previous value because an empty emission was rejected unconditionally; it is
+  now accepted only when the caller published a labelled empty option, which is
+  what the identity dropdown does. The API-format dropdown keeps the old rule.
+
+- **"Test all" reports progress, not a verdict.** It showed pass/fail per
+  account while still running, so a partial sweep read as a result. It now shows
+  `Tested N/M`.
+
+- **The memory watcher reads memory that is actually current.** The
+  notifications feed sampled RSS through `health`, which is cached for 10 s —
+  and it samples on that exact cadence, so consecutive samples could be the same
+  cached bytes. A growth trend over identical samples cannot fire, and a spike
+  could be reported up to 10 s late with a value from before it. It now reads
+  process memory directly, which costs nothing and is never stale. The cached
+  `health` read is unchanged for the dashboard tile, which is what the cache is
+  for.
+
+- **CPU load no longer reports a fake 0.0% on Windows.** `loadavg()` is
+  `[0, 0, 0]` on every Windows build — there is no such syscall and Node returns
+  a zeroed tuple rather than failing — so divided by cores it produced a
+  confident "0.0%" on a busy gateway, which reads as idle. Reported as
+  unavailable instead, and the tile says load average is not reported on this
+  platform.
 
 ## [2.4.6] — 2026-10-18
 

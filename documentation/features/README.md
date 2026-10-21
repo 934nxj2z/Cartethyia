@@ -20,6 +20,7 @@ feature manuals.
 | [Usage floor](usage-floor.md) | Skip accounts whose remaining quota is at or below a provider threshold |
 | [Buddy media generation](buddy-media-generation.md) | Generate images and submit/poll video tasks through Buddy providers |
 | [Buddy CLI identity](buddy-cli-identity.md) | Present a Buddy provider as the official CLI client rather than the desktop app |
+| [Cursor provider](cursor-provider.md) | Run Cursor's agent protocol across two client requests, and refuse anything the client did not declare |
 
 Procedure does not live here. `.skills/` owns procedure, and each skill names
 the layer's owner: [cartethyia-health-routing](../../.skills/cartethyia-health-routing/SKILL.md)

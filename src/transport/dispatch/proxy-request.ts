@@ -28,12 +28,14 @@ import {
   completionContext,
   estimatedUsage,
   parseCapturedBody,
-  shouldCaptureProviderBody,
+  shouldCaptureProviderBodyForRequest,
   terminalFailure,
 } from "./attempt-finalize";
 import { runAttemptLoop } from "./attempt-loop";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
 import { dispatchStreamingAttempt } from "./streaming/stream";
+import type { ProviderContinuationScope } from "../../providers/provider-contracts";
+import type { PreparedProxyRequest } from "../request/preparer";
 
 export interface ProviderProxyHandlerDeps {
   readonly db: CartethyiaDatabase;
@@ -50,6 +52,24 @@ export interface ProviderProxyHandlerDeps {
   readonly telemetryBuffer?: TelemetryBatchBuffer;
   readonly resolveOAuthRefresher?: (providerId: string) => Promise<OAuthTokenRefresher | undefined>;
   readonly oauthRefreshService?: OAuthRefreshService;
+}
+
+/**
+ * The continuation scope one dispatch carries.
+ *
+ * Present only for a route that has an account: a provider session held across
+ * requests is authorized by tenant + API key + provider + account, and a route
+ * with no account cannot be scoped — so it must not hold a session open at all.
+ */
+function continuationScopeFor(prepared: PreparedProxyRequest): ProviderContinuationScope | undefined {
+  const accountId = prepared.candidate.provider_account_id;
+  if (accountId === undefined) return undefined;
+  return {
+    tenantId: prepared.authorization.tenantId,
+    apiKeyId: prepared.authorization.id,
+    providerId: prepared.candidate.provider_id,
+    providerAccountId: accountId,
+  };
 }
 
 /**
@@ -127,6 +147,9 @@ export async function handleProviderProxyRequest(
       estimatedInputTokens: prepared.estimatedInputTokens,
       estimatedOutputTokens: prepared.estimatedOutputTokens,
       authorizationSnapshot: prepared.authorization.snapshot,
+      // A continuation borrows the held Cursor Run: one upstream turn must not
+      // occupy two account/pool concurrency slots.
+      ...(prepared.continuationAffinity === undefined ? {} : { borrowsHeldSession: true }),
     },
     candidates: attemptCandidates,
     tenantId: prepared.authorization.tenantId,
@@ -175,6 +198,8 @@ export async function handleProviderProxyRequest(
       const lease = context.leases.lease;
       const reservation = context.leases.reservation;
       const proxySlot = context.leases.proxySlot;
+      const leaseOwnership = context.leases.ownership;
+      const continuationScope = continuationScopeFor(prepared);
       const providerRouteCandidate = {
         provider_id: candidate.provider_id,
         model_id: candidate.model_id,
@@ -209,13 +234,35 @@ export async function handleProviderProxyRequest(
                   prepared.authorization.snapshot.tenant_id,
                 ),
                 providerCapture,
-                await shouldCaptureProviderBody(deps.db, prepared.authorization.snapshot.tenant_id),
+                await shouldCaptureProviderBodyForRequest(
+                  deps.db,
+                  prepared.authorization.snapshot.tenant_id,
+                  state,
+                ),
+              ),
+            }
+          : {}),
+        ...(deps.networkBindingFactory
+          ? {
+              outboundAttachmentFetch: deps.networkBindingFactory.fetch(
+                networkPoolId,
+                prepared.authorization.snapshot.tenant_id,
               ),
             }
           : {}),
         ...(deps.networkBindingFactory
           ? { outboundWebSocket: deps.networkBindingFactory.webSocket(networkPoolId, prepared.authorization.snapshot.tenant_id) }
           : {}),
+        ...(deps.networkBindingFactory
+          ? {
+              outboundHttp2: deps.networkBindingFactory.http2Bidi(
+                networkPoolId,
+                prepared.authorization.snapshot.tenant_id,
+              ),
+            }
+          : {}),
+        ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
+        ...(continuationScope === undefined ? {} : { continuationScope }),
       });
       if (dispatchRequest.stream) {
         return dispatchStreamingAttempt({
@@ -237,6 +284,8 @@ export async function handleProviderProxyRequest(
           providerCapture,
           retainLeases: context.retainLeases,
           ttfbFields,
+          ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
+          ...(continuationScope === undefined ? {} : { continuationScope }),
         });
       }
       // Pool slot ownership belongs to the candidate attempt: the slot was
@@ -269,6 +318,11 @@ export async function handleProviderProxyRequest(
       if (terminal === undefined) throw terminalFailure(undefined);
       const terminalError = terminalFailure(terminal);
       if (terminalError !== undefined) throw terminalError;
+      // An interim `tool_use` terminal defers usage: the provider's turn is not
+      // over, so its authoritative usage arrives with the *next* request that
+      // continues the same upstream turn. Charging an estimate here would bill
+      // the turn twice — the estimate now and the real usage later.
+      const deferredUsage = terminal.usage_deferred === true;
       const usage =
         terminal.usage ??
         estimatedUsage(prepared.estimatedInputTokens, prepared.estimatedOutputTokens);
@@ -316,7 +370,10 @@ export async function handleProviderProxyRequest(
           return reported === undefined ? {} : { reportedModel: reported };
         })(),
         usage: pricedUsage,
-        commitUsage: pricedUsage,
+        // Deferred: the request consumed upstream resources (it is mid-turn), so
+        // the *recorded* usage stays for the row, but nothing is committed —
+        // the Run's own `turn_ended` commits once, on the final response.
+        ...(deferredUsage ? {} : { commitUsage: pricedUsage }),
         // Decode once: `output.bytes` is a `Uint8Array`, which
         // `parseCapturedBody` returns untouched — the Server panel would store
         // a byte-index map (`{"0":123,…}`) after redaction instead of the

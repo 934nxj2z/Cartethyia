@@ -303,10 +303,14 @@ export class ClaudeAdapter implements ProviderAdapter {
         type: "text",
         text: createClaudeBillingText(userText, cliVersion),
       };
+      // The breakpoint is NOT pinned here. The reference client caches the
+      // *last* system block, so when the caller supplies its own prompt the
+      // breakpoint belongs on that, not on the identity — pinning it here put
+      // a breakpoint mid-prefix and left the caller's prompt uncached, which
+      // is both a fingerprint delta and a cache miss on every request.
       const instruction = {
         type: "text",
         text: CLAUDE_CODE_SYSTEM_INSTRUCTION,
-        cache_control: { type: "ephemeral" },
       };
       const hasInstruction = system.some(
         (block) => isRecord(block) && block["text"] === CLAUDE_CODE_SYSTEM_INSTRUCTION,
@@ -319,11 +323,31 @@ export class ClaudeAdapter implements ProviderAdapter {
       );
       // Captured-client placement: billing first, instruction second. The
       // patch anchor assumes this order — never reorder around it.
-      payload.system = [
+      const assembled = [
         ...(hasBilling ? [] : [billing]),
         ...(hasInstruction ? [] : [instruction]),
         ...system,
       ];
+      // The cache breakpoint rides the last system block: everything before it
+      // is stable prefix, and caching the tail is what the reference client
+      // does. Billing is never breakpointed — it varies per request.
+      const lastIndex = assembled.length - 1;
+      if (lastIndex > 0) {
+        const last = assembled[lastIndex];
+        const existing = isRecord(last) ? last["cache_control"] : undefined;
+        // A caller's own breakpoint is kept, but upgraded to the reference
+        // client's 1h retention when it stated none: that is the default the
+        // real CLI sends, and leaving it bare caches a shorter prefix than the
+        // upstream will honour.
+        const breakpoint =
+          isRecord(existing) && existing["ttl"] !== undefined
+            ? existing
+            : { type: "ephemeral", ttl: "1h" };
+        if (isRecord(last)) {
+          assembled[lastIndex] = { ...last, cache_control: breakpoint };
+        }
+      }
+      payload.system = assembled;
     }
     const url = endpointUrl(
       this.baseUrl,

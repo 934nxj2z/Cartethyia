@@ -41,10 +41,11 @@ export async function codebuddyHeaders(
   });
   if (resolveBuddyIdentity(context, cliIdentity) === "cli") {
     return {
-      // The reference is explicit: the official CLI sends `Accept:
-      // application/json` and no browser header at all — no
-      // `X-Requested-With`, no `x-codebuddy-request`, no device token. A
-      // request carrying both halves is a hybrid no real client produces.
+      // The CLI sends `Accept: application/json` and no device token. The
+      // browser-shaped pair (`X-Requested-With`, `x-codebuddy-request`) stays
+      // off this branch: a request carrying both halves is a hybrid no real
+      // client produces, and that is a fidelity choice, not a requirement —
+      // the live API answers either way.
       accept: "application/json",
       "User-Agent": `CLI/${getCodeBuddyVersion()} CodeBuddy/${getCodeBuddyVersion()}`,
       "X-Product": "SaaS",
@@ -52,6 +53,11 @@ export async function codebuddyHeaders(
       "X-IDE-Name": "CLI",
       "X-IDE-Version": getCodeBuddyVersion(),
       "X-Domain": codebuddyDomain(variant),
+      // The conversation purpose the reference client states. Not required —
+      // verified against the live API that a request succeeds without it — but
+      // it is part of the client's real request, and matching the client is the
+      // defence against a channel check tightening later.
+      "X-Agent-Purpose": "conversation",
       ...conversation,
       ...buddyCliTraceHeaders(conversation),
       ...buddyCliHeaders({ userId: buddyUserId(context) }),
@@ -70,6 +76,9 @@ export async function codebuddyHeaders(
     "X-Domain": codebuddyDomain(variant),
     "x-requested-with": "XMLHttpRequest",
     "x-codebuddy-request": "1",
+    // Same value the CLI branch sends, for the same reason: part of the
+    // client's real request, harmless when the channel check does not read it.
+    "X-Agent-Purpose": "conversation",
     // Same family WorkBuddy sends: the upstream's channel check reads the
     // turn-level aggregation key, and a chat request without it is refused for a
     // missing conversation id.

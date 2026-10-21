@@ -35,19 +35,17 @@ describe("OpenCode dispatch base", () => {
     );
   });
 
-  test("the restored muse free id is catalogued on the responses wire", () => {
-    // Dropped once as deprecated, then restored: it answers 200 on the
-    // Responses wire with the agent tool set. Without tools it returns 403 —
-    // that is the free-tier gate judging the request shape, not the model, and
-    // reading it as a dead model is what removed this row in the first place.
+  test("the deprecated muse contributor id is not catalogued", () => {
+    // This row was dropped as deprecated, restored on the strength of a 200
+    // seen on the Responses wire, and dropped again: the live Zen roster does
+    // not list `muse-spark-1.2-contributor-free` at all. A 200 from one probe
+    // does not outrank the provider's own roster — an id absent from it is an
+    // id that can disappear without notice, which is exactly what a stale row
+    // is. `muse-spark-1.2` and `muse-spark-1.3` remain listed.
     const muse = OPENCODE_FREE_MODELS.find(
       (model) => model.modelId === "muse-spark-1.2-contributor-free",
     );
-    expect(muse).toBeDefined();
-    expect(muse?.wireFamily).toBe("responses");
-    expect(dispatchUrl("opencode", muse?.endpointPath ?? "")).toBe(
-      "https://opencode.ai/inference/v1/responses",
-    );
+    expect(muse).toBeUndefined();
   });
 
   test("the genuinely deprecated muse free id stays out", () => {

@@ -214,6 +214,9 @@ interface MergedModelRow {
   reasoning: boolean;
   toolCall: boolean;
   enabled: boolean;
+  proOnly: boolean | null;
+  /** Whether the provider publishes the row as free. Read for plan logging. */
+  freeTier: boolean | null;
 }
 /**
  * Converts persisted model rows into candidate input. Seed materialization is
@@ -235,6 +238,8 @@ function mergeModelCatalog(
       reasoning: row.reasoning,
       toolCall: row.toolCall,
       enabled: row.enabled,
+      freeTier: row.freeTier ?? null,
+      proOnly: row.proOnly ?? null,
     }));
 }
 
@@ -272,6 +277,12 @@ const MODEL_COLUMNS = {
   reasoning: models.reasoning,
   toolCall: models.toolCall,
   enabled: models.enabled,
+  // Carried for the plan gate: an upstream may refuse a model on a free plan,
+  // and only the row says which. See `planAllowsModel`.
+  proOnly: models.proOnly,
+  // Carried alongside it: the provider's own statement that the row is free,
+  // which is the other half of the same plan question.
+  freeTier: models.freeTier,
 } as const;
 const ACCOUNT_COLUMNS = {
   id: providerAccounts.id,
@@ -282,6 +293,10 @@ const ACCOUNT_COLUMNS = {
   cooldownUntil: providerAccounts.cooldownUntil,
   modelCooldowns: providerAccounts.modelCooldowns,
   lastErrorCategory: providerAccounts.lastErrorCategory,
+  // The account's last reported plan. Read here rather than from the quota
+  // cache, which is empty on a cold start — exactly when routing must not be
+  // guessing whether an account is free.
+  quotaPlan: providerAccounts.quotaPlan,
 } as const;
 
 const ALIAS_COLUMNS = {
@@ -651,6 +666,13 @@ class RouteCatalogRepository {
           ...(routeUserAgent === undefined ? {} : { user_agent: routeUserAgent }),
           tenant_id: rowTenantId,
           provider_account_id: account.id,
+          // The plan gate is per (account, model): the model may be refused on
+          // a free plan and the account may be on one. Both ride here because
+          // `plan()` sees the candidate and nothing else.
+          ...(model.proOnly === true ? { pro_only: true } : {}),
+          ...(account.quotaPlan === null || account.quotaPlan === undefined
+            ? {}
+            : { account_plan: account.quotaPlan }),
           // Provider-wide concurrency ceiling from Routing Strategy; legacy
           // account overrides are never read here.
           ...(() => {

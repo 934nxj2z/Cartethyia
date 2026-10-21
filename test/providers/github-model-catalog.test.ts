@@ -30,23 +30,25 @@ describe("GitHub Copilot fallback model catalog", () => {
   test("publishes all Auto routing tiers in the fallback catalog", () => {
     const modelIds = new Set(GITHUB_MODELS.map((model) => model.modelId));
 
-    expect(modelIds.has("gpt-6-luna-low")).toBe(true);
-    expect(modelIds.has("gpt-6-luna-medium")).toBe(true);
-    expect(modelIds.has("gpt-6-luna-high")).toBe(true);
+    expect(modelIds.has("gpt-6-luna")).toBe(true);
+    expect(modelIds.has("gpt-6-luna-low")).toBe(false);
+    expect(modelIds.has("gpt-6-luna-medium")).toBe(false);
+    expect(modelIds.has("gpt-6-luna-high")).toBe(false);
     expect(modelIds.has("auto")).toBe(true);
     expect(modelIds.has("auto-efficiency")).toBe(false);
     expect(modelIds.has("auto-balance")).toBe(false);
     expect(modelIds.has("auto-intelligence")).toBe(false);
   });
 
-  test("does not re-add excluded ids from the live account catalog", async () => {
+  test("removes retired Luna variants and keeps the canonical efficiency alias", async () => {
     const credential = JSON.stringify({ access: "token", apiHost: "copilot.example" });
     const response = new Response(JSON.stringify({
       data: [
         ...[...GITHUB_EXCLUDED_MODEL_IDS].map((id) => ({
           id,
-          supported_endpoints: [id === "gpt-6-luna" ? "/responses" : "/chat/completions"],
+          supported_endpoints: ["/chat/completions"],
         })),
+        { id: "gpt-6-luna", supported_endpoints: ["/responses"] },
         { id: "gpt-4.1", supported_endpoints: ["/chat/completions"] },
       ],
     }));
@@ -59,8 +61,10 @@ describe("GitHub Copilot fallback model catalog", () => {
 
     const modelIds = new Set(models?.map((model) => model.modelId));
     expect(modelIds.has("gpt-4.1")).toBe(true);
-    expect(modelIds.has("gpt-6-luna")).toBe(false);
-    expect(modelIds.has("gpt-6-luna-low")).toBe(true);
+    expect(modelIds.has("gpt-6-luna")).toBe(true);
+    expect(modelIds.has("gpt-6-luna-low")).toBe(false);
+    expect(modelIds.has("gpt-6-luna-medium")).toBe(false);
+    expect(modelIds.has("gpt-6-luna-high")).toBe(false);
     expect(await githubModelRoute("gpt-6-luna", credential)).toEqual({
       wireFamily: "responses",
       endpointPath: "/responses",
@@ -80,7 +84,7 @@ describe("GitHub Copilot fallback model catalog", () => {
       fetcher: Object.assign(
         async () => new Response(JSON.stringify({
           data: [{
-            id: "gpt-6-luna-high",
+            id: "gpt-6-luna",
             supported_endpoints: ["/responses"],
             capabilities: {
               limits: {
@@ -94,7 +98,7 @@ describe("GitHub Copilot fallback model catalog", () => {
         { preconnect: fetch.preconnect.bind(fetch) },
       ),
     });
-    const row = models?.find((model) => model.modelId === "gpt-6-luna-high");
+    const row = models?.find((model) => model.modelId === "gpt-6-luna");
     expect(row?.contextLimit).toBe(1_000_000);
     expect(row?.outputLimit).toBe(128_000);
   });

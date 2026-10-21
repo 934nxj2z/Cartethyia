@@ -31,8 +31,8 @@ import {
   useProbeAllProviderAccounts,
   useProbeModel,
   useProviderAccounts,
+  useProviderDetail,
   useProviderModels,
-  useProviders,
   useStartOAuthAuthorize,
   useSyncProviderModels,
   useUpdateGlobalProvider,
@@ -44,6 +44,7 @@ import { providerCanConfigureUserAgent } from "../../lib/provider-user-agent";
 import { RoutingStrategyCard } from "./sections/RoutingStrategyCard";
 import { UsageFloorControl } from "./sections/UsageFloorControl";
 import { CredentialNotice } from "./sections/CredentialNotice";
+import { CustomProviderSettings } from "./sections/CustomProviderSettings";
 import { AccountsList, AddAccountModal } from "./sections/Accounts";
 import { DeviceCodeDialog, OAuthBrowserDialog } from "./sections/OAuthDialogs";
 import {
@@ -82,7 +83,7 @@ export default function ProviderDetail(): ReactNode {
       ? requestedService
       : "llm";
   const [selectedService, setSelectedService] = useState<DashboardServiceKind>(initialService);
-  const providersQuery = useProviders();
+  const providerQuery = useProviderDetail(id);
   const modelsQuery = useProviderModels(id);
   const accountsQuery = useProviderAccounts(id);
   const syncModels = useSyncProviderModels();
@@ -156,7 +157,7 @@ export default function ProviderDetail(): ReactNode {
     [],
   );
 
-  const provider = (providersQuery.data ?? []).find((item) => item.providerId === id);
+  const provider = providerQuery.data;
   const autoModelSyncProvider = id === "opencode" || id === "cline";
   const serviceKinds = provider === undefined ? ["llm"] : normalizedServiceKinds(provider);
   const supportedServiceKinds: DashboardServiceKind[] = [];
@@ -256,17 +257,14 @@ export default function ProviderDetail(): ReactNode {
       },
     );
   };
-  if (providersQuery.isPending) return <LoadingState label="Loading provider..." />;
-  // A failed catalog load is NOT a missing provider. Without this branch a 500
-  // rendered "Provider not found", which sends the operator looking for a
-  // deleted provider instead of at the outage in front of them.
-  if (providersQuery.isError)
+  if (providerQuery.isPending) return <LoadingState label="Loading provider..." />;
+  if (providerQuery.isError)
     return (
       <ErrorState
         title="Unable to load providers"
-        message="The provider catalog could not be read, so this page cannot resolve its provider."
-        onRetry={() => void providersQuery.refetch()}
-        retrying={providersQuery.isFetching}
+        message="The provider details could not be read, so this page cannot resolve its endpoint settings."
+        onRetry={() => void providerQuery.refetch()}
+        retrying={providerQuery.isFetching}
         action={<BackLink to="/providers" label="Back to providers" />}
       />
     );
@@ -451,6 +449,7 @@ export default function ProviderDetail(): ReactNode {
       />
       {/* Where to obtain this provider's credential */}
       <CredentialNotice provider={provider} />
+      {!provider.isBuiltIn ? <CustomProviderSettings provider={provider} /> : null}
       {activeService === "llm" ? (
         <RoutingStrategyCard
           providerId={id}
@@ -460,24 +459,25 @@ export default function ProviderDetail(): ReactNode {
         />
       ) : null}
       {/* Accounts */}
-      {provider.requiresAccount === false ? (
-        <Card>
-          <CardHeader title="Accounts" icon={<Cable size={16} />} />
-          <CardBody>
-            <p className="text-caption text-text-secondary">
-              This provider is a public, unauthenticated route — no account or credential is
-              needed. Routing already works without any setup here.
-            </p>
-          </CardBody>
-        </Card>
-      ) : (
-        <Card>
-          <CardHeader
-            title="Accounts"
-            subtitle={`${accounts.length} total · ${activeAccounts} active · ${accounts.length - activeAccounts} disabled`}
-            icon={<Cable size={16} />}
-            action={
-              <CardActions>
+      <div id="provider-accounts" tabIndex={-1}>
+        {provider.requiresAccount === false ? (
+          <Card>
+            <CardHeader title="Accounts" icon={<Cable size={16} />} />
+            <CardBody>
+              <p className="text-caption text-text-secondary">
+                This provider is a public, unauthenticated route — no account or credential is
+                needed. Routing already works without any setup here.
+              </p>
+            </CardBody>
+          </Card>
+        ) : (
+          <Card>
+            <CardHeader
+              title="Accounts"
+              subtitle={`${accounts.length} total · ${activeAccounts} active · ${accounts.length - activeAccounts} disabled`}
+              icon={<Cable size={16} />}
+              action={
+                <CardActions>
                 {provider.oauthFlows?.browser && (
                   <Button
                     variant="secondary"
@@ -508,12 +508,16 @@ export default function ProviderDetail(): ReactNode {
                     icon={<Download size={13} />}
                     onClick={() => setImportDialogOpen(true)}
                     title={
-                      provider.oauthFlows.browser || provider.oauthFlows.device
+                      provider.oauthFlows.browser ||
+                      provider.oauthFlows.device ||
+                      provider.oauthFlows.refreshable
                         ? "Import a credential you already hold — a refresh token, an exported auth blob, or an API key"
                         : "Add and validate an API key"
                     }
                   >
-                    {provider.oauthFlows.browser || provider.oauthFlows.device
+                    {provider.oauthFlows.browser ||
+                    provider.oauthFlows.device ||
+                    provider.oauthFlows.refreshable
                       ? "Import credential"
                       : "Add API key"}
                   </Button>
@@ -526,36 +530,37 @@ export default function ProviderDetail(): ReactNode {
                 >
                   Add Account
                 </Button>
-              </CardActions>
-            }
-          />
-          <CardBody className="flex flex-col gap-5">
-            <UsageFloorControl providerId={id} />
-            {accountsQuery.isPending ? (
-              <LoadingState label="Loading accounts..." />
-            ) : accountsQuery.isError ? (
-              <ErrorState
-                message="Failed to load accounts"
-                onRetry={() => accountsQuery.refetch()}
-              />
-            ) : accounts.length === 0 ? (
-              <EmptyState
-                title="No accounts connected"
-                message="Add an API key or OAuth credential to route requests to this provider."
-              />
-            ) : (
-              <AccountsList
-                providerId={id}
-                accounts={accounts}
-                onDelete={(acc) => setDeleteTarget(acc)}
-                showGrokProbe={activeService === "llm" && id === "grok"}
-                grokProbePending={probeAllAccounts.isPending}
-                onGrokProbe={runGrokAccountProbe}
-              />
-            )}
-          </CardBody>
-        </Card>
-      )}
+                </CardActions>
+              }
+            />
+            <CardBody className="flex flex-col gap-5">
+              <UsageFloorControl providerId={id} />
+              {accountsQuery.isPending ? (
+                <LoadingState label="Loading accounts..." />
+              ) : accountsQuery.isError ? (
+                <ErrorState
+                  message="Failed to load accounts"
+                  onRetry={() => accountsQuery.refetch()}
+                />
+              ) : accounts.length === 0 ? (
+                <EmptyState
+                  title="No accounts connected"
+                  message="Add an API key or OAuth credential to route requests to this provider."
+                />
+              ) : (
+                <AccountsList
+                  providerId={id}
+                  accounts={accounts}
+                  onDelete={(acc) => setDeleteTarget(acc)}
+                  showGrokProbe={activeService === "llm" && id === "grok"}
+                  grokProbePending={probeAllAccounts.isPending}
+                  onGrokProbe={runGrokAccountProbe}
+                />
+              )}
+            </CardBody>
+          </Card>
+        )}
+      </div>
 
       {activeService === "llm" ? (
         <>

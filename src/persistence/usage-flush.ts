@@ -80,11 +80,30 @@ async function writeLifetimeDeltas(
 const FLUSH_STATEMENT_MAX_KEYS = 500;
 /** Max distinct keys retained across windows; oldest dropped first. */
 const FLUSH_PENDING_MAX_KEYS = 5000;
+
+/**
+ * Consecutive fully-failed flushes before the writer backs off.
+ *
+ * A database that is down stays down: retrying every `intervalMs` means a
+ * write attempt per second against a backend that is already overloaded, which
+ * is load the operator cannot distinguish from real traffic and which delays
+ * recovery. After this many failures the buffer stops probing and waits out a
+ * cooldown instead.
+ */
+const FLUSH_FAILURE_STREAK_LIMIT = 3;
+/** How long a failing writer waits before probing again. */
+const FLUSH_BACKOFF_MS = 15_000;
 export class UsageFlushBuffer {
   private readonly pending = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private flushing = false;
   private stopped = false;
+  /** Consecutive flushes that failed outright; drives the backoff below. */
+  private failureStreak = 0;
+  /** Wall-clock time before which no flush is attempted. */
+  private backoffUntil = 0;
+  /** Deltas abandoned because the buffer could not persist them. */
+  private droppedDelta = 0;
 
   constructor(
     private readonly db: CartethyiaDatabase,
@@ -105,6 +124,19 @@ export class UsageFlushBuffer {
   }
 
   /**
+   * Deltas recorded but not yet persisted, for one key.
+   *
+   * Exposed so a reader of `lifetime_tokens_consumed` can add what is in
+   * flight to what Postgres last stored. Without it such a reader saw a value
+   * that was behind by up to one flush interval, and — because the flush is
+   * coalescing by design — behind by the largest amount exactly when the key
+   * was busiest.
+   */
+  pendingFor(apiKeyId: string): number {
+    return this.pending.get(apiKeyId) ?? 0;
+  }
+
+  /**
    * Writes everything accumulated so far, in bounded statements of at most
    * 500 keys each. One giant statement grows the SQL string with the
    * distinct-key count per window; chunking keeps each statement bounded.
@@ -116,9 +148,14 @@ export class UsageFlushBuffer {
    */
   async flush(): Promise<void> {
     if (this.flushing || this.pending.size === 0) return;
+    // Backing off during a sustained outage: without this the writer probed a
+    // failing database on every tick, adding write load to the very overload
+    // that caused the failure.
+    if (Date.now() < this.backoffUntil) return;
     this.flushing = true;
     const batch = new Map(this.pending);
     this.pending.clear();
+    let failed = 0;
     try {
       const entries = [...batch];
       for (let offset = 0; offset < entries.length; offset += FLUSH_STATEMENT_MAX_KEYS) {
@@ -134,13 +171,36 @@ export class UsageFlushBuffer {
           try {
             await this.write(this.db, apiKeyId, delta);
           } catch {
-            this.pending.set(apiKeyId, (this.pending.get(apiKeyId) ?? 0) + delta);
+            // A transient failure retries, but only while the buffer is not
+            // itself saturated: an outage that outlasts the cap must drop
+            // accounting rather than grow the pending map without bound.
+            if (this.pending.size < FLUSH_PENDING_MAX_KEYS) {
+              this.pending.set(apiKeyId, (this.pending.get(apiKeyId) ?? 0) + delta);
+            } else {
+              this.droppedDelta += delta;
+            }
+            failed += 1;
           }
         }
       }
     } finally {
+      if (failed > 0) {
+        this.failureStreak += 1;
+        if (this.failureStreak >= FLUSH_FAILURE_STREAK_LIMIT) {
+          this.backoffUntil = Date.now() + FLUSH_BACKOFF_MS;
+          this.failureStreak = 0;
+        }
+      } else {
+        this.failureStreak = 0;
+        this.backoffUntil = 0;
+      }
       this.flushing = false;
     }
+  }
+
+  /** Total usage delta abandoned after sustained write failure. */
+  get droppedTotal(): number {
+    return this.droppedDelta;
   }
 
   /** Stops the timer. Pass `{ flush: true }` to persist what is still pending. */

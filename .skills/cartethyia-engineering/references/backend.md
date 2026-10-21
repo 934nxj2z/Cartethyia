@@ -53,8 +53,11 @@ terminal outcome and is not released twice.
 
 ## Protocol
 
-`src/protocol/canonical-model.ts` is the request the rest of the backend sees;
-`registry.ts` encodes and decodes the three wire families.
+`src/protocol/canonical-model.ts` is the request the rest of the backend sees.
+There are four wire families (`WIRE_FAMILIES`: chat, responses, messages,
+gemini) but `registry.ts` only encodes and decodes **three** of them — `gemini`
+has a request module and no codec entry, and the switch throws on it. "Three
+codecs over four families" is the accurate statement; neither number alone is.
 
 | Wire family | Request encoder | Response decoder |
 | --- | --- | --- |
@@ -182,7 +185,9 @@ recreating them.
 
 `src/workers/` keeps scheduling and jobs flat: `scheduler.ts` (timers,
 non-overlap, shutdown), `sweep-runner.ts` (bounded runner), `quota-refresh-sweep.ts`,
-`oauth-refresh-sweep.ts`, `daily-checkin.ts`, and `account-identity-sweep.ts`.
+`oauth-refresh-sweep.ts`, `daily-checkin.ts`, `account-identity-sweep.ts`, and
+`buddy-growth-tasks.ts`. Read the directory rather than this list — it is
+navigation, not an inventory.
 `src/boot/dependencies.ts` registers them. Other periodic jobs stay beside their
 owning domain. A task receives the composition root's database handle and does
 not open a second pool. `[startup]` log lines are phase diagnostics, not memory

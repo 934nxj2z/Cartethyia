@@ -53,6 +53,10 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   cline: { file: "cline", ext: "webp" },
   cerebras: { file: "cerebras", ext: "webp" },
   qoder: { file: "qoder", ext: "webp" },
+  // The China deployment is the same Qoder brand mark; without this entry
+  // `qodercn` falls through to the generic placeholder while `qoder` renders
+  // the real logo, so the two realms look unrelated in the provider list.
+  qodercn: { file: "qoder", ext: "webp" },
   mistral: { file: "mistral", ext: "webp" },
   muse: { file: "muse", ext: "svg" },
   // Meta Model API is the same Meta brand mark as Muse Code.
@@ -76,6 +80,12 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   kiro: { file: "kiro", ext: "webp" },
   kimchi: { file: "kimchi", ext: "webp" },
   commandcode: { file: "commandcode", ext: "webp" },
+  cursor: { file: "cursor", ext: "webp" },
+  trae: { file: "trae", ext: "webp" },
+  // The China deployment is the same Trae brand mark; without this entry
+  // `traecn` falls through to the generic placeholder while `trae` renders the
+  // real logo, so the two realms look unrelated in the provider list.
+  traecn: { file: "trae", ext: "webp" },
 };
 
 function assetFor(icon: string): { file: string; ext: "svg" | "webp" } {

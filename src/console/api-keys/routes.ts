@@ -6,7 +6,7 @@ import { Elysia, t } from "elysia";
 import { randomBytes, randomUUID } from "node:crypto";
 import { decryptCredentialToString, encryptCredential } from "../../security/crypto";
 import { invalidateApiKeyCache } from "../../security/api-key-auth";
-import { hashShareToken } from "../../persistence/stores/share-store";
+import { generateShareSlug, hashShareToken } from "../../persistence/stores/share-store";
 import type { AccessDecision } from "../../security/access-control";
 import { ConsoleDomainError, errorResponse, requireTenantScope } from "../shared/errors";
 import { literalUnion } from "../shared/elysia-schema";
@@ -457,6 +457,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         apiKeyId: keyId,
         tokenHash: hashShareToken(token),
         tokenEncrypted: encryptCredential(token),
+        slug: generateShareSlug(),
         kind,
         expiresAt,
         rotate: options.regenerate === true,
@@ -499,19 +500,27 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           "Only a top-level key can carry a handoff link",
         );
       const link = await shareStore.findTokenForApiKey(keyId);
-      if (link === null || link.tokenEncrypted === null) return null;
-      let token: string;
-      try {
-        token = decryptCredentialToString(link.tokenEncrypted);
-      } catch {
-        // A row written under a different key cannot be shown; the operator
-        // regenerates to establish a fresh link.
-        return null;
+      if (link === null) return null;
+      let token: string | null = null;
+      if (link.tokenEncrypted !== null) {
+        try {
+          token = decryptCredentialToString(link.tokenEncrypted);
+        } catch {
+          // A row written under a different encryption key cannot be shown.
+          // The page itself survives: the slug is held in the clear, so the
+          // address stays valid and the operator only loses the bearer half.
+          token = null;
+        }
       }
+      // Nothing to point at: neither the address nor the secret survived.
+      if (token === null && link.slug === null) return null;
       const origin = (options.origin ?? "").replace(/\/$/, "");
       return {
         id: link.id,
-        url: `${origin}/share/${token}`,
+        // The slug is the address; the token is the bearer half. Preferring the
+        // slug keeps a restored page reachable under the same URL even when the
+        // encryption key that sealed its token is gone.
+        url: `${origin}/share/${link.slug ?? token}`,
         token,
         kind: link.kind,
         expiresAt: link.expiresAt === null ? null : link.expiresAt.toISOString(),
@@ -560,6 +569,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           apiKeyId: keyId,
           tokenHash: hashShareToken(token),
           tokenEncrypted: encryptCredential(token),
+          slug: generateShareSlug(),
           kind: "handoff",
           expiresAt: null,
           rotate: true,

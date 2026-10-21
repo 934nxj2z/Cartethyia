@@ -15,7 +15,6 @@ import { hashSecret, encryptCredential } from "../../security/crypto";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import {
   DEFAULT_API_KEY_LABEL,
-  DEFAULT_API_KEY_PREFIX,
   generateApiKeySecret,
 } from "../api-keys/contracts";
 import { resolveDefaultGatewayApiKey } from "../../config/runtime";
@@ -132,7 +131,8 @@ export class FirstBootSetupService {
       // encryption key, so an install that never touched the variable still
       // boots with a usable key instead of failing later with
       // "the default gateway API key is missing".
-      const secret = defaultApiKey ?? generateApiKeySecret().secret;
+      const generated = generateApiKeySecret();
+      const secret = defaultApiKey ?? generated.secret;
       const keyHash = hashSecret(secret);
       const existingApiKey = await db
         .select({ id: apiKeys.id })
@@ -146,7 +146,10 @@ export class FirstBootSetupService {
           keyHash,
           label: DEFAULT_API_KEY_LABEL,
           scopes: TENANT_KEY_SCOPES,
-          keyPrefix: defaultApiKey === undefined ? DEFAULT_API_KEY_PREFIX : secret.slice(0, 3),
+          // The generated prefix, not a slice of the secret: a slice assumed a
+          // fixed-width prefix, so a longer one would store a truncated value
+          // that no longer matches the key the operator was shown.
+          keyPrefix: defaultApiKey === undefined ? generated.prefix : secret.slice(0, 3),
           keyEncrypted: encryptCredential(secret),
           requestsPerMinute: 240,
           isDefault: true,

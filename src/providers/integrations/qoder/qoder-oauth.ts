@@ -16,6 +16,7 @@
  * needs both for COSY signing.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { QODER_REALMS, type QoderRealm } from "./qoder-realm";
 import {
   base64UrlEncode,
   nonEmptyTrimmedString,
@@ -30,9 +31,30 @@ import type {
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
 import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
 
+/** Global/intl endpoints. Kept as the default realm's values, unchanged. */
 export const QODER_LOGIN_URL = "https://qoder.com/device/selectAccounts" as const;
 export const QODER_DEVICE_TOKEN_URL = "https://openapi.qoder.sh/api/v1/deviceToken/poll" as const;
 export const QODER_USERINFO_URL = "https://openapi.qoder.sh/api/v1/userinfo" as const;
+
+/**
+ * Per-realm device endpoints, derived from `QODER_REALMS`.
+ *
+ * Every realm's openapi host differs, so the three URLs are built from the
+ * table rather than hardcoded — a CN login pointed at `openapi.qoder.sh` is
+ * refused before it ever reaches an approval screen.
+ */
+export function qoderOAuthUrls(realm: QoderRealm): {
+  readonly loginUrl: string;
+  readonly deviceTokenUrl: string;
+  readonly userinfoUrl: string;
+} {
+  const config = QODER_REALMS[realm];
+  return {
+    loginUrl: `${config.website}/device/selectAccounts`,
+    deviceTokenUrl: `${config.openapi}/api/v1/deviceToken/poll`,
+    userinfoUrl: `${config.openapi}/api/v1/userinfo`,
+  };
+}
 
 /** Device authorizations live 5 minutes in the dashboard before expiring. */
 const DEVICE_EXPIRY_SECONDS = 300;
@@ -115,6 +137,25 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
   override readonly supportsDeviceCode = true;
   override readonly supportsBrowserCode = false;
 
+  /**
+   * Which deployment this login talks to.
+   *
+   * Defaults to intl, whose parameter set is left exactly as it was working:
+   * the CN shape below is the only branch that changes behavior, so adding a
+   * realm cannot regress an existing global login.
+   */
+  private readonly realm: QoderRealm;
+
+  constructor(fetchFn: typeof fetch = globalThis.fetch, realm: QoderRealm = "intl") {
+    super(fetchFn);
+    this.realm = realm;
+  }
+
+  /** The three device endpoints for this client's realm. */
+  get urls(): { loginUrl: string; deviceTokenUrl: string; userinfoUrl: string } {
+    return qoderOAuthUrls(this.realm);
+  }
+
   protected override readonly providerLabel = "Qoder";
   // The device endpoints take no client id; the abstract field stays empty
   // rather than inventing one, and every request below omits it.
@@ -127,7 +168,11 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
   ): Promise<OAuthDeviceStartResult> {
     const verifier = base64UrlEncode(randomBytes(32));
     const challenge = base64UrlEncode(createHash("sha256").update(verifier).digest());
-    const nonce = randomUUID();
+    // CN carries a dashed nonce and additionally states the client id and
+    // native redirect; intl stays on the 32-hex nonce and the two params it
+    // has always sent. Both shapes are upstream fact from the donor, and only
+    // the CN branch is new, so the working intl URL is untouched.
+    const nonce = this.realm === "cn" ? randomUUID() : randomUUID().replaceAll("-", "");
     const machineId = randomUUID();
     const params = new URLSearchParams({
       challenge,
@@ -135,8 +180,13 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
       machine_id: machineId,
       nonce,
     });
+    if (this.realm === "cn") {
+      const config = QODER_REALMS.cn;
+      params.set("client_id", config.clientId);
+      params.set("redirect_uri", config.redirectUri);
+    }
     return {
-      verificationUri: `${QODER_LOGIN_URL}?${params.toString()}`,
+      verificationUri: `${qoderOAuthUrls(this.realm).loginUrl}?${params.toString()}`,
       // This flow shows no user code: approval happens against the
       // nonce-bound browser session, so there is nothing to type back.
       userCode: "",
@@ -154,7 +204,7 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
     const state = parseDeviceState(context?.providerState);
     if (state === undefined) return { status: "failed", reason: "unknown device authorization" };
     const url =
-      `${QODER_DEVICE_TOKEN_URL}?nonce=${encodeURIComponent(deviceAuthId)}` +
+      `${qoderOAuthUrls(this.realm).deviceTokenUrl}?nonce=${encodeURIComponent(deviceAuthId)}` +
       `&verifier=${encodeURIComponent(state.verifier)}&challenge_method=S256`;
     let response: Response;
     try {
@@ -220,7 +270,7 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
   /** Best-effort profile lookup for the account label; never blocks login. */
   async fetchUserInfo(accessToken: string): Promise<{ name: string; email: string; id: string }> {
     try {
-      const response = await this.fetchFn(QODER_USERINFO_URL, {
+      const response = await this.fetchFn(qoderOAuthUrls(this.realm).userinfoUrl, {
         method: "GET",
         headers: {
           authorization: `Bearer ${accessToken}`,
@@ -255,3 +305,6 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
 }
 
 export const qoderOAuthClient = new QoderOAuthClient();
+
+/** Device-login client for the China deployment. */
+export const qoderCnOAuthClient = new QoderOAuthClient(globalThis.fetch, "cn");

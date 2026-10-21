@@ -17,6 +17,7 @@
  * from an origin plus a wire-family suffix.
  */
 import { defineModel } from "../../provider-model-definition";
+import { openrouterFreeRoster } from "../../discovery/openrouter-free-roster";
 import type { ModelDefinition } from "../../provider-model-definition";
 import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../provider-contracts";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
@@ -76,25 +77,31 @@ function kiloModel(
  * the underlying model and not this reseller's serving.
  */
 export const KILO_MODELS: readonly ModelDefinition[] = [
-  kiloModel("kilo-auto/frontier", 1_000_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("kilo-auto/balanced", 1_000_000, 65_536, { vision: true, reasoning: true }),
-  kiloModel("kilo-auto/efficient", 1_000_000, 65_536, { vision: true, reasoning: true }),
-  kiloModel("kilo-auto/small", 262_144, 32_768, { vision: true, reasoning: true }),
+  // Three routers, and nothing else. A committed catalog of specific ids was a
+  // snapshot of one afternoon: this provider resells the OpenRouter catalog,
+  // which adds and pulls models within days, so discovery is the authority and
+  // every hand-kept row outside these drifts out of truth.
+  //
+  // `kilo-auto/free` bills zero and `kilo-auto/small` bills a fraction of a
+  // cent; both route on the provider's own side, so their limits are the
+  // window the router may select into rather than one model's.
   kiloModel("kilo-auto/free", 256_000, 32_768, { reasoning: true }),
-  kiloModel("anthropic/claude-opus-4.8", 1_000_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("anthropic/claude-opus-4.7", 1_000_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("anthropic/claude-sonnet-4.6", 1_000_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("openai/gpt-6-sol", 1_050_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("openai/gpt-6-luna", 1_050_000, 128_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("openai/gpt-4.1", 1_047_576, 32_768, { vision: true, document: true }),
-  kiloModel("openai/o3", 200_000, 100_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("google/gemini-2.5-pro", 1_048_576, 65_536, { vision: true, document: true, audio: true, reasoning: true }),
-  kiloModel("google/gemini-2.5-flash", 1_048_576, 65_535, { vision: true, document: true, audio: true, reasoning: true }),
-  kiloModel("x-ai/grok-4.7", 500_000, 450_000, { vision: true, document: true, reasoning: true }),
-  kiloModel("moonshotai/kimi-k3", 1_048_576, 943_718, { vision: true, reasoning: true }),
-  kiloModel("z-ai/glm-5.3-flash", 1_048_576, 131_072, { vision: true, reasoning: true }),
-  kiloModel("deepseek/deepseek-chat", 163_840, 16_384),
+  kiloModel("kilo-auto/small", 262_144, 32_768, { vision: true, reasoning: true }),
+  kiloModel("openrouter/auto", 2_000_000, 128_000, { reasoning: true }),
 ];
+
+/**
+ * The shared free roster, spelled for this provider's endpoint.
+ *
+ * The same 17 `:free` ids Cline and OpenRouter serve, because this is the same
+ * catalog behind a different origin. Kept separate from `KILO_MODELS` so the
+ * free tier is its own statement: those three rows are routers, these are the
+ * zero-cost models, and the model list groups them differently.
+ */
+export const KILO_FREE_MODELS: readonly ModelDefinition[] = openrouterFreeRoster({
+  providerId: KILO_PROVIDER_ID,
+  endpoint: KILO_ENDPOINT_PATH,
+});
 
 /**
  * Adapter that decodes the credential envelope before the shared pipeline

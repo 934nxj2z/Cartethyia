@@ -191,6 +191,14 @@ async function attachProviderCapabilities(
       // one, so the dashboard never renders a form whose submit the server
       // would refuse.
       import: typeof client.importCredential === "function",
+      // Both halves are required: an import-only client that cannot refresh
+      // (Alibaba Coding Plan, Cloudflare AI) stores a durable static key, while
+      // one that can (Trae) stores a token pair that expires and renews. The
+      // refresher comes from the registry rather than the login client because
+      // that is where `loadAuthentication` registers it.
+      refreshable:
+        typeof client.importCredential === "function" &&
+        (await registry.resolveRefresher(response.providerId)) !== undefined,
       browserLoginFields: (client.browserLoginFields ?? []).map(toProviderLoginField),
       deviceLoginFields: (client.deviceLoginFields ?? []).map(toProviderLoginField),
       importFields: (client.importFields ?? []).map(toProviderLoginField),

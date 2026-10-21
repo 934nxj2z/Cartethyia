@@ -45,8 +45,10 @@ Two tells that the arm is a membership test rather than a field value:
 
 - **Adding** the suspected thing fixes it (not removing it).
 - The gate accepts the required set **alongside** unrelated entries — it is
-  "contains", not "equals". If 11 required names plus 128 foreign ones still
-  pass, nothing needs to be dropped.
+  "contains", not "equals". If the required names plus 128 foreign ones still
+  pass, nothing needs to be dropped. Read the required count from
+  `FREE_AGENT_TOOL_NAMES_ORDERED` rather than from any doc: it has grown, and
+  comments naming a number have gone stale with it.
 
 So when removal has not isolated the cause within a few arms, run the mirror
 experiment: take the minimal known-good set, then add one thing at a time to the

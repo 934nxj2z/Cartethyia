@@ -27,6 +27,7 @@ import type { RouteCandidate, Reservation, RouteSnapshotService } from "../routi
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { acquireAttemptLeases, releaseAttemptLeases } from "./leases";
 import type { AttemptLeaseSource, AttemptLeases } from "./leases";
+import type { AttemptLeaseOwnership } from "./leases";
 import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { ProxyRequestState } from "../request/state";
@@ -106,6 +107,14 @@ interface AttemptContext<TAdapter> {
   /** Zero-based candidate index; also this attempt's failover count. */
   readonly attemptIndex: number;
   readonly providerCapture: ProviderExchangeCapture;
+  /**
+   * Ownership of this attempt's account/network-pool release, when the route
+   * acquired a pool slot. A provider session that outlives this request (a
+   * Cursor Run held open for the client's tool result) calls
+   * `transferToProviderSession()` and takes it over; otherwise the request
+   * releases it through `releaseByResponse()`.
+   */
+  readonly leaseOwnership?: AttemptLeaseOwnership | undefined;
   /**
    * Hands lease ownership to the value this attempt returns (a streaming
    * response releases its own lease on stream completion/cancel). Without it
@@ -254,6 +263,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
     let reservation: Reservation | undefined;
     let proxySlot: { poolId: string; release: () => void } | undefined;
     let networkPoolId: string | undefined;
+    let leaseOwnership: AttemptLeaseOwnership | undefined;
     let bindingEstablished = false;
     let leasesRetained = false;
     let retryDelayMs = 0;
@@ -280,6 +290,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
       reservation = attemptLeases.reservation;
       proxySlot = attemptLeases.proxySlot;
       networkPoolId = attemptLeases.networkPoolId;
+      leaseOwnership = attemptLeases.ownership;
       // Downstream error paths gate `commitUsage(estimated)` on this flag so
       // the estimate is only charged once the request truly consumed
       // upstream resources; the lease and reservation are held from here on.
@@ -292,6 +303,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
         leases: attemptLeases,
         attemptIndex: index,
         providerCapture,
+        ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
         retainLeases: () => {
           leasesRetained = true;
         },
@@ -452,7 +464,10 @@ export async function runAttemptLoop<TResult, TAdapter>(
       retryDelayMs = fallbackRetryDelayMs(attempts);
     } finally {
       if (!leasesRetained)
-        await releaseAttemptLeases({ lease, reservation, proxySlot }, leaseSource.routingEngine);
+        await releaseAttemptLeases(
+          { lease, reservation, proxySlot, ...(leaseOwnership === undefined ? {} : { ownership: leaseOwnership }) },
+          leaseSource.routingEngine,
+        );
     }
     attempts += 1;
     // Charged to the member that spent it, so one member's own attempts are

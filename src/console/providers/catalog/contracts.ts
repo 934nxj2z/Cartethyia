@@ -87,6 +87,9 @@ const VALID_SERVICE_KINDS: Record<ServiceKind, true> = {
   websearch: true,
   imageGeneration: true,
   videoGeneration: true,
+  embedding: true,
+  audioTranscription: true,
+  audioSpeech: true,
 };
 
 export function isServiceKind(value: unknown): value is ServiceKind {
@@ -337,6 +340,24 @@ export interface ModelCatalogEntry {
    * so an operator can tell a measured window from a stand-in.
    */
   limitsEstimated?: boolean;
+  /**
+   * True when the provider refuses this model on a free plan, so the surface
+   * can mark it rather than letting an operator discover it from a dispatch
+   * failure.
+   *
+   * Absence is "tier unknown", not "served on a free plan" — most providers
+   * publish nothing about plan access, and a pill that renders unknown as free
+   * would mislabel every one of them.
+   */
+  proOnly?: boolean;
+  /**
+   * True when the provider publishes this row as free, so the surface can show
+   * the tier instead of an operator discovering it from the pricing.
+   *
+   * Absence is "tier unknown", not "not free": the flag is only set where the
+   * provider's own model directory states it.
+   */
+  freeTier?: boolean;
 }
 export interface FlatModelCatalogEntry {
   readonly providerId: string;
@@ -633,6 +654,16 @@ export interface ProviderResponse {
      * console offers an import path alongside the redirect and device flows.
      */
     readonly import: boolean;
+    /**
+     * The imported credential is a refreshable token pair rather than a static
+     * key: the client can both import and refresh.
+     *
+     * Import-only clients otherwise look identical to API-key providers — no
+     * redirect, no device code — and were grouped with them, which filed a
+     * refreshable OAuth account under "API Key Providers" where nothing
+     * explains that it expires and renews.
+     */
+    readonly refreshable: boolean;
     /** Fields the browser flow must collect before it starts. */
     readonly browserLoginFields: readonly ProviderLoginField[];
     /** Fields the device flow must collect before it starts. */

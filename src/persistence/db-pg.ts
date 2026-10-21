@@ -229,6 +229,10 @@ async function createMigrationLedger(client: PoolClient): Promise<void> {
 
 export function createPgHandle(): PgHandle {
   const pool = getPool();
+  // No `logger`: drizzle's default logger prints the full statement *and its
+  // bound parameters* on any failed query. On the auth path that includes the
+  // key hash, so one bad request wrote a credential-shaped string to the log —
+  // and a database outage wrote one per request.
   const db: CartethyiaDatabase = drizzle(pool, { schema: fullSchema });
   return {
     kind: "pg",

@@ -60,6 +60,11 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0012_add_reported_model.sql",
     "0013_add_providers_tenant_id_index.sql",
     "0014_add_provider_accounts_tenant_id_index.sql",
+    "0015_add_payload_stages.sql",
+    "0016_add_share_link_slug.sql",
+    "0017_add_models_pro_only.sql",
+    "0018_add_accounts_quota_plan.sql",
+    "0019_add_models_free_tier.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

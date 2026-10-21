@@ -1,6 +1,7 @@
 // API-key authentication and authorization snapshots: token extraction, hashing, lookup, and admission identity.
 
 import type { CartethyiaDatabase } from "../persistence/db-handle";
+import { deleteShared, publishInvalidation, readShared, writeShared } from "../persistence/shared-cache";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { GatewayError } from "../protocol/gateway-error";
 import { hashSecret } from "./crypto";
@@ -39,6 +40,50 @@ const authCache = new Map<string, AuthCacheEntry>();
 const authCacheByKeyId = new Map<string, Set<string>>();
 /** Unknown/revoked token HMACs with their miss time; cleared on any key mutation. */
 const authNegativeCache = new Map<string, number>();
+
+/**
+ * Short circuit after a credential-store failure.
+ *
+ * An overloaded or down database fails every lookup, and each failure costs a
+ * connection attempt. Without this, a saturated backend received one query per
+ * inbound request — load the operator sees as traffic, on top of the load that
+ * caused the outage. For the window, lookups answer "unavailable" instead.
+ *
+ * Deliberately short: this is an auth path, and a brief outage must not lock
+ * out valid keys for long.
+ */
+const AUTH_FAILURE_COOLDOWN_MS = 1_000;
+let authFailureUntil = 0;
+
+/** Thrown when the credential store could not be reached at all. */
+export class ApiKeyStoreUnavailableError extends Error {
+  constructor() {
+    super("The credential store is unavailable.");
+    this.name = "ApiKeyStoreUnavailableError";
+  }
+}
+
+/**
+ * Source for lifetime-usage deltas recorded but not yet flushed.
+ *
+ * Injected rather than imported: this module is on the auth path and must not
+ * depend on the persistence/write layer it would otherwise pull in. Set once at
+ * boot (`boot/dependencies.ts`); until then it reads as zero, which is the
+ * value the code has always used.
+ */
+let pendingUsage: (apiKeyId: string) => number = () => 0;
+
+/**
+ * Supplies the in-flight usage source. See {@link pendingUsage}.
+ *
+ * The persisted `lifetime_tokens_consumed` is behind by up to one flush
+ * interval, and the flush coalesces by design — so it is behind by the *most*
+ * exactly when a key is busiest. Adding the pending delta costs nothing and
+ * removes the gap.
+ */
+export function setPendingUsageSource(source: (apiKeyId: string) => number): void {
+  pendingUsage = source;
+}
 /**
  * Negative-result fast path. Unknown/revoked tokens previously hit the DB on
  * every request; now a repeat miss within 1.5 s costs one HMAC + one map
@@ -97,12 +142,24 @@ export function invalidateApiKeyCache(keyId?: string): void {
   if (keyId === undefined) {
     authCache.clear();
     authCacheByKeyId.clear();
+    void deleteShared("auth");
+    publishInvalidation({ namespace: "auth" });
     return;
   }
   const hashes = authCacheByKeyId.get(keyId);
-  if (!hashes) return;
-  for (const hash of hashes) authCache.delete(hash);
-  authCacheByKeyId.delete(keyId);
+  if (hashes) {
+    for (const hash of hashes) authCache.delete(hash);
+    authCacheByKeyId.delete(keyId);
+  }
+  // Peer processes hold their own copy, and `reusePort` means the console
+  // write may have landed on a different one entirely. Dropping only locally
+  // leaves a revoked key valid for up to a full TTL everywhere else.
+  //
+  // Delivered by broadcast rather than by deleting a shared entry: a mutation
+  // names a key id, and the shared layer is keyed by token hash, which the
+  // mutating request does not have. The notice is at-most-once, so the TTL
+  // stays the backstop for a peer that misses it.
+  publishInvalidation({ namespace: "auth", key: keyId });
 }
 
 /**
@@ -275,6 +332,19 @@ export function requestToken(headers: Headers | Record<string, string>): string 
 }
 
 /**
+ * Whether a key can possibly have children, and so whether summing them can
+ * return anything but zero.
+ *
+ * Children exist only for a `share` parent — the schema's own check constraint
+ * ties the mode to the parent-child shape (schema.ts:799-803), and no other
+ * mode mints recipients. Extracted and exported because the alternative is an
+ * untestable inline comparison guarding a database round-trip.
+ */
+export function canHaveChildKeys(key: { readonly keyMode?: string | null }): boolean {
+  return key.keyMode === "share";
+}
+
+/**
  * Looks up the API key by its hashed bearer token. Returns `undefined` for
  * an unknown or revoked key — callers must reject with 401, never fall back
  * to an implicit/default identity.
@@ -292,8 +362,37 @@ export async function resolveApiKeyAuthorization(
   }
   const cached = authCache.get(hash);
   if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.value;
+  // L2: a peer process may have resolved this token already. Reachable only
+  // after the L1 entry lapsed, so Redis is never consulted on a warm hit.
+  //
+  // Keyed by token hash, because that is what a lookup has — invalidation
+  // arrives as a key id and is delivered as a broadcast instead.
+  const shared = await readShared("auth", hash);
+  if (shared !== undefined) {
+    try {
+      const parsed = JSON.parse(shared) as ResolvedApiKey;
+      if (typeof parsed?.id === "string") {
+        indexAuthCache(hash, { at: now, value: parsed, keyId: parsed.id });
+        evictAuthCacheOldest();
+        return parsed;
+      }
+    } catch {
+      // A malformed or schema-drifted entry is ignored and re-resolved.
+    }
+  }
+  // Answered from the cooldown before any I/O: during a store outage the
+  // query is the expensive part, and it is also the part that fails.
+  if (now < authFailureUntil) throw new ApiKeyStoreUnavailableError();
   const store = new DrizzleApiKeyStore(db);
-  const row = await store.findActiveByHash(hash);
+  let row: Awaited<ReturnType<typeof store.findActiveByHash>>;
+  try {
+    row = await store.findActiveByHash(hash);
+  } catch (error) {
+    // Any failure here is the store's, not the key's — a revoked key is a
+    // normal empty result, so this only runs on a real fault.
+    authFailureUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+    throw error;
+  }
   if (!row) {
     authNegativeCache.set(hash, now);
     evictAuthNegativeOldest();
@@ -313,11 +412,19 @@ export async function resolveApiKeyAuthorization(
   // the old row values forever. Reading the parent here makes denylist /
   // one-time / recurring edits apply on the next cache miss.
   const policy = parent ?? row;
+  // Only a `share` parent can have children, and children are the only thing
+  // the SUM below can find. Every other key ran an aggregate that was certain
+  // to return 0 — one extra Postgres round-trip on the auth path for nothing.
+  //
+  // `row.parentKeyId !== null` is the same test, kept as the mode check because
+  // the mode is what the share dialog and the schema's own check constraint
+  // key off (schema.ts:799-803), so the two cannot drift apart.
+  const canHaveChildren = canHaveChildKeys(parent ?? row);
   const consumed =
-    (policy.id === row.id
-      ? (row.lifetimeTokensConsumed ?? 0)
-      : (policy.lifetimeTokensConsumed ?? 0)) +
-    (await store.sumChildrenConsumed(policy.id));
+    ((policy.id === row.id ? row.lifetimeTokensConsumed : policy.lifetimeTokensConsumed) ?? 0) +
+    (canHaveChildren ? await store.sumChildrenConsumed(policy.id) : 0) +
+    // In-flight deltas: what has been spent but not yet persisted.
+    pendingUsage(policy.id);
   const scopes = Array.isArray(policy.scopes) ? (policy.scopes as AccessScope[]) : [];
   const snapshot = createAuthorizationSnapshot({
     api_key_id: row.id,
@@ -349,5 +456,16 @@ export async function resolveApiKeyAuthorization(
   };
   indexAuthCache(hash, { at: Date.now(), value, keyId: value.id });
   evictAuthCacheOldest();
+  // Shared copy for peer processes, keyed by the token hash so a lookup can
+  // find it without resolving the key first. Invalidation travels by broadcast,
+  // since a console mutation names a key id and cannot enumerate the hashes
+  // that resolved to it in another process.
+  //
+  // The cached value deliberately carries `lifetime_tokens_consumed` as read.
+  // That figure moves constantly, and the module already documents the snapshot
+  // as advisory on that axis (spending is enforced by the admission counter),
+  // so a peer serving it stale for up to the TTL is the same tradeoff the
+  // in-process cache has always made.
+  void writeShared("auth", hash, JSON.stringify(value), AUTH_CACHE_TTL_MS);
   return value;
 }

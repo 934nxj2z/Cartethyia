@@ -94,6 +94,35 @@ what is still unknown. Turn only the verified rows into a Cartethyia change,
 and exercise it with a fake transport. A diff against another client's source
 is a hypothesis, not evidence.
 
+## A provider with a CLI or npm package
+
+When the client is shipped as a package rather than an installed app, the
+package is often the *better* source: it is the exact version, it is on disk
+without launching anything, and it frequently ships protocol definitions the
+installed app has already discarded.
+
+1. **Fetch the package without installing it.** `npm pack <name>` downloads the
+   tarball and touches nothing on the machine. Extract it with `tar -xzf` into a
+   scratch directory outside the repo, and do not run its `postinstall` — it is
+   where a package downloads binaries at install time, which is exactly what a
+   static inspection must avoid.
+2. **Read the protocol definitions first.** A `*.proto`, a catalog JSON, or a
+   `package.json` `files` list answers more than the bundle and never lies about
+   itself. The bundle is the fallback, not the entry point.
+3. **Expect the bundle to be obfuscated.** Minified bundles rename everything and
+   encrypt string literals; a `grep` for the field name you want returns zero
+   hits and that is not evidence the field is absent. Decode what is decodable
+   (a small XOR/base64 string helper is usually declared at the top of the file)
+   and then follow the *data* instead: field names that survive, function
+   signatures that receive the value, and the protobuf field numbers.
+4. **Note what is downloaded at runtime.** A native module or a WASM signer that
+   is not in the package is a real limit, not a failure of the method. Record it
+   as unknown rather than substituting a guess — the package tells you the
+   shape of the call even when it cannot tell you the body.
+
+The same discipline as above applies: pin the exact version you extracted, and
+turn only the verified rows into a change.
+
 ## Safety and scope
 
 - Inspect only code, tests, fixtures, logs, and local runtime behavior that the

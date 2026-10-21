@@ -687,6 +687,15 @@ export function AccountsList({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [sort, setSort] = useState<AccountSortValue>("added-asc");
   const [bulkBusy, setBulkBusy] = useState(false);
+  /**
+   * "Test all" progress, as tested-of-total.
+   *
+   * The button shows only the count while running — no pass/fail. Per-account
+   * verdicts already arrive as toasts and land in the health log, so a
+   * running tally on the button would duplicate them and, worse, read as a
+   * verdict while the run is still in flight.
+   */
+  const [testAllProgress, setTestAllProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const bulkMenuRef = useRef<HTMLDivElement>(null);
@@ -790,32 +799,38 @@ const TEST_ALL_CONCURRENCY = 3;
 
   /**
    * Tests every account, independent of the current selection or filter.
-   * Unlike the other bulk actions a failed test is a 200 with `ok: false`,
-   * not a rejected promise, so it counts `ok` itself instead of `runBulk`.
+   *
+   * Reports progress as a count, not a verdict: a failed test is a 200 with
+   * `ok: false`, and each account's own outcome is already surfaced by the
+   * per-account toast and recorded in the health log. The button therefore
+   * tracks how far the run has got and nothing about how it went.
    */
   const testAllAccounts = async () => {
     if (accounts.length === 0) return;
     setBulkBusy(true);
-    const results = await mapWithConcurrency(accounts, TEST_ALL_CONCURRENCY, (account) =>
-      consoleRequest<AccountTestResult>(
+    setTestAllProgress({ done: 0, total: accounts.length });
+    await mapWithConcurrency(accounts, TEST_ALL_CONCURRENCY, async (account, index) => {
+      const result = await consoleRequest<AccountTestResult>(
         `/accounts/${encodeURIComponent(account.id)}/quota/refresh`,
         { method: "POST" },
-      ),
-    );
-    let passed = 0;
-    let failed = 0;
-    for (const result of results) {
-      if (result.status === "fulfilled" && result.value?.ok) passed += 1;
-      else failed += 1;
-    }
+      );
+      // Counted as each one settles, so the button tracks the run instead of
+      // jumping from 0 to done at the end.
+      setTestAllProgress({ done: index + 1, total: accounts.length });
+      return result;
+    });
+    // Nothing reads `results`: each account's own outcome is surfaced per
+    // account, and a running pass/fail tally here would both duplicate that
+    // and read as a verdict while accounts are still in flight.
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
       queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
     ]);
     setBulkBusy(false);
-    if (failed === 0) toast.success("Test complete", `${passed} passed`);
-    else if (passed === 0) toast.error("Test failed", `${failed} account${failed === 1 ? "" : "s"} failed`);
-    else toast.error("Test partially failed", `${passed} passed, ${failed} failed`);
+    setTestAllProgress(null);
+    // Count only: the per-account verdicts are toasts and health-log entries,
+    // so a summary here would restate them and read as a verdict of its own.
+    toast.success("Test complete", `${accounts.length} account${accounts.length === 1 ? "" : "s"} tested`);
   };
 
   const bulkSetActive = (active: boolean) =>
@@ -899,10 +914,16 @@ const TEST_ALL_CONCURRENCY = 3;
             icon={<FlaskConical size={12} />}
             disabled={bulkBusy || accounts.length === 0}
             onClick={testAllAccounts}
-            aria-label="Test all accounts"
+            aria-label={
+              testAllProgress === null
+                ? "Test all accounts"
+                : `Testing accounts, ${testAllProgress.done} of ${testAllProgress.total} tested`
+            }
             title="Test every account, regardless of selection or filters"
           >
-            Test all
+            {testAllProgress === null
+              ? "Test all"
+              : `Tested ${testAllProgress.done}/${testAllProgress.total}`}
           </Button>
           <div ref={bulkMenuRef} className="relative">
               <Button

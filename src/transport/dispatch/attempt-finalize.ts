@@ -40,6 +40,29 @@ export async function shouldCaptureProviderBody(
 }
 
 /**
+ * Same answer as {@link shouldCaptureProviderBody}, memoized on the request.
+ *
+ * The preference is a tenant setting, so it cannot change between attempts of
+ * one request. Resolving it per attempt meant a request with several attempts
+ * paid for it repeatedly, and the per-attempt answer could in principle differ
+ * from the one the terminal capture then acted on. Passing `state` lets every
+ * attempt of a request share one resolution.
+ */
+export async function shouldCaptureProviderBodyForRequest(
+  db: CartethyiaDatabase,
+  tenantId: string | null,
+  state: { payloadCapturePreference?: unknown },
+): Promise<boolean> {
+  if (state.payloadCapturePreference === undefined) {
+    state.payloadCapturePreference = await resolvePayloadCapture(db, tenantId);
+  }
+  const resolved = state.payloadCapturePreference as
+    | { readonly ok: true; readonly mode: string }
+    | { readonly ok: false };
+  return resolved.ok === true && resolved.mode === "full";
+}
+
+/**
  * Combined body cap for one capture depth. Fixed size tiers: every depth
  * stores all four drawer panels (client request, translated provider
  * request, raw provider response, final client response) — only the cap
@@ -313,7 +336,15 @@ async function captureTerminalPayload(
     return;
   }
   try {
-    const resolved = await resolvePayloadCapture(db, tenantId);
+    // Resolved once per request and memoized on the request state. The
+    // per-attempt call in the dispatch paths and this terminal call were
+    // resolving the same tenant setting independently, so a request with
+    // several attempts paid for it repeatedly and the two call sites could
+    // disagree about whether capture is on at all.
+    if (state.payloadCapturePreference === undefined) {
+      state.payloadCapturePreference = await resolvePayloadCapture(db, tenantId);
+    }
+    const resolved = state.payloadCapturePreference;
     if (!resolved.ok) {
       note("skipped_preference_read_failed");
       return;

@@ -53,6 +53,37 @@ export interface GenerationHandlerDeps {
 export type GenerationKind = Extract<ServiceKind, "imageGeneration" | "videoGeneration">;
 
 /**
+ * Surfaces the gateway routes but does not model.
+ *
+ * Embeddings and audio have no adapter method and no media shape — there is
+ * nothing for this repo to translate — so they exist purely so a caller can
+ * reach a compatible upstream through the normal pipeline. Opening the route
+ * is the whole feature: routing, admission, failover, and accounting still
+ * apply, and the upstream's own bytes come back untouched.
+ */
+export type PassthroughKind = Extract<ServiceKind, "embedding" | "audioTranscription" | "audioSpeech">;
+
+/** Error-copy noun per surface, so a refusal names what the caller asked for. */
+const SURFACE_NOUNS: Record<GenerationKind | PassthroughKind, string> = {
+  imageGeneration: "image",
+  videoGeneration: "video",
+  embedding: "embedding",
+  audioTranscription: "transcription",
+  audioSpeech: "speech",
+};
+
+/**
+ * Only the two media surfaces carry `prompt`/`n`.
+ *
+ * An embedding body is `{model, input}` and a transcription is multipart —
+ * neither has a prompt, so validating one here would reject every legitimate
+ * request to a surface the gateway just opened.
+ */
+function isMediaKind(kind: GenerationKind | PassthroughKind): kind is GenerationKind {
+  return kind === "imageGeneration" || kind === "videoGeneration";
+}
+
+/**
  * Maximum items one request may ask for.
  *
  * A bound on upstream fan-out, not a product limit: every item is billed to the
@@ -126,7 +157,15 @@ async function passThrough(
 
 /** Builds the handler for one generation surface. */
 export function createGenerationHandler(kind: GenerationKind, deps: GenerationHandlerDeps) {
-  const noun = kind === "videoGeneration" ? "video" : "image";
+  return createNativeSurfaceHandler(kind, deps);
+}
+
+/** Builds the handler for one routed surface, media or passthrough. */
+export function createNativeSurfaceHandler(
+  kind: GenerationKind | PassthroughKind,
+  deps: GenerationHandlerDeps,
+) {
+  const noun = SURFACE_NOUNS[kind];
   return async ({ request }: { request: Request }): Promise<Response> => {
     const state = deps.stateStore.require(request);
     const authorization = state.authorization;
@@ -151,19 +190,21 @@ export function createGenerationHandler(kind: GenerationKind, deps: GenerationHa
     }
     // Trust boundary only. Keep accepting `messages` for chat-backed providers
     // while native image/video endpoints can use the simpler `prompt` field.
-    const hasPrompt = typeof generation.prompt === "string" && generation.prompt.trim().length > 0;
-    const hasMessages = Array.isArray(generation.messages) && generation.messages.length > 0;
-    if (!hasPrompt && !hasMessages) {
-      throw new GatewayError("invalid_request", 400, "prompt is required");
-    }
-    if (generation.n !== undefined) {
-      const n = generation.n;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > MAX_ITEMS_PER_REQUEST) {
-        throw new GatewayError(
-          "invalid_request",
-          400,
-          `n must be an integer between 1 and ${MAX_ITEMS_PER_REQUEST}`,
-        );
+    if (isMediaKind(kind)) {
+      const hasPrompt = typeof generation.prompt === "string" && generation.prompt.trim().length > 0;
+      const hasMessages = Array.isArray(generation.messages) && generation.messages.length > 0;
+      if (!hasPrompt && !hasMessages) {
+        throw new GatewayError("invalid_request", 400, "prompt is required");
+      }
+      if (generation.n !== undefined) {
+        const n = generation.n;
+        if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > MAX_ITEMS_PER_REQUEST) {
+          throw new GatewayError(
+            "invalid_request",
+            400,
+            `n must be an integer between 1 and ${MAX_ITEMS_PER_REQUEST}`,
+          );
+        }
       }
     }
 
@@ -293,14 +334,20 @@ export function createGenerationHandler(kind: GenerationKind, deps: GenerationHa
         // body to the candidate's endpoint through the adapter, which owns the
         // upstream base URL. Either way the gateway does not interpret the
         // media — it returns what the upstream produced.
+        //
+        // A passthrough surface has no media method to prefer: the whole point
+        // is that this repo does not model it, so it goes straight to the
+        // adapter's native dispatch, which is plain forwarding.
         const media =
-          kind === "videoGeneration"
-            ? typeof adapter.generateVideo === "function"
-              ? adapter.generateVideo(upstreamBody, target, mediaContext).then((outcome) => finish(outcome))
-              : undefined
-            : typeof adapter.generateImage === "function"
-              ? adapter.generateImage(upstreamBody, target, mediaContext).then((outcome) => finish(outcome))
-              : undefined;
+          !isMediaKind(kind)
+            ? undefined
+            : kind === "videoGeneration"
+              ? typeof adapter.generateVideo === "function"
+                ? adapter.generateVideo(upstreamBody, target, mediaContext).then((outcome) => finish(outcome))
+                : undefined
+              : typeof adapter.generateImage === "function"
+                ? adapter.generateImage(upstreamBody, target, mediaContext).then((outcome) => finish(outcome))
+                : undefined;
         const upstream =
           media !== undefined
             ? await media
@@ -347,4 +394,24 @@ export function createImageGenerationHandler(deps: GenerationHandlerDeps) {
 /** `POST /v1/videos/generations`. */
 export function createVideoGenerationHandler(deps: GenerationHandlerDeps) {
   return createGenerationHandler("videoGeneration", deps);
+}
+
+/**
+ * `POST /v1/embeddings`.
+ *
+ * Routed with no provider implementation behind it: a model row carrying the
+ * `embedding` kind is enough, and the adapter forwards the body as-is.
+ */
+export function createEmbeddingHandler(deps: GenerationHandlerDeps) {
+  return createNativeSurfaceHandler("embedding", deps);
+}
+
+/** `POST /v1/audio/transcriptions`. Same passthrough shape as embeddings. */
+export function createAudioTranscriptionHandler(deps: GenerationHandlerDeps) {
+  return createNativeSurfaceHandler("audioTranscription", deps);
+}
+
+/** `POST /v1/audio/speech`. Same passthrough shape as embeddings. */
+export function createAudioSpeechHandler(deps: GenerationHandlerDeps) {
+  return createNativeSurfaceHandler("audioSpeech", deps);
 }

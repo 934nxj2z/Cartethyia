@@ -17,10 +17,11 @@ export function isProxyRequest(request: Request): boolean {
  * This list must mirror the routes `app.ts` actually mounts. It drives
  * body-read policy — a JSON route rejects a missing or non-JSON content-type
  * with 415, while an unrouted path is not read at all — so an entry with no
- * handler behind it describes a route the gateway does not serve. Two such
- * entries (`/v1/embeddings`, `/v1/audio/speech`) sit outside this list: they
- * advertise a surface that 404s, and the route-table test pins them absent so
- * re-adding one is a deliberate act.
+ * handler behind it describes a route the gateway does not serve. Three such
+ * entries (`/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/speech`)
+ * were listed for a while with nothing mounted — they advertised a surface
+ * that 404d — and the route-table test pinned them absent so re-adding one was
+ * a deliberate act. They are mounted now, as passthrough surfaces.
  *
  * The native service routes (`NATIVE_SERVICE_PATHS` — System One, web search,
  * image and video generation) are included: they read a JSON body through the

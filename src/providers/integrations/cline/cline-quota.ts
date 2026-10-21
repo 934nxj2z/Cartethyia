@@ -2,32 +2,34 @@ import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../
 import { authCredential, getJson, record, text } from "../../quota/quota-contracts";
 import { parseLimitWindows } from "../../quota/quota-limit-windows";
 import { probeApiKeyConnectivity } from "../../quota/quota-support";
-import { getClineClientVersion, getClineSdkVersion } from "../../operations/client-versions";
+import { getClineCliVersion, getClineSdkVersion } from "../../operations/client-versions";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 
 /**
  * Quota headers always carry the currently resolved CLI version.
  *
  * The two version headers are two different versions and must stay that way.
- * `x-client-version` is the Cline client the operator is running, from the
- * shared pooler. `x-core-version` is the `@cline/sdk` version, which is a
- * separate npm package with its own release line — this used to send the
- * *client* version in both slots, so the billing surface was told our core was
- * `4.1.23`, a vscode client version that `@cline/sdk` never published.
+ * `x-client-version` is the Cline CLI the operator is running (`cline` on npm),
+ * from the shared pooler. `x-core-version` is the `@cline/sdk` version — a
+ * separate npm package with its own release line, though one the CLI pins as a
+ * dependency. This used to send the *client* version in both slots, so the
+ * billing surface was told our core was `4.1.23`, a vscode extension version
+ * that `@cline/sdk` never published.
  *
- * `src/providers/integrations/cline/cline.ts` has always sent the correct
- * pairing (`clientVersion` / `sdkVersion`) on the dispatch path, and that is
- * the identity proven to work against this provider. A header the upstream can
- * validate is not cosmetic: an implausible core version is exactly what a
- * "please update and re-authenticate" refusal is shaped like, and it is
- * indistinguishable from a dead credential from the response alone.
+ * Both surfaces now send the same pairing (`cliVersion` / `sdkVersion`) and the
+ * same `cline-cli` client type. A header the upstream can validate is not
+ * cosmetic: an implausible core version is exactly what a "please update and
+ * re-authenticate" refusal is shaped like, and it is indistinguishable from a
+ * dead credential from the response alone.
  *
- * `x-client-type` stays `cline-cli`: the billing surface is read by the CLI,
- * while `cline.ts` correctly claims `cline-sdk` for the chat surface it talks
- * to. Not verified against a live billing response — see the roadmap note.
+ * Header identity is not what gates these endpoints: probing `/users/me`,
+ * `/users/me/plan` and `/users/me/plan/usage-limits` with no identity headers,
+ * the SDK identity and the CLI identity all returned identical responses. The
+ * 404 from the plan routes is "no plan history found for user", i.e. account
+ * state, not a rejected client.
  */
 function clineQuotaHeaders(): Record<string, string> {
-  const version = getClineClientVersion();
+  const version = getClineCliVersion();
   return {
     accept: "application/json",
     "content-type": "application/json",

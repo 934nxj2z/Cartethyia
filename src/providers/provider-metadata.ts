@@ -1,4 +1,6 @@
-import type { ServiceKind, WireFamily } from "../protocol/canonical-model";
+import { SERVICE_KINDS, type ServiceKind, type WireFamily } from "../protocol/canonical-model";
+import { QODER_CHAT_PATH, QODER_REALMS } from "./integrations/qoder/qoder-realm";
+import { TRAE_CHAT_PATH, TRAE_REALMS } from "./integrations/trae/trae-realm";
 
 /** OpenAI-compatible wire overrides persisted for bundled and BYOK providers. */
 export interface CompatibilityProfile {
@@ -109,6 +111,17 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     hasAdapterUserAgent: true,
     credentialUrl: "https://kiro.dev",
     credentialHint: "Sign in with Google or GitHub in the browser, or use the device-code login with an Identity Center organization, then paste a Kiro API key if you prefer. Prompt caching is not reliably working for Kiro: the upstream recomputes the prompt on every turn, so cached-token savings should not be expected.",
+  },
+  {
+    id: "cursor",
+    displayName: "Cursor",
+    baseUrl: "https://api2.cursor.sh",
+    wireFamilyDefault: "chat",
+    requiresAccount: true,
+    bespokeWire: true,
+    hasAdapterUserAgent: true,
+    credentialUrl: "https://cursor.com",
+    credentialHint: "Sign in with Cursor or import a Cursor API key.",
   },
   { id: "kimi", displayName: "Kimi Code", baseUrl: "https://api.kimi.com/coding", credentialUrl: "https://platform.moonshot.ai/console/api-keys" },
   { id: "opencode", displayName: "OpenCode Free", baseUrl: "https://opencode.ai", requiresAccount: false, ipScopedRateLimit: true, hasAdapterUserAgent: true },
@@ -281,7 +294,23 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
     credentialUrl: "https://bailian.console.aliyun.com/",
   },
-  { id: "hermes", displayName: "Nous Research", baseUrl: "https://inference-api.nousresearch.com/v1", credentialUrl: "https://portal.nousresearch.com" },
+  // Egress pool traffic is refused here: the origin sits behind Cloudflare,
+  // which answers the pool's addresses with `403 Attention Required!` while the
+  // same request from the host answers 200. The credential is a per-account API
+  // key, so rotating the egress address buys nothing and only invites the
+  // challenge — the same reason InferHub and Cline skip the pool.
+  {
+    id: "hermes",
+    displayName: "Nous Research",
+    baseUrl: "https://inference-api.nousresearch.com/v1",
+    credentialUrl: "https://portal.nousresearch.com",
+    defaultSkipProxy: true,
+    // The adapter stamps its own identity (`hermes-agent/<version>`), which it
+    // also needs: Cloudflare in front of the origin refuses a request with no
+    // User-Agent. Letting the operator overwrite it would let them break the
+    // provider, so the console locks the control.
+    hasAdapterUserAgent: true,
+  },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1", credentialUrl: "https://b.ai" },
   { id: "inferhub", displayName: "InferHub", baseUrl: "https://api.inferhub.dev/v1", defaultSkipProxy: true },
   { id: "aihubmix", displayName: "AiHubMix", baseUrl: "https://aihubmix.com/v1", credentialUrl: "https://aihubmix.com/token" },
@@ -308,14 +337,47 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     // (`x-command-code-version`, `x-cli-environment`, `x-session-id`) and never
     // reads the route User-Agent, so the Routing Strategy panel must not offer
     // a custom User-Agent for it — the field would be silently ignored.
+    //
+    // The base is the Provider API origin, not `/alpha/generate`. Command Code
+    // serves three wires from `/provider/v1` — `/chat/completions`,
+    // `/responses` and `/messages` — and `/alpha/generate` is the CLI's own
+    // NDJSON surface. Pointing the base at one endpoint made the other two
+    // unroutable, which is why every `claude-*` id (served on `/messages`
+    // only) could not be dispatched at all.
     id: "commandcode",
     displayName: "Command Code",
-    baseUrl: "https://api.commandcode.ai/alpha/generate",
+    baseUrl: "https://api.commandcode.ai/provider/v1",
     hasAdapterUserAgent: true,
     credentialUrl: "https://commandcode.ai/studio",
     credentialHint: "Use the API key from the Command Code CLI, or create one in the studio.",
   },
   { id: "qoder", displayName: "Qoder", baseUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", hasAdapterUserAgent: true, credentialUrl: "https://qoder.com/account/integrations", credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder integrations page, or sign in with your Qoder account." },
+  // A separate provider, not a region flag on `qoder`: the China deployment has
+  // its own gateway host, OAuth client id, and model roster, and a CN account
+  // dispatched to the global host is refused rather than degraded.
+  //
+  // The base is built from the realm table rather than restated, so the host
+  // the console shows and the host the adapter dials cannot disagree.
+  {
+    id: "qodercn",
+    displayName: "Qoder CN",
+    baseUrl: `${QODER_REALMS.cn.gateway}${QODER_CHAT_PATH}`,
+    hasAdapterUserAgent: true,
+    credentialUrl: `${QODER_REALMS.cn.website}/account/integrations`,
+    credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder CN integrations page, or sign in with your Qoder China account.",
+  },
+  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
+  // A separate provider, not a region flag on `trae`: the China deployment has
+  // its own core host, authorization scheme, and model roster, and a CN account
+  // dispatched to the intl host is refused rather than degraded.
+  {
+    id: "traecn",
+    displayName: "Trae CN",
+    baseUrl: `${TRAE_REALMS.cn.core}${TRAE_CHAT_PATH}`,
+    hasAdapterUserAgent: true,
+    credentialUrl: "https://www.trae.com.cn/",
+    credentialHint: "Paste a Trae CN account export (accessToken + refreshToken) or the raw access token from a Trae China account.",
+  },
   { id: "ollamacloud", displayName: "Ollama Cloud", baseUrl: "https://ollama.com/v1", credentialUrl: "https://ollama.com/settings/keys" },
   { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", serviceKinds: ["llm", "websearch", "imageGeneration"], credentialUrl: "https://aistudio.google.com/app/apikey" },
   { id: "xiaomipg", displayName: "Xiaomi MiMo (PAYG)", baseUrl: "https://api.xiaomimimo.com/v1", credentialUrl: "https://platform.xiaomimimo.com" },
@@ -508,8 +570,8 @@ export function providerDisplayName(providerId: string): string {
  * A bundled provider gets exactly what its manifest declares. A custom/BYOK
  * provider has no manifest row, and this is where its capability comes from:
  * `llm` alone is read as "every media surface this gateway knows", so a
- * third-party provider can serve image and video generation without the
- * gateway having to be taught its id.
+ * third-party provider can serve image, video, embeddings, and audio without
+ * the gateway having to be taught its id.
  *
  * That widening is deliberate rather than a default of `["llm"]`, because a
  * BYOK provider points at an operator-chosen base URL — the operator already
@@ -517,6 +579,16 @@ export function providerDisplayName(providerId: string): string {
  * out of the generation routes no matter what its upstream actually answers.
  * The upstream still decides: a request for a capability the remote does not
  * have comes back as that remote's own error, not a gateway-side refusal.
+ *
+ * A custom provider is read as able to serve **every** kind, taken straight
+ * from `SERVICE_KINDS` rather than a second list that can drift from it. A
+ * surface added to the tuple is reachable by custom providers immediately, and
+ * one that is not there cannot be served by anyone.
+ *
+ * `systemone` and `websearch` are included even though a base URL alone rarely
+ * answers them: the upstream still decides, and an operator who points a custom
+ * provider at a host that does speak those shapes should not be blocked by the
+ * gateway guessing it will not.
  */
 export function providerServiceKinds(providerId: string): readonly ServiceKind[] {
   const declared = BUNDLED_PROVIDER_METADATA.find((candidate) => candidate.id === providerId)
@@ -524,7 +596,7 @@ export function providerServiceKinds(providerId: string): readonly ServiceKind[]
   // Bundled providers are explicit: they say which surfaces they serve, and a
   // bundled provider without the declaration serves LLM only.
   if (declared !== undefined) return declared;
-  return ["llm", "imageGeneration", "videoGeneration"];
+  return SERVICE_KINDS;
 }
 
 

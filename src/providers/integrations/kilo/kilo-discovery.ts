@@ -76,6 +76,10 @@ function toModelDefinition(entry: Record<string, unknown>): ModelDefinition | un
   // clamped the same way every other catalog row is.
   const outputLimit = Math.min(declaredOutput, contextLimit);
   const parameters = supportedParameters(entry);
+  // Kilo resells the OpenRouter catalog, so the `:free` suffix is the same
+  // zero-cost spelling it carries there. Matched exactly rather than as a
+  // substring, so an id whose own name contains "free" is not swept in.
+  const freeTier = modelId.endsWith(":free");
   return {
     modelId,
     // Kilo Code exposes one OpenAI-compatible chat surface; its directory
@@ -87,7 +91,12 @@ function toModelDefinition(entry: Record<string, unknown>): ModelDefinition | un
     modalities: { input: inputModalities(entry), output: ["text"] },
     reasoning: parameters.has("reasoning") || parameters.has("include_reasoning"),
     toolCall: parameters.has("tools"),
-    cost: modelsDevCatalog.costFor(KILO_PROVIDER_ID, modelId),
+    // A `:free` row bills zero, and the catalog lookup would otherwise price it
+    // from a models.dev row that describes the paid listing.
+    ...(freeTier ? { free: true, freeTier: true } : {}),
+    cost: freeTier
+      ? { input: 0, output: 0, pricing_model: "pay-per-use" as const }
+      : modelsDevCatalog.costFor(KILO_PROVIDER_ID, modelId),
   };
 }
 

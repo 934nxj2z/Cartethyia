@@ -172,8 +172,8 @@ function opencodeDesktopHeaders(
  * dispatch, captured verbatim from a real 2.0.26 client dispatch.
  *
  * Upstream rejects tool-less or *partially* agent-shaped requests with
- * `FreeTierError` (upstream 403). Verified live 2026-10-14: all eleven here
- * return 200, and so do ten (`execute` dropped), while a five-tool subset
+ * `FreeTierError` (upstream 403). Verified live 2026-10-14: the full set here
+ * returns 200, and so does one with `execute` dropped, while a five-tool subset
  * (`bash, edit, glob, grep, read`) — and any smaller set — still returns 403.
  * The gate reads the tool set, not any single name, so backfilling "the core
  * tools" is not enough: backfill the whole set. They are plain
@@ -503,12 +503,6 @@ export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
   // Absent from the snapshot: keep declared limits rather than the generic default.
   defineModel({ id: "longcat-2.5-preview-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1_000_000, out: 131_072, reasoning: true, free: true }),
-  // Restored 2026-10-17: this id was dropped as deprecated, but it answers
-  // `200` on the Responses wire with the agent tool set. The 403 it gives
-  // without tools is the free-tier gate refusing the request *shape*, not the
-  // model — `muse-spark-1.3-contributor-free` is the one that is genuinely gone
-  // (`410 ModelDeprecated`), and it stays out.
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS, free: true }),
   systemoneZen("jev-1.13-free", true),
 ];
 

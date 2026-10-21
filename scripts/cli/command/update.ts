@@ -8,7 +8,7 @@
  * the same shape 9router uses.
  */
 export function updateCommand(): string {
-  return "npm install --global cartethyia@latest --prefer-online";
+  return "npm install -g cartethyia@latest --prefer-online";
 }
 
 /** Prints the "run this now" block after Cartethyia has stopped. */

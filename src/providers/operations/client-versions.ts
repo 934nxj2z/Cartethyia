@@ -25,9 +25,63 @@ async function qoderVersion(response: Response): Promise<string | null> {
   }
 }
 
+/**
+ * Newest Trae IDE version from the official changelog.
+ *
+ * Trae publishes no npm package and no release API, so the changelog is the
+ * only machine-readable source of the current client version. It matters
+ * upstream: intl `llm_raw_chat` answers `4015` unless the request carries the
+ * *current* client version, so a stale pin is an outage, not a cosmetic drift.
+ *
+ * The page embeds its content as JSON, and its newest entry is the first dated
+ * heading — not the highest semver, because this vendor's hotfix line numbers
+ * past its feature line (3.5.104 shipped after 3.5.97). Taking `max(semver)`
+ * would report an old build as current, so this walks the document in order and
+ * returns the first version following a dated release heading.
+ */
+async function traeVersion(response: Response): Promise<string | null> {
+  try {
+    const text = await response.text();
+    const heading =
+      /"insert":"((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}\s*\([^)]*\))\\n"/g;
+    for (const match of text.matchAll(heading)) {
+      const window = text.slice(match.index ?? 0, (match.index ?? 0) + 900);
+      const found = window.match(/TraeCode\s+v?(\d+\.\d+\.\d+)|v?(\d+\.\d+\.\d+)\s+is\s+released/i);
+      const version = found?.[1] ?? found?.[2];
+      if (version && isSemverish(version)) return version.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function clineClientVersion(response: Response): Promise<string | null> {
   const data = (await response.json()) as { version?: unknown };
   return isSemverish(data.version) ? data.version.trim() : null;
+}
+
+/**
+ * Newest Cursor build from the official download API, as the IDE's own header
+ * spells it.
+ *
+ * Cursor's `x-cursor-client-version` is not the IDE semver on its own: the wire
+ * value is `cli-<version>-<sha7>` (observed live as `cli-2026.10.19-6bbf2c4`).
+ * The download API is the only source that returns both halves — `version` and
+ * `commitSha` — so they are joined here rather than guessed. A semver alone
+ * would be a different identity than the one the IDE sends.
+ */
+async function cursorVersion(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { version?: unknown; commitSha?: unknown };
+    const version = data.version;
+    if (!isSemverish(version)) return null;
+    const sha = typeof data.commitSha === "string" ? data.commitSha.trim() : "";
+    const short = sha.length >= 7 ? sha.slice(0, 7) : "";
+    return short.length > 0 ? `cli-${version.trim()}-${short}` : version.trim();
+  } catch {
+    return null;
+  }
 }
 
 async function clineSdkVersion(response: Response): Promise<string | null> {
@@ -177,7 +231,7 @@ export const VERSION_SOURCES = {
   },
   qoder: {
     key: "qoder",
-    fallback: "1.1.73",
+    fallback: "1.1.74",
     sources: [
       {
         url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest",
@@ -222,6 +276,11 @@ export const VERSION_SOURCES = {
     fallback: "0.0.95",
     sources: [{ url: "https://registry.npmjs.org/@cline/sdk/latest", extract: clineSdkVersion }],
   },
+  clineCli: {
+    key: "cline-cli",
+    fallback: "3.0.73",
+    sources: [{ url: "https://registry.npmjs.org/cline/latest", extract: clineSdkVersion }],
+  },
   codex: {
     key: "codex",
     fallback: "0.163.0",
@@ -257,7 +316,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCli: {
     key: "workbuddy",
-    fallback: "2.168.2",
+    fallback: "2.169.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -284,7 +343,7 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.168.2",
+    fallback: "2.169.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -342,6 +401,46 @@ export const VERSION_SOURCES = {
     fallback: "1.4.10-R6427.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
+  trae: {
+    key: "trae",
+    // Fallback = the donor's last observed client version. Discovery replaces
+    // it within one monitor tick; it is only what a cold process sends before
+    // the first successful fetch.
+    fallback: "3.6.2",
+    sources: [
+      {
+        url: "https://docs.trae.ai/ide/changelog?_lang=en",
+        extract: traeVersion,
+      },
+    ],
+  },
+  cursor: {
+    key: "cursor",
+    // Fallback = the last observed wire version. Discovery replaces it within
+    // one monitor tick; it is only what a cold process sends before the first
+    // successful fetch.
+    fallback: "cli-2026.10.19-6bbf2c4",
+    sources: [
+      {
+        url: "https://cursor.com/api/download?platform=win32-x64-user&releaseTrack=stable",
+        extract: cursorVersion,
+      },
+    ],
+  },
+  hermes: {
+    key: "hermes",
+    // Hermes DOES publish a semver: the GitHub release tag is `v0.22.2`. The
+    // comment this replaced claimed no semver existed and pinned a date tag
+    // (`v2026.9.24`) as the version — a tag, not a release, and not the
+    // identity the client sends.
+    fallback: "0.22.2",
+    sources: [
+      {
+        url: "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
+        extract: githubReleaseVersion,
+      },
+    ],
+  },
   zcode: {
     key: "zcode",
     fallback: "3.14.3",
@@ -357,11 +456,15 @@ export const VERSION_SOURCES = {
 const resolvers = {
   antigravity: createClientVersionResolver({ ...VERSION_SOURCES.antigravity, client: "antigravity" }),
   qoder: createClientVersionResolver({ ...VERSION_SOURCES.qoder, client: "qoder" }),
+  hermes: createClientVersionResolver({ ...VERSION_SOURCES.hermes, client: "hermes" }),
+  trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
+  cursor: createClientVersionResolver({ ...VERSION_SOURCES.cursor, client: "cursor" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
   grok: createClientVersionResolver({ ...VERSION_SOURCES.grok, client: "grok" }),
   clineClient: createClientVersionResolver({ ...VERSION_SOURCES.clineClient, client: "cline" }),
   clineSdk: createClientVersionResolver({ ...VERSION_SOURCES.clineSdk, client: "cline-sdk" }),
+  clineCli: createClientVersionResolver({ ...VERSION_SOURCES.clineCli, client: "cline-cli" }),
   codex: createClientVersionResolver({ ...VERSION_SOURCES.codex, client: "codex" }),
   workbuddyClient: createClientVersionResolver({ ...VERSION_SOURCES.workbuddyClient, client: "workbuddy" }),
   workbuddyCnClient: createClientVersionResolver({ ...VERSION_SOURCES.workbuddyCnClient, client: "workbuddy-cn" }),
@@ -384,9 +487,16 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   opencode: resolvers.opencode,
   "opencode-zen": resolvers.opencode,
   "opencode-go": resolvers.opencode,
-  cline: resolvers.clineClient,
+  // The identity this provider is dispatched under is the CLI's, so the route
+  // identity reports the CLI version. `clineClient` (the VS Code extension
+  // manifest) is no longer the client this provider claims to be.
+  cline: resolvers.clineCli,
   codex: resolvers.codex,
   qoder: resolvers.qoder,
+  hermes: resolvers.hermes,
+  trae: resolvers.trae,
+  traecn: resolvers.trae,
+  cursor: resolvers.cursor,
   commandcode: resolvers.commandcode,
   workbuddy: resolvers.workbuddyClient,
   workbuddycn: resolvers.workbuddyCnClient,
@@ -484,6 +594,8 @@ function accessor<K extends keyof typeof resolvers>(name: K): {
 }
 
 export const getQoderVersion = accessor("qoder").get;
+export const getHermesVersion = accessor("hermes").get;
+export const getTraeVersion = accessor("trae").get;
 export const getAntigravityVersion = accessor("antigravity").get;
 
 export const getOpenCodeVersion = accessor("opencode").get;
@@ -503,8 +615,10 @@ export function buildGrokAuthUserAgent(version = getGrokVersion()): string {
 
 export const getClineClientVersion = accessor("clineClient").get;
 export const getClineSdkVersion = accessor("clineSdk").get;
+export const getClineCliVersion = accessor("clineCli").get;
 export const _resetClineClientVersionCache = accessor("clineClient").reset;
 export const _resetClineSdkVersionCache = accessor("clineSdk").reset;
+export const _resetClineCliVersionCache = accessor("clineCli").reset;
 
 export const getCodexVersion = accessor("codex").get;
 
@@ -536,7 +650,7 @@ export const getCodeBuddyCnVersion = accessor("codebuddyCn").get;
  * The CodeBuddy User-Agent.
  *
  * Both identities share the CLI *package* version, which is why `codebuddy`
- * (the npm `@tencent-ai/codebuddy-code` pin, `2.168.2` — the value both
+ * (the npm `@tencent-ai/codebuddy-code` pin, `2.169.0` — the value both
  * references use for CLI) is the version for each. `codebuddyCn` is the CN
  * *desktop* build (`4.12.2.…`), and using it here produced
  * `CLI/4.12.2.41207131 CodeBuddy/4.12.2.41207131` — a CLI claiming a desktop

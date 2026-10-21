@@ -13,6 +13,8 @@ Entry point for repo work. Most tasks belong to a focused skill — pick it firs
 | A 403 `FreeTierError` (check the egress IP first, then the `tools` gate) | `cartethyia-trace-replay` → `references/opencode-free-tier.md` |
 | Schema change, migration, new usage/telemetry field | `cartethyia-schema-telemetry` |
 | Add/remove/authenticate a provider; catalog, `/v1/models`, capabilities | `cartethyia-provider-catalog` |
+| What a model can do — vision, tools, reasoning, free tier — and proving it | `cartethyia-provider-capabilities` |
+| Understand undocumented behavior by tracing this repo's own code | `cartethyia-reverse-engineering` |
 | Image generation wires, catalog rows, and account entitlement | `cartethyia-provider-catalog` |
 | Remove a bundled provider and its leftover global row | `cartethyia-provider-removal` |
 | Account health, cooldown class, pool selection, retries, leases | `cartethyia-health-routing` |
@@ -126,4 +128,16 @@ mkdir -p .claude/skills
 cmd //c 'mklink /J .claude\skills\cartethyia-engineering .skills\cartethyia-engineering'
 ```
 
-Repeat per skill folder.
+A new skill folder is invisible to the agent until it is wired, and "repeat per
+folder" is remembered exactly until the next folder, so wire them all at once:
+
+```bash
+for d in .skills/*/; do
+  n=$(basename "$d")
+  [ -e ".claude/skills/$n" ] && continue
+  cmd.exe /c "mklink /J .claude\\skills\\$n .skills\\$n" >/dev/null
+done
+```
+
+Idempotent, and it covers folders added later. `.skills/` is the source of
+truth: if a folder exists there and has no junction, it is unwired, not absent.

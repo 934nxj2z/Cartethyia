@@ -25,6 +25,7 @@
 import { describe, expect, test } from "bun:test";
 import { GatewayError } from "../../src/protocol/gateway-error";
 import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
+import { classifyUpstreamFailure } from "../../src/transport/failure-policy";
 import {
   recordAccountFailure,
   recordAccountSuccess,
@@ -92,6 +93,18 @@ function unsupportedModelError(): GatewayError {
 }
 
 const MODEL_EVIDENCE = { origin: "upstream", scope: "model", modelId: "x" } as const;
+
+/**
+ * Evidence as the dispatch path builds it.
+ *
+ * `providerCode` reaches the classifier through `classifyUpstreamFailure`,
+ * which reads it off the error's details — it is not a field the caller
+ * invents. Building evidence the same way the caller does is what makes these
+ * assertions about the real path rather than about a hand-assembled one.
+ */
+function evidenceFor(error: GatewayError): Record<string, unknown> {
+  return { ...classifyUpstreamFailure(error), ...MODEL_EVIDENCE };
+}
 
 function onlyUpdate(captured: Captured): Record<string, unknown> {
   expect(captured.updates).toHaveLength(1);
@@ -171,6 +184,56 @@ describe("recordAccountFailure — an unsupported model stops being redialed", (
     const result = await recordAccountFailure(db, "acc-1", error, MODEL_EVIDENCE);
     expect(result?.category).toBe("model_unreachable");
     expect(cooldownMsOf(onlyUpdate(captured))).toBeGreaterThanOrEqual(6 * 3600_000 - 5_000);
+  });
+});
+
+describe("recordAccountFailure — Qoder 112 is per model, not per account", () => {
+  /** Qoder's plan refusal: a pricing link, not an exhausted balance. */
+  function qoderPlanError(): GatewayError {
+    return new GatewayError(
+      "quota_exceeded",
+      402,
+      'upstream 402: {"code":"112","message":"{\\"pricingUrl\\":\\"https://qoder.com/pricing\\"}"}',
+      { providerCode: "112" },
+      "upstream",
+    );
+  }
+
+  test("cools the pair and leaves the account serving its other models", async () => {
+    // The account keeps answering every other model after this refusal, so
+    // parking it would take healthy models down with the one the plan does not
+    // include. Status must be absent from the write.
+    const { db, captured } = dbDouble(activeAccount());
+    const result = await recordAccountFailure(db, "acc-1", qoderPlanError(), evidenceFor(qoderPlanError()));
+    expect(result?.category).toBe("model_unreachable");
+    const payload = onlyUpdate(captured);
+    expect(payload["status"]).toBeUndefined();
+    expect(cooldownMsOf(payload)).toBeGreaterThanOrEqual(6 * 3600_000 - 5_000);
+  });
+
+  test("escalates to a day across repeat reports", async () => {
+    const { db, captured } = dbDouble(
+      activeAccount({ modelBlockHits: { x: 3 }, modelCooldowns: {} }),
+    );
+    await recordAccountFailure(db, "acc-1", qoderPlanError(), evidenceFor(qoderPlanError()));
+    const payload = onlyUpdate(captured);
+    expect(payload["modelBlockHits"]).toEqual({ x: 4 });
+    expect(cooldownMsOf(payload)).toBeGreaterThanOrEqual(24 * 3600_000 - 5_000);
+  });
+
+  test("a genuine balance exhaustion still cools the whole account", async () => {
+    // Only 112 is plan-scoped. `insufficient_quota` is a balance verdict and
+    // must keep parking the account, or a real exhaustion would be retried
+    // model by model.
+    const { db, captured } = dbDouble(activeAccount());
+    const result = await recordAccountFailure(
+      db,
+      "acc-1",
+      new GatewayError("quota_exceeded", 402, "insufficient quota", { providerCode: "insufficient_quota" }, "upstream"),
+      evidenceFor(new GatewayError("quota_exceeded", 402, "insufficient quota", { providerCode: "insufficient_quota" }, "upstream")),
+    );
+    expect(result?.category).toBe("quota_exhausted");
+    expect(onlyUpdate(captured)["status"]).toBe("cooldown");
   });
 });
 

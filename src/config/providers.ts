@@ -4,7 +4,7 @@
  * callback URL builders built on the public origin.
  */
 
-import { CONFIG_SPEC, readList, readRequired, readText } from "./spec";
+import { CONFIG_SPEC, readInt, readList, readRequired, readText } from "./spec";
 
 /** Reads and normalizes the public OAuth origin. */
 export function requirePublicOrigin(): string {
@@ -22,14 +22,14 @@ export function oauthCallbackUrl(providerId: string): string {
 /**
  * Browser-authorize redirect URI for a provider.
  *
- * Browser OAuth always advertises the loopback callback
- * `http://127.0.0.1:59653/callback` — the URI Codex registers with its
- * authorization server. The console callback stays the exchange
+ * Browser OAuth advertises a loopback callback, `http://127.0.0.1:59653/callback`
+ * by default — the URI Codex registers with its authorization server, which is
+ * why the port is the default rather than a free one. The console callback stays the exchange
  * endpoint: the dashboard dialog pastes the loopback landing URL back and
  * the server exchanges the code against the same loopback URI.
  */
 export function browserAuthorizeRedirectUri(): string {
-  return "http://127.0.0.1:59653/callback";
+  return `http://127.0.0.1:${readInt("CARTETHYIA_OAUTH_CALLBACK_PORT", CONFIG_SPEC.CARTETHYIA_OAUTH_CALLBACK_PORT)}/callback`;
 }
 
 /**

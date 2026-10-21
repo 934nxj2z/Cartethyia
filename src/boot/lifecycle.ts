@@ -220,12 +220,14 @@ export async function bootstrap(): Promise<CartethyiaBoot> {
         flushTelemetry: async () => {
           await deps.telemetryBuffer.flush();
           await deps.usageFlush.flush();
+          await deps.healthEventFlush.flush();
         },
         closePools: async () => {
           await boot.server?.stop();
           await deps.scheduledTasks.stop();
           await deps.telemetryBuffer.stop({ flush: true });
           await deps.usageFlush.stop({ flush: true });
+          await deps.healthEventFlush.stop();
           await Promise.allSettled([
             closeDb(),
             closeRedis(),

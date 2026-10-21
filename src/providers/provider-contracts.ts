@@ -5,6 +5,7 @@
 import type { CanonicalEvent, CanonicalRequest, WireFamily } from "../protocol/canonical-model";
 import { GatewayError } from "../protocol/gateway-error";
 import { BUNDLED_PROVIDER_METADATA, type BundledProviderId } from "./provider-metadata";
+import type { ValidatedOutboundHttp2Bidi } from "../network/http2-bidi";
 
 /** Closed union of every shipped provider ID. */
 export const BUNDLED_PROVIDER_IDS = BUNDLED_PROVIDER_METADATA.map((definition) => definition.id) as readonly BundledProviderId[];
@@ -67,14 +68,76 @@ export type ValidatedOutboundWebSocket = (
   signal: AbortSignal,
 ) => Promise<ProviderWebSocketSession>;
 
+/**
+ * Validated bidirectional HTTP/2 egress, bound to the same selected network
+ * pool as `outbound_fetch`.
+ *
+ * A Connect-RPC bidi Run is neither a `fetch` (the request body never ends)
+ * nor a WebSocket (different protocol), so it gets its own capability — and it
+ * goes through the same binding factory as every other egress, which is what
+ * keeps SSRF validation, DNS pinning, and pool byte attribution intact. A
+ * provider adapter receives this closure and never dials a socket itself.
+ */
+/**
+ * The dialer contract handed to a provider adapter.
+ *
+ * Declared in `network/http2-bidi.ts` — the transport owns the contract — and
+ * re-exported here so provider code keeps one import site.
+ */
+export type { ValidatedOutboundHttp2Bidi };
+
+/**
+ * A provider session that outlives the HTTP request that created it.
+ *
+ * Cursor's Run stays open between the client's separate HTTP requests: the
+ * first request returns a tool call and the next submits that tool's result on
+ * the *same* upstream Run. The account and network-pool slot that Run holds
+ * must therefore stay held too, while the request-scoped accounting for the
+ * first HTTP request is already settled. Ownership is transferred here so the
+ * release is idempotent and belongs to exactly one owner.
+ */
+export interface AttemptLeaseOwnership {
+  /**
+   * Hands the selected account/network-pool lease to a provider session that
+   * outlives this request. Returns the release to call exactly once when the
+   * session terminates; returns `undefined` when there was nothing to transfer
+   * (a credential-less or pool-less route), which is not an error.
+   *
+   * Idempotent: a second call returns `undefined` and releases nothing.
+   */
+  transferToProviderSession(): (() => void) | undefined;
+}
+
+/**
+ * Identity that authorizes a later request to continue a provider session the
+ * gateway is already holding.
+ *
+ * Cursor's tool loop spans two client HTTP requests on one upstream Run, so the
+ * Run — and the account lease it holds — outlives the request that opened it. A
+ * later request may only claim the Run by presenting the same tenant, API key,
+ * provider, and account, all recorded server-side when the Run was created. A
+ * call id alone is never sufficient: it is unguessable but it is still just a
+ * string a client could carry into another key's request.
+ */
+export interface ProviderContinuationScope {
+  readonly tenantId: string;
+  readonly apiKeyId: string;
+  readonly providerId: string;
+  readonly providerAccountId: string;
+}
+
 /** Context passed from routing to a provider adapter. */
 export interface ProviderDispatchContext {
   readonly credential: ResolvedCredential;
   readonly deadline: number;
   readonly abort_signal: AbortSignal;
   readonly outbound_fetch?: ValidatedOutboundFetch | undefined;
+  /** Validated image/attachment egress; deliberately excluded from payload capture. */
+  readonly outbound_attachment_fetch?: ValidatedOutboundFetch | undefined;
   /** Validated WSS egress bound to the same selected network pool as HTTP. */
   readonly outbound_websocket?: ValidatedOutboundWebSocket | undefined;
+  /** Validated bidirectional HTTP/2 egress bound to the same selected network pool. */
+  readonly outbound_http2?: ValidatedOutboundHttp2Bidi | undefined;
   /** Built-in API-key route-selected fallback User-Agent; custom providers leave this unset. */
   readonly user_agent?: string | undefined;
   /** Gateway request id, stable across provider retries for one logical request. */
@@ -85,6 +148,19 @@ export interface ProviderDispatchContext {
   readonly conversation_affinity?: string | undefined;
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly request_identity?: object | undefined;
+  /**
+   * Ownership of this attempt's account/network-pool lease. Present only when
+   * the route holds a lease; a provider session that outlives the request
+   * (Cursor's Run) takes it over so the slot is not released while the Run is
+   * live, and not released twice when it ends.
+   */
+  readonly lease_ownership?: AttemptLeaseOwnership | undefined;
+  /**
+   * Identity of the caller, for a provider session that outlives this request.
+   * Absent when the route cannot scope a continuation, in which case a session
+   * must not be held open across requests at all.
+   */
+  readonly continuation_scope?: ProviderContinuationScope | undefined;
 }
 
 const USER_AGENT_HEADER_NAME = /^user-agent$/i;

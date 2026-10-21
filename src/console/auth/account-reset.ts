@@ -5,8 +5,9 @@
  * `/console/api/auth/change-password` requires the current password, and
  * first-boot setup only runs when no console user exists. The only documented
  * escape was deleting the database by hand. This endpoint removes every console
- * user, which puts `requiresSetup()` back to true so the next visit to
- * `/console` runs the create-an-account wizard again.
+ * user and login lockouts, which puts `requiresSetup()` back to true so the
+ * next visit to `/console` runs the create-an-account wizard again without
+ * inheriting a stale failure lock.
  *
  * What it does not touch: providers, provider accounts, API keys, routing,
  * combos, aliases, usage, and telemetry. Those are not authentication state and

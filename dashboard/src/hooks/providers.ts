@@ -3,7 +3,7 @@ import type { ApiErrorShape } from "../data/api";
 // Console-owned device-poll DTO; token material remains provider-internal.
 import type { AccountHealthEventRecord, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CreateProviderRequest, OAuthDevicePollResponse as OAuthDevicePollResult, ProbeAllAccountsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountsExportResponse, ProviderResponse, SetModelEnabledRequest, UpdateProviderAccountRequest, UpdateProviderRequest } from "../data/contracts";
 import { queryKeys } from "../data/query-keys";
-import { assertModels, assertProviders, querySignal } from "../data/assert";
+import { assertModels, assertProvider, assertProviders, querySignal } from "../data/assert";
 import { DASHBOARD_QUERY_OPTIONS, POLL } from "../data/query-policy";
 import { getErrorMessage } from "../data/api";
 import { toast } from "../lib/toast";
@@ -44,6 +44,19 @@ export function useProviders() {
     ...DASHBOARD_QUERY_OPTIONS,
     gcTime: 600_000,
     refetchInterval: POLL.catalog,
+  });
+}
+
+/** Loads one provider's detail DTO, including the private-to-detail base URL. */
+export function useProviderDetail(providerId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.providers.detail(providerId ?? ""),
+    queryFn: (context) =>
+      consoleRequest<unknown>(`/providers/${encodeURIComponent(providerId ?? "")}`, {
+        signal: querySignal(context),
+      }).then(assertProvider),
+    enabled: Boolean(providerId),
+    ...DASHBOARD_QUERY_OPTIONS,
   });
 }
 

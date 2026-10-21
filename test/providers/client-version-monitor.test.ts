@@ -3,7 +3,7 @@ import { createClientVersionResolver } from "../../src/providers/operations/clie
 import {
   _resetCodeBuddyCnVersionCache,
   _resetCodeBuddyVersionCache,
-  _resetClineClientVersionCache,
+  _resetClineCliVersionCache,
   _resetWorkBuddyCnClientVersionCache,
   buildCodeBuddyUserAgent,
   buildKiroAmzUserAgent,
@@ -15,6 +15,102 @@ import {
   pinnedClientVersions,
   VERSION_SOURCES,
 } from "../../src/providers/operations/client-versions";
+
+describe("trae client version discovery", () => {
+  // Trae publishes no npm package and no release API, so the official
+  // changelog is the only machine-readable source. intl `llm_raw_chat`
+  // answers 4015 unless the request carries the current version, so this is a
+  // live dependency rather than cosmetic metadata.
+  const source = VERSION_SOURCES.trae.sources[0];
+  const extract = source?.extract;
+
+  function changelog(...entries: string[]): Response {
+    const body = entries
+      .map((entry) => `{"insert":"${entry}"}`)
+      .join(",");
+    return new Response(`[[${body}]]`);
+  }
+
+  test("the source is the official changelog", () => {
+    expect(source?.url).toContain("docs.trae.ai/ide/changelog");
+  });
+
+  test("reads the version of the newest dated release", async () => {
+    const page = changelog(
+      "October 08, 2026 (Feature Release)\\n",
+      "TraeCode v3.6.0 is released.\\n",
+      "September 20, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.97 is released.\\n",
+    );
+    expect(await extract?.(page)).toBe("3.6.0");
+  });
+
+  test("takes document order, not the highest semver", async () => {
+    // This vendor numbers hotfixes past its feature line, so `max(semver)`
+    // would report an old build as current.
+    const page = changelog(
+      "October 08, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.104 is released.\\n",
+      "September 20, 2026 (Feature Release)\\n",
+      "TraeCode v3.5.97 is released.\\n",
+    );
+    expect(await extract?.(page)).toBe("3.5.104");
+  });
+
+  test("no dated release means no answer, not a guess", async () => {
+    expect(await extract?.(changelog("Some unrelated heading\\n"))).toBeNull();
+  });
+
+  test("a non-semver match is rejected", async () => {
+    const page = changelog("October 08, 2026 (Feature Release)\\n", "TraeCode v3.6 is released.\\n");
+    expect(await extract?.(page)).toBeNull();
+  });
+
+  test("trae and traecn share one resolver", () => {
+    // One upstream client version, two deployments: CN and intl ship the same
+    // build line, so they must not drift onto different pins.
+    expect(VERSION_SOURCES.trae.fallback).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+describe("cursor client version discovery", () => {
+  const source = VERSION_SOURCES.cursor.sources[0];
+  const extract = source?.extract;
+
+  function download(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  test("the wire identity is cli-<version>-<sha7>, not the bare semver", async () => {
+    // Cursor's own header was observed live as `cli-2026.10.19-6bbf2c4`. The
+    // download API returns `version` and `commitSha` separately, so the header
+    // has to be composed here; sending the semver alone advertises a different
+    // client than the IDE does.
+    const got = await extract?.(download({ version: "3.26.13", commitSha: "3bfec373749d3d4a53a151283022d49743ab50ba" }));
+    expect(got).toBe("cli-3.26.13-3bfec37");
+  });
+
+  test("a missing commit sha degrades to the semver, not to null", async () => {
+    // Half an identity is still better than a pinned fallback.
+    expect(await extract?.(download({ version: "3.26.13" }))).toBe("3.26.13");
+  });
+
+  test("a non-semver version is rejected", async () => {
+    expect(await extract?.(download({ version: "nightly", commitSha: "3bfec37" }))).toBeNull();
+  });
+
+  test("an unparseable body is rejected rather than guessed", async () => {
+    expect(await extract?.(new Response("not json", { status: 200 }))).toBeNull();
+  });
+
+  test("cursor has a discovery source and a wire-shaped fallback", () => {
+    expect(source?.url).toContain("cursor.com/api/download");
+    expect(VERSION_SOURCES.cursor.fallback).toMatch(/^cli-/);
+  });
+});
 
 describe("client version monitor snapshot", () => {
   test("starts on fallback and reports latest after background refresh", async () => {
@@ -113,11 +209,11 @@ describe("pinnedClientVersions", () => {
   test("a seeded version reads as latest and leaves the report", () => {
     // Discovery succeeded: nothing to warn about. This is the healthy answer,
     // and it is what stops the report from crying wolf on every client.
-    _resetClineClientVersionCache("4.1.23");
+    _resetClineCliVersionCache("3.0.73");
     try {
-      expect(pinnedClientVersions().some((p) => p.client === "cline")).toBe(false);
+      expect(pinnedClientVersions().some((p) => p.client === "cline-cli")).toBe(false);
     } finally {
-      _resetClineClientVersionCache();
+      _resetClineCliVersionCache();
     }
   });
 
@@ -125,9 +221,9 @@ describe("pinnedClientVersions", () => {
     // Resetting to null restores discovery behaviour, so the resolver is on its
     // fallback until the next background refresh — exactly the state an
     // operator must be able to see, with the number requests are carrying.
-    _resetClineClientVersionCache(null);
-    const entry = pinnedClientVersions().find((p) => p.client === "cline");
-    expect(entry?.version).toBe(VERSION_SOURCES.clineClient.fallback);
+    _resetClineCliVersionCache(null);
+    const entry = pinnedClientVersions().find((p) => p.client === "cline-cli");
+    expect(entry?.version).toBe(VERSION_SOURCES.clineCli.fallback);
   });
 
   test("the floor travels with a pinned fallback, because it explains which of two things happened", () => {
@@ -135,8 +231,11 @@ describe("pinnedClientVersions", () => {
     // with something below `minVersion` and was discarded. The second is the
     // interesting one — an artifact the provider does not gate on — and it is
     // indistinguishable from the first unless the floor is reported with it.
-    _resetClineClientVersionCache(null);
-    const entry = pinnedClientVersions().find((p) => p.client === "cline");
-    expect(entry?.minVersion).toBe("4.1.23");
+    // The CLI identity carries no floor: the upstream accepted an arbitrary
+    // version when probed, so there is no minimum to report.
+    _resetClineCliVersionCache(null);
+    const entry = pinnedClientVersions().find((p) => p.client === "cline-cli");
+    expect(entry?.version).toBe(VERSION_SOURCES.clineCli.fallback);
+    expect(entry?.minVersion).toBeUndefined();
   });
 });

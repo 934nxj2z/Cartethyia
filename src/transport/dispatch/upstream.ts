@@ -1,5 +1,6 @@
 import type { CanonicalEvent } from "../../protocol/canonical-model";
-import type { ValidatedOutboundFetch, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
+import type { AttemptLeaseOwnership, ValidatedOutboundFetch, ValidatedOutboundHttp2Bidi, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
+import type { ProviderContinuationScope } from "../../providers/provider-contracts";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 
 const FORWARDED_REQUEST_HEADERS = new Set([
@@ -41,7 +42,18 @@ export function buildUpstreamDispatchContext(input: {
   readonly requestId?: string;
   readonly userAgent?: string;
   readonly outboundFetch?: ValidatedOutboundFetch;
+  /** Validated attachment egress that must not be wrapped by provider payload capture. */
+  readonly outboundAttachmentFetch?: ValidatedOutboundFetch;
   readonly outboundWebSocket?: ValidatedOutboundWebSocket;
+  /** Validated bidirectional HTTP/2 egress bound to the same selected pool. */
+  readonly outboundHttp2?: ValidatedOutboundHttp2Bidi;
+  /**
+   * Ownership of this attempt's account/network-pool lease; a provider session
+   * that outlives the request takes it over.
+   */
+  readonly leaseOwnership?: AttemptLeaseOwnership;
+  /** Caller identity authorizing a provider session held across requests. */
+  readonly continuationScope?: ProviderContinuationScope;
   /** Stable per-conversation cache affinity (preferred over random ids). */
   readonly conversationAffinity?: string;
   /** Opaque identity shared by retries of one logical gateway request. */
@@ -74,7 +86,13 @@ export function buildUpstreamDispatchContext(input: {
     ...(userAgent ? { user_agent: userAgent } : {}),
     ...(Object.keys(input.headers).length > 0 ? { request_headers: input.headers } : {}),
     ...(outboundFetch ? { outbound_fetch: outboundFetch } : {}),
+    ...(input.outboundAttachmentFetch
+      ? { outbound_attachment_fetch: input.outboundAttachmentFetch }
+      : {}),
     ...(input.outboundWebSocket ? { outbound_websocket: input.outboundWebSocket } : {}),
+    ...(input.outboundHttp2 ? { outbound_http2: input.outboundHttp2 } : {}),
+    ...(input.leaseOwnership ? { lease_ownership: input.leaseOwnership } : {}),
+    ...(input.continuationScope ? { continuation_scope: input.continuationScope } : {}),
     ...(input.conversationAffinity ? { conversation_affinity: input.conversationAffinity } : {}),
     ...(input.requestIdentity ? { request_identity: input.requestIdentity } : {}),
   } as Record<string, unknown>;

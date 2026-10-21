@@ -5,7 +5,92 @@ import type { SessionUser, UsageDimension } from "../data/contracts";
 import { assertAuditListPage, assertLatestRelease, assertSystemHealth, assertUsageBy, assertUsageChart, assertUsageRequestDetail, assertUsageRequests, assertUsageSummary, querySignal } from "../data/assert";
 import { DASHBOARD_QUERY_OPTIONS, POLL } from "../data/query-policy";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
+export interface NotificationItem {
+  readonly id: string;
+  readonly kind: "memory-high" | "memory-growth" | "update-available";
+  readonly title: string;
+  readonly message: string;
+  readonly createdAt: string;
+  readonly level: "warning" | "info";
+  readonly href?: string;
+}
+
+const NOTIFICATION_RECONNECT_MS = 3_000;
+const NOTIFICATION_MAX_ITEMS = 20;
+
+function readNotification(value: unknown): NotificationItem | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.id !== "string" ||
+    typeof item.title !== "string" ||
+    typeof item.message !== "string" ||
+    typeof item.createdAt !== "string" ||
+    (item.kind !== "memory-high" && item.kind !== "memory-growth" && item.kind !== "update-available") ||
+    (item.level !== "warning" && item.level !== "info")
+  ) return undefined;
+  const notification: NotificationItem = {
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    message: item.message,
+    createdAt: item.createdAt,
+    level: item.level,
+    ...(item.href === "https://github.com/risunCodex/Cartethyia/releases"
+      ? { href: item.href }
+      : {}),
+  };
+  return notification;
+}
+
+/** Streams server-generated memory and release alerts without blocking shell rendering. */
+export function useNotifications(): readonly NotificationItem[] {
+  const [notifications, setNotifications] = useState<readonly NotificationItem[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    let source: EventSource | undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    const connect = (): void => {
+      if (!active) return;
+      source = new EventSource("/console/api/notifications/stream");
+      source.addEventListener("notification", (event) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse((event as MessageEvent<string>).data);
+        } catch {
+          return;
+        }
+        const notification = readNotification(parsed);
+        if (!notification || !active) return;
+        setNotifications((current) => [
+          notification,
+          ...current.filter((item) => item.id !== notification.id),
+        ].slice(0, NOTIFICATION_MAX_ITEMS));
+      });
+      source.onerror = () => {
+        source?.close();
+        source = undefined;
+        if (active && reconnectTimer === undefined) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = undefined;
+            connect();
+          }, NOTIFICATION_RECONNECT_MS);
+        }
+      };
+    };
+    connect();
+    return () => {
+      active = false;
+      source?.close();
+      clearTimeout(reconnectTimer);
+    };
+  }, []);
+
+  return notifications;
+}
 
 /** Loads the current signed-in console user, including `isPlatformAdmin`,
  * so pages can hide (never solely rely on hiding — the server remains the

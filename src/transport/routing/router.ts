@@ -1,5 +1,6 @@
 // Routing model resolution and route planning.
 import { log } from "../../observability/logger";
+import { GatewayError } from "../../protocol/gateway-error";
 import {
   accountsRateLimitedError,
   accountsUnavailableError,
@@ -14,12 +15,14 @@ import {
   type RouteCandidate,
   type RoutePlan,
   type EligibilityDecision,
+  type RouteContinuationAffinity,
   type RouteSnapshot,
 } from "./route-model";
 import {
   candidateSupportsRequest,
   type RequiredCapability,
 } from "../translation/capabilities";
+import { planAllowsCandidate } from "./plan-gate";
 import { InMemoryAdmissionController, admissionKey } from "./admission";
 import { ReservationManager } from "./reservations";
 import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
@@ -525,6 +528,7 @@ export class RoutingEngine {
     requiredCapabilities?: readonly RequiredCapability[],
     allowCliMappings = false,
     keyId?: string,
+    continuationAffinity?: RouteContinuationAffinity,
   ): Promise<RoutePlan> {
     const tid = tenantId ?? null;
     const { resolved, matching, unmatchedMembers } = this.resolveMatchingCandidates(
@@ -534,6 +538,41 @@ export class RoutingEngine {
       allowCliMappings,
       keyId,
     );
+    // Continuation affinity is applied first and absolutely.
+    //
+    // A request carrying a tool result for a provider session this process is
+    // holding MUST reach the exact live account that owns that session. Routing
+    // it anywhere else is not a degraded choice — it is a correctness failure:
+    // the result would be written onto a different account's upstream turn
+    // (corrupting both conversations and leaking the first account's context),
+    // or into a fresh turn that never asked for the call. So the candidate set
+    // is restricted before any health, cooling, or rotation logic runs, and an
+    // empty result is a refusal rather than a fallback to normal routing.
+    if (continuationAffinity !== undefined) {
+      const pinned = matching.filter(
+        (candidate) =>
+          candidate.provider_id === continuationAffinity.providerId &&
+          candidate.provider_account_id === continuationAffinity.providerAccountId,
+      );
+      if (pinned.length === 0) {
+        throw new GatewayError(
+          "invalid_request",
+          400,
+          "This tool result belongs to a Cursor account that is no longer routable. Reconnect the account, or resend the complete conversation.",
+          {
+            providerId: continuationAffinity.providerId,
+            accountId: continuationAffinity.providerAccountId,
+          },
+        );
+      }
+      return {
+        revision: snapshot.revision,
+        candidates: pinned,
+        requested_model: requestedModel,
+        resolved_model: resolved.model,
+        provider_id: pinned[0]!.provider_id,
+      };
+    }
     // `matching` non-empty but nothing eligible means every account serving
     // this model is currently unusable — NOT a missing model. Distinct from
     // the `matching.length === 0` throw in the resolver, which is a genuine 404.
@@ -667,6 +706,18 @@ export class RoutingEngine {
       if (eligible.length === 0)
         throw capabilityUnsupportedError(requiredCapabilities.join(", "));
     }
+    // Plan gate: a model the upstream refuses on a free plan is not offered to
+    // an account the upstream reports as free. That pair is a certain refusal,
+    // and sending it anyway advances the account's failure streak toward a
+    // six-hour park for something that is not the account's fault.
+    //
+    // Applied only when another candidate survives. Every account being free is
+    // not a routing failure — it is the operator having only free accounts, and
+    // the honest outcome is the upstream's own `11158`, which names the model
+    // and the plan. Dropping the last candidate would replace that clear refusal
+    // with a generic "no candidates" that names neither.
+    const planAllowed = eligible.filter((candidate) => planAllowsCandidate(candidate));
+    if (planAllowed.length > 0) eligible = planAllowed;
     eligible = this.applyProviderRouting(eligible, snapshot, tid);
     // Re-assert the cooling order: `applyProviderRouting` rotates accounts
     // within one `provider::model` run, and that rotation is by design blind to

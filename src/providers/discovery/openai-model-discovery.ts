@@ -54,10 +54,18 @@ export async function fetchOpenAICompatibleModels(
         modalityContextLimit(entry);
       const contextWindow = parsedContext ?? fallback?.contextLimit ?? 200_000;
 
+      // `max_completion_tokens` first: it is the name an OpenAI-shaped catalog
+      // uses, and it is the name this gateway's own `/v1/models` emits. A
+      // reader that knew only `max_output_tokens`/`maxTokens` saw none of them
+      // and fell through to the 64_192 default, so every model on such an
+      // upstream was advertised at the same wrong ceiling no matter what the
+      // upstream reported.
       const parsedOutput =
+        positiveNumber(entry.max_completion_tokens) ??
         positiveNumber(entry.max_output_tokens) ??
         positiveNumber((entry as Record<string, unknown>).max_output_tokens) ??
         positiveNumber(entry.maxTokens) ??
+        positiveNumber((entry as Record<string, unknown>).completion_token_limit) ??
         modalityOutputLimit(entry);
       const maxOutputTokens = parsedOutput ?? fallback?.outputLimit ?? 64_192;
       const outputTokens = Math.min(maxOutputTokens, contextWindow);
@@ -74,7 +82,14 @@ export async function fetchOpenAICompatibleModels(
       // the upstream declares for the model it serves. A catalog that declares
       // it as an `input_modalities[]` array instead of a `modality` string was
       // read as text-only, so a vision model lost image input.
-      const hasImage = rawModality.includes("image") || modalityImageInput(entry);
+      // `capabilities.input` is a third spelling — an array of modality names,
+      // used by OpenAI-shaped catalogs including this gateway's own. Read
+      // alongside the other two so a vision model is not downgraded to
+      // text-only, which then drops image parts before they reach the upstream.
+      const hasImage =
+        rawModality.includes("image") ||
+        modalityImageInput(entry) ||
+        capabilityImageInput(entry);
       const responsesWire = isResponsesNativeModelId(id);
       byId.set(id, {
         modelId: id,
@@ -83,8 +98,14 @@ export async function fetchOpenAICompatibleModels(
         contextLimit: contextWindow,
         outputLimit: outputTokens,
         modalities: { input: hasImage ? ["text", "image"] : ["text"], output: ["text"] },
-        reasoning: false,
-        toolCall: true,
+        // Upstream declares reasoning, so believe it rather than pinning false:
+        // a reasoning model advertised as non-reasoning is routed without the
+        // thinking budget it needs, and the caller's `reasoning_effort` is
+        // dropped as unsupported.
+        reasoning: entry.reasoning === true,
+        // Same for tool calling — an upstream that names a model as
+        // non-tool-capable must not have tools routed to it.
+        toolCall: entry.tool_call === false ? false : true,
         cost,
       });
     }
@@ -149,6 +170,21 @@ function modalityImageInput(entry: Record<string, unknown>): boolean {
 
 
 
+
+/**
+ * Image input from a `capabilities.input` array.
+ *
+ * The field is a plain list of modality names (`["text","image"]`), not the
+ * structured `input_modalities[]` objects the sibling reader expects. A catalog
+ * that spells it this way was read as text-only.
+ */
+function capabilityImageInput(entry: Record<string, unknown>): boolean {
+  const capabilities = entry.capabilities;
+  if (!isRecord(capabilities)) return false;
+  const inputs = capabilities.input;
+  if (!Array.isArray(inputs)) return false;
+  return inputs.some((name) => typeof name === "string" && name.toLowerCase().includes("image"));
+}
 
 function extractEntries(payload: unknown): readonly Record<string, unknown>[] | null {
   if (Array.isArray(payload)) return payload.filter(isRecord);

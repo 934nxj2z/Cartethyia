@@ -596,3 +596,50 @@ dbDescribe("account failover", () => {
     expect(gateway.adapters.get(second.providerId)?.dispatches).toHaveLength(1);
   });
 });
+
+describe("RoutingEngine.plan plan gate", () => {
+  const engine = new RoutingEngine();
+  const qualified = "p/m";
+
+  test("a pro-only model skips a free-plan account for a paid one", async () => {
+    const free = candidate({
+      provider_account_id: "free",
+      pro_only: true,
+      account_plan: "Free Plan Subscription",
+    });
+    const pro = candidate({ provider_account_id: "pro", pro_only: true, account_plan: "Pro" });
+    const plan = await engine.plan(qualified, snapshot([free, pro]));
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]?.provider_account_id).toBe("pro");
+  });
+
+  test("an unknown plan is not treated as free", async () => {
+    // The gate must not take a working account out of rotation on the strength
+    // of a plan read that never happened.
+    const unknown = candidate({ provider_account_id: "unknown", pro_only: true });
+    const plan = await engine.plan(qualified, snapshot([unknown]));
+    expect(plan.candidates).toHaveLength(1);
+  });
+
+  test("every account free still serves rather than failing", async () => {
+    // Having only free accounts is not a routing error. The upstream's own
+    // refusal names the model and the plan; a generic no-candidates error
+    // would name neither.
+    const onlyFree = candidate({
+      provider_account_id: "free",
+      pro_only: true,
+      account_plan: "Free Plan Subscription",
+    });
+    const plan = await engine.plan(qualified, snapshot([onlyFree]));
+    expect(plan.candidates).toHaveLength(1);
+  });
+
+  test("an ordinary model is served by a free account", async () => {
+    const free = candidate({
+      provider_account_id: "free",
+      account_plan: "Free Plan Subscription",
+    });
+    const plan = await engine.plan(qualified, snapshot([free]));
+    expect(plan.candidates[0]?.provider_account_id).toBe("free");
+  });
+});

@@ -4,6 +4,7 @@ import type { ClientIdentity } from "../../security/abuse";
 import type { ResolvedApiKey } from "../../security/api-key-auth";
 import type { PreparedProxyRequest } from "./preparer";
 import type { PayloadCaptureState, TelemetryPayloadCapture } from "../../observability/payload-capture";
+import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/settings/contracts";
 import { createInFlightRegistry, type InFlightSnapshot } from "./inflight";
 import { log } from "../../observability/logger";
 import { fastPathname } from "../pathname";
@@ -103,6 +104,19 @@ export interface ProxyRequestState {
    * hint at it, and they look identical in both cases.
    */
   payloadCaptureState?: PayloadCaptureState;
+  /**
+   * This request's resolved payload-capture preference, memoized on the request.
+   *
+   * The preference is a tenant setting, so it cannot change between attempts of
+   * one request. It was resolved twice — once per attempt to decide whether to
+   * tee the provider body, and again on the terminal attempt to decide what to
+   * store — so a request with several attempts paid for it several times.
+   * Memoized here, the second read is free and the two cannot disagree about
+   * whether capture is on.
+   */
+  payloadCapturePreference?:
+    | { readonly ok: true; readonly mode: TelemetryPayloadMode; readonly depth: TelemetryPayloadDepth }
+    | { readonly ok: false };
   /**
    * Set by the dispatch handler synchronously before returning a streaming
    * response. `afterResponse` lifecycle hooks read it to skip finalization

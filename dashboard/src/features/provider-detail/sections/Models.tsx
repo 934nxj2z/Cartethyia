@@ -794,7 +794,7 @@ function ModelCard({
             >
               <span
                 title={`${model.wireFamily} · ${model.route ?? providerId}`}
-                className="shrink-0 rounded-pill px-3 py-0.5 text-micro font-bold tracking-[0.04em]"
+                className="shrink-0 rounded-tiny px-3.5 py-0.5 text-micro font-bold"
                 // The wire family is a runtime value from the catalog, so its
                 // chip colours stay inline.
                 style={{ ...wireChipStyle(model.wireFamily) }}
@@ -809,6 +809,29 @@ function ModelCard({
                   {modelSourceBadge(model.source)}
                 </span>
               ) : null}
+              {model.proOnly === true ? (
+                <span
+                  title="Refused on a free plan. Nothing in the provider's model directory predicts it, so this comes from a real dispatch: the upstream answers that the model is not allowed for a free user type."
+                  className="shrink-0 rounded-tiny border border-orange bg-orange-soft px-3.5 py-0.5 text-micro font-bold uppercase tracking-[0.04em] text-orange"
+                >
+                  Pro
+                </span>
+              ) : null}
+              {/* Free tier for a static row, styled as the source badge so the
+                  card keeps one visual vocabulary. Suppressed when the row is
+                  already `auto_free` — that source badge says the same thing, and
+                  showing both put two "Free tier" labels on one card. The flag
+                  comes from the provider's directory (Qoder states `is_free` per
+                  row), so the pill tracks plan changes. */}
+              {model.freeTier === true && model.source !== "auto_free" ? (
+                <span
+                  title="Free on this provider's plan. Taken from the provider's own model directory, not a hardcoded list, so it tracks plan changes."
+                  className="shrink-0 rounded-pill border border-teal-soft px-3 py-0.5 text-micro font-bold text-teal"
+                >
+                  Free tier
+                </span>
+              ) : null}
+
               {model.enabled ? null : (
                 <span
                   className="shrink-0 rounded-pill bg-red-soft px-3 py-0.5 text-micro font-bold tracking-[0.04em] text-red"

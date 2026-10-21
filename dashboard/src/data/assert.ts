@@ -177,6 +177,12 @@ function assertUsageRequestItem(value: unknown): void {
       throw invalidResponse("Invalid usage request response");
     }
   }
+  // Presence bitmask: 1|2|4|8 flag which payload stages were captured, so the
+  // highest value is 15. A larger number would mark stages that do not exist.
+  const stages: unknown = value.payloadStages;
+  if (stages !== undefined && (!Number.isInteger(stages) || (stages as number) < 0 || (stages as number) > 15)) {
+    throw invalidResponse("Invalid usage request response");
+  }
   for (const field of [
     "durationMs",
     "inputTokens",
@@ -264,6 +270,12 @@ export function assertProviders(value: unknown): ProviderResponse[] {
       throw invalidResponse("Invalid provider service kinds");
     return { ...provider, serviceKinds } as unknown as ProviderResponse;
   });
+}
+
+export function assertProvider(value: unknown): ProviderResponse {
+  const [provider] = assertProviders([value]);
+  if (provider === undefined) throw invalidResponse("Invalid provider response");
+  return provider;
 }
 
 export function assertModels(value: unknown): ModelCatalogEntry[] {

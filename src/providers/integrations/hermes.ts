@@ -3,18 +3,57 @@ import type { ProviderDispatchTarget } from "../provider-contracts";
 import type { ApiKeyProviderSpec } from "../configured-provider";
 import { isRecord } from "../../protocol/codecs";
 import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../provider-sanitize";
+import { getHermesVersion } from "../operations/client-versions";
 
 const HERMES_PROVIDER_ID = "hermes" as const;
 
-/** Portal attribution tags required by the Nous Research inference API. */
-const HERMES_PORTAL_TAGS = ["product=hermes-agent", "client=hermes-client-v0.13.0"] as const;
+/**
+ * Portal attribution tags the Nous Research inference API requires.
+ *
+ * The endpoint validates the *shape* and rejects the request with 400 `missing
+ * user tag` when no `user=` tag is present. Measured against the live API:
+ *
+ *   tags=[user=u1]   → 200      tags=[a=b]   → 400 missing user tag
+ *   tags=[user=]     → 200      tags=[x]     → 400 missing user tag
+ *   tags=[] / absent → 400      no user tag  → 400
+ *
+ * The value is not validated — any non-empty value passes — so `user=` is a
+ * required field rather than a credential. That matters for what to put in it:
+ * a fabricated product name would be a false attribution, and there is no
+ * account identity to send, because the inference API exposes no account,
+ * usage or quota endpoint (every candidate answers 404). `user=hermes-agent`
+ * names the client rather than inventing an end user.
+ *
+ * `product=` and `client=` are the tags Hermes' own client sends
+ * (`agent/portal_tags.py` in `NousResearch/hermes-agent`). Neither is required
+ * for dispatch — a request carrying only `user=` answers 200 — but they are
+ * sent because they are the client's real attribution and cost nothing. The
+ * client version tracks the released tag `v2026.9.24`, which is date-based:
+ * Hermes does not publish a semver, so the `0.13.0` this used to claim was not
+ * a version Hermes ever had.
+ */
+/**
+ * Builds the portal tags for one dispatch.
+ *
+ * `client=` carries the version in the shape the released tag used
+ * (`v<version>`), but the version itself is now the resolved one: the previous
+ * constant named a date tag (`v2026.9.24`) that was neither a release nor the
+ * version the project publishes. `getHermesVersion()` tracks the real release.
+ */
+function hermesPortalTags(): readonly string[] {
+  return [
+    "product=hermes-agent",
+    `client=hermes-client-v${getHermesVersion()}`,
+    "user=hermes-agent",
+  ];
+}
 
 function injectHermesTags(
   payload: Record<string, unknown>,
   _request: CanonicalRequest,
   _candidate: ProviderDispatchTarget,
 ): void {
-  payload["tags"] = [...HERMES_PORTAL_TAGS];
+  payload["tags"] = hermesPortalTags();
 }
 
 
@@ -37,10 +76,27 @@ import type { ModelDefinition } from "../provider-model-definition";
  * `upstage/solar-mini4:free` exist).
  */
 export const HERMES_MODELS: readonly ModelDefinition[] = [
-  defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true }),
-  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 32768, reasoning: true }),
-  defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true }),
-  defineModel({ id: "meituan/longcat-2.0:free", ctx: 1048756, out: 262144, reasoning: true }),
+  // The live `/models` free rows, with the limits the catalog states. Verified
+  // against the API: every id here answers 200.
+  //
+  // `meituan/longcat-2.0:free` is gone: the catalog still lists the id, but
+  // dispatching it answers 404 "This model is no longer free", so keeping it
+  // would be a card that can only ever fail. `meituan/longcat-2.5-preview:free`
+  // replaces it and answers 200.
+  //
+  // `stepfun/step-5-preview:free` is gone: it is absent from the live catalog
+  // entirely and dispatching it answers 404 "This model's free period has
+  // ended" — a retired row, not a capacity blip, so it cannot be left in.
+  //
+  // Output caps are the catalog's own `top_provider.max_completion_tokens`,
+  // which differ per row: `poolside/laguna-xs-2.1:free` is 32768 while its
+  // sibling `laguna-s` is 131072, so a uniform value overstates one of them.
+  defineModel({ id: "poolside/laguna-s-2.1:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "poolside/laguna-xs-2.1:free", ctx: 262144, out: 32768, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
+  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
 ];
 
 
@@ -53,6 +109,16 @@ export const HERMES_SPEC: ApiKeyProviderSpec = {
   provider_id: HERMES_PROVIDER_ID,
   endpoint_paths_by_wire_family: {},
   prePayload: injectHermesTags,
+  // The origin sits behind Cloudflare, which answers a request carrying no
+  // `user-agent` with 403 "Attention Required!" while the same request with any
+  // non-empty UA answers 200 — measured directly against the API: an empty UA
+  // is 403, and `curl`, `node`, `python-requests`, `undici` and Bun's own
+  // default are all accepted.
+  //
+  // The value names this client as Hermes rather than claiming to be the
+  // gateway: the upstream meters by the product tag, and the version is the
+  // resolved release so a stale pin cannot drift into a mismatch.
+  extra_headers: { "user-agent": `hermes-agent/${getHermesVersion()}` },
 };
 
 /**
@@ -123,7 +189,12 @@ export async function discoverHermesFreeModels(options: {
       modalities: { input: hasImage ? ["text", "image"] : ["text"], output: ["text"] },
       reasoning: true,
       toolCall: true,
-      // The row reached this point only because both rates parse to zero.
+      // The row reached this point only because both rates parse to zero, so
+      // it is the free tier by the provider's own pricing. `free` is the
+      // billing statement and `freeTier` the catalog one; the model list groups
+      // on the tier, so without it these rows land in the fetched tail instead
+      // of the free section.
+      freeTier: true,
       cost: { input: 0, output: 0, pricing_model: "pay-per-use" },
     });
   }

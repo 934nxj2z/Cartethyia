@@ -32,6 +32,9 @@ import { RedisAdmissionCounterStore } from "../security/admission/redis-store";
 import { sweepLeases } from "../security/admission/lease-sweep";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { UsageFlushBuffer } from "../persistence/usage-flush";
+import { setPendingUsageSource } from "../security/api-key-auth";
+import { HealthEventFlushBuffer, setHealthEventBuffer } from "../persistence/health-event-flush";
+import { subscribePeerSettingsRevisions } from "../persistence/settings-revision";
 import { deleteExpiredSessions } from "../console/auth/session-service";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
 import {
@@ -111,6 +114,7 @@ export interface ProductionDeps {
   poolSelector: NetworkPoolSelector;
   telemetryBuffer: TelemetryBatchBuffer;
   usageFlush: UsageFlushBuffer;
+  healthEventFlush: HealthEventFlushBuffer;
   trustedProxyBoundary: TrustedProxyBoundary;
   providerRegistry: ProviderRegistry;
   resolveOAuthRefresher: (providerId: string) => Promise<OAuthTokenRefresher | undefined>;
@@ -204,7 +208,21 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     }
     return [...totals].map(([accountId, inflight]) => ({ accountId, inflight }));
   };
+  // Peer processes' settings mutations arrive here. Subscribed once for the
+  // process: the revision counter is process-global, and the handler only
+  // moves it forward.
+  subscribePeerSettingsRevisions();
   const usageFlush = new UsageFlushBuffer(db);
+  // Auth reads lifetime usage to seed the admission counter. The persisted
+  // value lags by up to one flush interval, so hand it the in-flight deltas
+  // too — otherwise the seed is systematically under what has actually been
+  // spent, worst exactly when the key is busiest.
+  setPendingUsageSource((apiKeyId) => usageFlush.pendingFor(apiKeyId));
+  // Health audit rows are append-only and read by nobody in dispatch, so they
+  // no longer land inside the request. The status write they accompany stays
+  // synchronous — routing reads it.
+  const healthEventFlush = new HealthEventFlushBuffer(db);
+  setHealthEventBuffer(healthEventFlush);
   const admissionStore = redis
     ? new RedisAdmissionCounterStore(redis)
     : new InMemoryAdmissionCounterStore();
@@ -548,6 +566,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     poolAgentResolver,
     telemetryBuffer,
     usageFlush,
+    healthEventFlush,
     poolSelector,
     admissionService,
     trustedProxyBoundary: resolveTrustedProxyBoundary(),

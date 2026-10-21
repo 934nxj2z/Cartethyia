@@ -242,10 +242,10 @@ dbDescribe("default gateway API key", () => {
       });
       expect(created.isDefault).toBe(false);
       expect(created.keyPrefix).toBe(DEFAULT_API_KEY_PREFIX);
-      expect(created.secret).toMatch(/^carte_[A-Za-z0-9_-]{12}$/);
+      expect(created.secret).toMatch(/^pn-carte-[A-Za-z0-9_-]{16}$/);
 
       const rotated = await operations.regenerateKey(owner(tenant.tenantId), created.id);
-      expect(rotated.secret).toMatch(/^carte_[A-Za-z0-9_-]{12}$/);
+      expect(rotated.secret).toMatch(/^pn-carte-[A-Za-z0-9_-]{16}$/);
       expect((await operations.listKeys(owner(tenant.tenantId))).find((key) => key.id === created.id)?.keyPrefix)
         .toBe(DEFAULT_API_KEY_PREFIX);
 
@@ -253,7 +253,7 @@ dbDescribe("default gateway API key", () => {
     });
   });
 
-  test("share templates default to sh-carte_ and migrate the old rk_ prefix", async () => {
+  test("share templates default to sh-carte- and migrate the old rk_ prefix", async () => {
     await withRollback(async (client) => {
       const tenant = await createTenant(client, RUN_ID);
       const db = drizzle(client as never, { schema: fullSchema });
@@ -267,7 +267,7 @@ dbDescribe("default gateway API key", () => {
         keyMode: "share",
         scopes: [...TENANT_KEY_SCOPES],
       });
-      expect(template.keyPrefix).toBe("sh-carte_");
+      expect(template.keyPrefix).toBe("sh-carte-");
       expect(template.secret).toBeUndefined();
 
       const legacy = await operations.createKey(owner(tenant.tenantId), {
@@ -275,7 +275,7 @@ dbDescribe("default gateway API key", () => {
         keyPrefix: "rk_",
         scopes: [...TENANT_KEY_SCOPES],
       });
-      expect(legacy.keyPrefix).toBe("sh-carte_");
+      expect(legacy.keyPrefix).toBe("sh-carte-");
     });
   });
 });

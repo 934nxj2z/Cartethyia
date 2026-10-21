@@ -43,8 +43,10 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { captureProviderExchange, shouldCaptureProviderBody } from "../attempt-finalize";
+import { captureProviderExchange, shouldCaptureProviderBodyForRequest } from "../attempt-finalize";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
+import type { AttemptLeaseOwnership } from "../leases";
+import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
 import { resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
 import type { ProxyRequestState } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
@@ -81,6 +83,10 @@ export interface StreamingDispatchInput {
   readonly proxySlot: { poolId: string; release: () => void } | undefined;
   readonly networkPoolId: string | undefined;
   readonly providerCapture: ProviderExchangeCapture;
+  /** Ownership of this attempt's account/network-pool release, when one was acquired. */
+  readonly leaseOwnership?: AttemptLeaseOwnership | undefined;
+  /** Caller identity authorizing a provider session held across requests. */
+  readonly continuationScope?: ProviderContinuationScope | undefined;
   /** Hands lease ownership to the returned `Response`'s async lifetime. */
   retainLeases: () => void;
   /** First-token latency in the spread shape `completeAttempt` accepts. */
@@ -151,6 +157,8 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     providerCapture,
     retainLeases,
     ttfbFields,
+    leaseOwnership,
+    continuationScope,
   } = input;
 
   const outboundFetch = deps.networkBindingFactory?.fetch(
@@ -161,7 +169,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     ? captureProviderExchange(
         outboundFetch,
         providerCapture,
-        await shouldCaptureProviderBody(deps.db, prepared.authorization.snapshot.tenant_id),
+        await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state),
       )
     : undefined;
   const dispatchContext = buildUpstreamDispatchContext({
@@ -174,6 +182,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     ...(conversationAffinity ? { conversationAffinity } : {}),
     ...(candidate.user_agent === undefined ? {} : { userAgent: candidate.user_agent }),
     ...(wrappedOutboundFetch ? { outboundFetch: wrappedOutboundFetch } : {}),
+    ...(outboundFetch ? { outboundAttachmentFetch: outboundFetch } : {}),
     ...(deps.networkBindingFactory
       ? {
           outboundWebSocket: deps.networkBindingFactory.webSocket(
@@ -182,6 +191,16 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
           ),
         }
       : {}),
+    ...(deps.networkBindingFactory
+      ? {
+          outboundHttp2: deps.networkBindingFactory.http2Bidi(
+            networkPoolId,
+            prepared.authorization.snapshot.tenant_id,
+          ),
+        }
+      : {}),
+    ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
+    ...(continuationScope === undefined ? {} : { continuationScope }),
   });
   // `ProviderAdapter.dispatch` is declared to return a non-nullable
   // `AsyncIterable`, so an adapter that returned `undefined` would be a
@@ -248,6 +267,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       providerCapture,
       getIterator: () => iterator,
       ttfbFields,
+      ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
     },
     pipeline,
     {

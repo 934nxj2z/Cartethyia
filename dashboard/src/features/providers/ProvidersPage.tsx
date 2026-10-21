@@ -435,6 +435,15 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
             >
               {customProvider.label || customProvider.providerId}
             </div>
+            {customProvider.baseUrl ? (
+              <div
+                className="mt-1 min-w-0 truncate font-mono text-micro text-text-tertiary"
+                title={customProvider.baseUrl}
+              >
+                <span className="font-semibold text-text-secondary">Base URL</span>{" "}
+                {customProvider.baseUrl}
+              </div>
+            ) : null}
             <div className="mt-1.5 flex flex-wrap gap-2">
               {accounts === undefined ? (
                 <SecondaryQueryBadge
@@ -661,7 +670,6 @@ const FREE_LIMITED_IDS = new Set([
   // its `/v1/models` marks those rows at zero price, so discovery can keep the
   // list current instead of encoding it by hand.
   "hermes",
-  "commandcode",
   // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
   // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
   // alongside its paid rows, so its free allowance is metered against that
@@ -685,10 +693,26 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "mistral",
   "meta",
   "deepseek",
+  "commandcode",
+  // Alibaba's OpenAI-compatible DashScope: a household-enough name that an
+  // operator looks for beside the other majors rather than in "Other".
+  "dashscope",
 ]);
 
 function hasInteractiveOAuth(provider: ProviderResponse): boolean {
   return provider.oauthFlows?.browser === true || provider.oauthFlows?.device === true;
+}
+
+/**
+ * True when the provider holds a credential that expires and renews.
+ *
+ * A provider with neither a browser redirect nor a device code still belongs
+ * under OAuth when it imports a refreshable token pair: filing it with the API
+ * keys hides that it expires, and the account's renewal is then unexplained.
+ * Import-only clients that cannot refresh stay where they are.
+ */
+function hasRefreshableCredential(provider: ProviderResponse): boolean {
+  return provider.oauthFlows?.refreshable === true;
 }
 
 /**
@@ -938,9 +962,12 @@ const SECTIONS = [
   {
     title: "OAuth & Agent Providers",
     // Import-only clients validate and store API keys; only browser/device
-    // authorization belongs in this section.
+    // authorization belongs in this section — plus an import-only client whose
+    // credential is a refreshable token pair, which is OAuth in every way the
+    // operator experiences except the missing button.
     filter: (p: ProviderResponse) =>
-      hasInteractiveOAuth(p) && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
+      (hasInteractiveOAuth(p) || hasRefreshableCredential(p)) &&
+      !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Well Known API Key Providers",
@@ -950,7 +977,8 @@ const SECTIONS = [
       WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p),
+      !hasInteractiveOAuth(p) &&
+      !hasRefreshableCredential(p),
   },
   {
     title: "Other API Key Providers",
@@ -960,7 +988,8 @@ const SECTIONS = [
       !WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p),
+      !hasInteractiveOAuth(p) &&
+      !hasRefreshableCredential(p),
   },
 ];
 

@@ -1,15 +1,25 @@
-import { createHash, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 
 // Share-link persistence and atomic child-key issuance. The hash is the lookup
 // key; the bearer token is retained encrypted so the console can re-display a
 // stable link, and is never selected by a public lookup.
 
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql, or,} from "drizzle-orm";
 import type { CartethyiaDatabase } from "../db-handle";
 import { lockRows } from "../dialect";
 import { apiKeys, shareLinks, sharePopups, type ShareLinkKind, type ApiKeyModelAccessMode } from "../schema";
 
 /** Hashes a share bearer token for storage and lookup. */
+/**
+ * A fresh public slug for a share page.
+ *
+ * Held in the clear and looked up by index, so it must be unguessable on its
+ * own: the same 256 bits of entropy as the bearer token, base64url-encoded.
+ */
+export function generateShareSlug(): string {
+  return randomBytes(32).toString("base64url");
+}
+
 export function hashShareToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -44,6 +54,8 @@ export interface ShareLinkToken {
   readonly kind: ShareLinkKind;
   readonly expiresAt: Date | null;
   readonly tokenEncrypted: Buffer | null;
+  /** Public address fragment, held in the clear; null on pre-migration rows. */
+  readonly slug: string | null;
 }
 
 /**
@@ -205,6 +217,8 @@ export interface ShareLinkStore {
     apiKeyId: string;
     tokenHash: string;
     tokenEncrypted: Buffer;
+    /** Public address fragment; kept across rotates so the URL is stable. */
+    slug: string;
     kind: ShareLinkKind;
     expiresAt: Date | null;
     rotate: boolean;
@@ -240,6 +254,7 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
     apiKeyId: string;
     tokenHash: string;
     tokenEncrypted: Buffer;
+    slug: string;
     kind: ShareLinkKind;
     expiresAt: Date | null;
     rotate: boolean;
@@ -269,6 +284,9 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
           .set({
             tokenHash: input.tokenHash,
             tokenEncrypted: input.tokenEncrypted,
+            // The slug is the address and survives a rotate, so an operator who
+            // rotates does not invalidate every copy of the link they shared.
+            ...(current.slug === null ? { slug: input.slug } : {}),
             expiresAt: input.expiresAt,
             lastViewedAt: null,
           })
@@ -290,6 +308,7 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
           apiKeyId: input.apiKeyId,
           tokenHash: input.tokenHash,
           tokenEncrypted: input.tokenEncrypted,
+          slug: input.slug,
           kind: input.kind,
           expiresAt: input.expiresAt,
         })
@@ -325,7 +344,15 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
       .from(shareLinks)
       .innerJoin(apiKeys, eq(shareLinks.apiKeyId, apiKeys.id))
       .leftJoin(sharePopups, eq(sharePopups.apiKeyId, apiKeys.id))
-      .where(and(eq(shareLinks.tokenHash, tokenHash), isNull(apiKeys.parentKeyId)))
+      // The path segment may be the slug or the bearer token: the slug is the
+      // address a restored page keeps, the token is what the page was issued
+      // with before slugs existed. Either one names the same link.
+      .where(
+        and(
+          or(eq(shareLinks.slug, tokenHash), eq(shareLinks.tokenHash, tokenHash)),
+          isNull(apiKeys.parentKeyId),
+        ),
+      )
       .limit(1);
     const row = rows[0];
     if (row === undefined) return { ok: false, refusal: "not_found" };
@@ -361,6 +388,7 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
         kind: shareLinks.kind,
         expiresAt: shareLinks.expiresAt,
         tokenEncrypted: shareLinks.tokenEncrypted,
+        slug: shareLinks.slug,
       })
       .from(shareLinks)
       .where(

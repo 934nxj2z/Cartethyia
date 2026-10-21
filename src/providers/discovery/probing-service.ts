@@ -63,6 +63,7 @@ import { computeTokensPerSec } from "../../observability/token-speed";
 import { TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { providerBaseUrl } from "../provider-metadata";
 import { isBundledProviderId, parseProviderId, type ProviderDispatchTarget as AdapterDispatchTarget, type ValidatedOutboundFetch } from "../provider-contracts";
+import type { ValidatedOutboundHttp2Bidi } from "../provider-contracts";
 import type { ModelDefinition } from "../provider-model-definition";
 import type { ProviderRegistry } from "../provider-registry";
 
@@ -73,6 +74,13 @@ const PROBE_ACCOUNT_CONCURRENCY = 10;
 
 export interface ProbeOutboundBinding {
   readonly fetch: ValidatedOutboundFetch;
+  /**
+   * Validated bidirectional HTTP/2 egress for the same pool/tenant. A provider
+   * whose only transport is a bidi stream (Cursor's Connect-RPC Run) has no
+   * `fetch` path to fall back to, so a probe without this binding reports a
+   * healthy account as broken.
+   */
+  readonly http2Bidi?: ValidatedOutboundHttp2Bidi;
   readonly networkPoolId?: string;
   readonly release?: () => void;
 }
@@ -364,6 +372,11 @@ export class ProviderProbingService {
             deadline: startedAt + 30_000,
             abort_signal: probeSignal,
             outbound_fetch: probeFetch,
+            // A bidi-only provider (Cursor's Connect-RPC Run) has no `fetch`
+            // transport at all: without the HTTP/2 binding the probe fails with
+            // "requires validated HTTP/2 egress" while live dispatch — which
+            // always supplies it — succeeds.
+            ...(outbound.http2Bidi === undefined ? {} : { outbound_http2: outbound.http2Bidi }),
           })) {
             if (ttfbMs === undefined) ttfbMs = Date.now() - startedAt;
             events.push(event);
@@ -814,6 +827,12 @@ export class ProviderProbingService {
         reasoning: knownDefinition?.reasoning ?? discDef?.reasoning ?? false,
         toolCall: knownDefinition?.toolCall ?? discDef?.toolCall ?? false,
         cost: modelsDevCatalog.costFor(providerId, modelId),
+        // Discovery builds its rows from the same static catalog, so a fetched
+        // row carries the same answer a seeded one does. Null when neither
+        // source marked it, which reads as "unknown" rather than "free".
+        proOnly: (discDef?.proOnly ?? knownDefinition?.proOnly ?? null),
+        // Same shape for the tier the provider states itself (Qoder `is_free`).
+        freeTier: (discDef?.freeTier ?? knownDefinition?.freeTier ?? null),
       };
       rows.push({
         providerId,
@@ -851,6 +870,8 @@ export class ProviderProbingService {
             reasoning: sql`excluded.reasoning`,
             toolCall: sql`excluded.tool_call`,
             cost: sql`excluded.cost`,
+            proOnly: sql`excluded.pro_only`,
+            freeTier: sql`excluded.free_tier`,
             // The proposed row's own source, not a constant: a free-tier
             // discovery and an ordinary one write the same upsert, and pinning
             // this to `discovered` would relabel every free-tier row on the
