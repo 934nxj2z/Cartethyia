@@ -9,7 +9,7 @@ import {
 } from "../../components/HeaderPairsEditor";
 import { ProviderCardGrid } from "../../components/ProviderCardGrid";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import { modelCoolingCount } from "../../components/AccountCooldown";
+import { activeModelCooldowns } from "../../components/AccountCooldown";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
@@ -719,32 +719,44 @@ function hasRefreshableCredential(provider: ProviderResponse): boolean {
  * Connection counts for one provider's card.
  *
  * Computed once here because both card variants render the same badges from the
- * same accounts, and keeping two copies is what let the per-model case go
- * missing from the list: an account throttled for one model keeps
- * `status: "active"` (see `account-health-service.ts`), so a rollup built from
- * `status === "cooldown"` alone reported it as a healthy connection while its
- * own detail page said "1 model cooling".
+ * same accounts. The counts are mutually exclusive and add up to the account
+ * total, so a card never reports two problems for one connection.
  *
- * `active` and `cooling` are therefore separate counts over the same account,
- * and both are meant to show at once: a cooling account IS connected and
- * routable for its other models, it is just not being routed to for the models
- * named in `modelCooldowns`. The card keeps every status in its own badge so
- * one account is not counted as unhealthy merely because it is cooling or in
- * cooldown.
+ * `healthy` means fully routable: not in an account-wide cooldown and not
+ * carrying a live per-model backoff. A throttled account is *connected* but it
+ * is not healthy, and counting it as healthy is what made the card read "2
+ * Healthy · 1 Cooling" for two accounts — one of which could not serve.
+ *
+ * The two throttle kinds are merged into one badge because they are the same
+ * fact at the card's level: this connection is being held back. Which kind, and
+ * which models, belongs on the detail page where there is room to say.
  */
 interface AccountStatusCounts {
-  readonly active: number;
-  readonly cooldown: number;
+  readonly healthy: number;
+  /** Account-wide cooldown or a live per-model backoff; never both. */
+  readonly throttled: number;
   readonly disabled: number;
   readonly cooling: number;
 }
 
-function summarizeAccounts(accounts: readonly ProviderAccountResponse[]): AccountStatusCounts {
+export function summarizeAccounts(
+  accounts: readonly ProviderAccountResponse[],
+): AccountStatusCounts {
+  // A live per-model backoff is checked before status, so an account cooling
+  // some models is never also counted as healthy for them.
+  const isThrottled = (account: ProviderAccountResponse): boolean =>
+    account.status === "cooldown" || activeModelCooldowns(account) !== undefined;
   return {
-    active: accounts.filter((account) => account.status === "active").length,
-    cooldown: accounts.filter((account) => account.status === "cooldown").length,
+    healthy: accounts.filter(
+      (account) => account.status === "active" && !isThrottled(account),
+    ).length,
+    throttled: accounts.filter(isThrottled).length,
     disabled: accounts.filter((account) => account.status === "disabled").length,
-    cooling: modelCoolingCount(accounts),
+    // Kept only so the caller can describe the kind when every throttled
+    // account is the model-scoped one; it is not rendered as its own badge.
+    cooling: accounts.filter(
+      (account) => account.status !== "cooldown" && activeModelCooldowns(account) !== undefined,
+    ).length,
   };
 }
 
@@ -756,16 +768,23 @@ function AccountStatusBadges({
   readonly total: number;
 }): ReactNode {
   const hasBadge =
-    counts.active > 0 ||
-    counts.cooldown > 0 ||
-    counts.cooling > 0 ||
+    counts.healthy > 0 ||
+    counts.throttled > 0 ||
     counts.disabled > 0;
   if (!hasBadge) return <Badge tone="warn" dot>{total} Connected</Badge>;
+  // One badge for both throttle kinds. Naming the kind is still worth it:
+  // "Cooldown" means the whole account, "Cooling" means specific models, and an
+  // operator deciding whether to wait or to reroute needs to know which.
+  const throttleLabel =
+    counts.throttled === counts.cooling ? "Cooling" : "Cooldown";
   return (
     <>
-      {counts.active > 0 ? <Badge tone="ok" dot>{counts.active} Healthy</Badge> : null}
-      {counts.cooldown > 0 ? <Badge tone="warn" dot>{counts.cooldown} Cooldown</Badge> : null}
-      {counts.cooling > 0 ? <Badge tone="warn" dot>{counts.cooling} Cooling</Badge> : null}
+      {counts.healthy > 0 ? <Badge tone="ok" dot>{counts.healthy} Healthy</Badge> : null}
+      {counts.throttled > 0 ? (
+        <Badge tone="warn" dot>
+          {counts.throttled} {throttleLabel}
+        </Badge>
+      ) : null}
       {counts.disabled > 0 ? <Badge tone="warn" dot>{counts.disabled} Unhealthy</Badge> : null}
     </>
   );

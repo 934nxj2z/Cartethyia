@@ -10,6 +10,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.2] - 2026-10-21
 
+### Fixed
+
+- **A Cursor quota refusal no longer reports the word "error".** Cursor delivers
+  `resource_exhausted` as a failed terminal event, not as a thrown error, and
+  the probe verdict read only the terminal's `stop_reason` — a canonical
+  one-word label. The toast's entire body was `error`. The verdict now reads
+  `stop_details`, which is where the adapter parks the upstream sentence and
+  where the live dispatch path already read it; the two paths disagreed about
+  the same provider response.
+
+  The same gap had a worse effect: `recordProbeHealth` only recorded a failure
+  when a dispatch error existed, so an exhausted account was **recovered** —
+  consecutive failures zeroed and its cooldown cleared. A failed terminal is
+  now routed through `terminalFailure`, the same function the live path uses,
+  so both classify it identically.
+
+- **A probe records all four payload stages.** The probe's capture passed only
+  the request and the client response, and built its exchange wrapper with body
+  capture off, so the provider-response tee always resolved to null. Every
+  probe row reported the middle two stages as absent — a constant, not a
+  measurement, which made the stage markers useless for the diagnosis they
+  exist for. Measured: the bitmask went from 9 to 15.
+
+  The client events were also passed as `responseBody`, the legacy alias, which
+  lit the client stage over a body that was never captured. They now go to the
+  dedicated client surface.
+
+- **A throttled account is no longer counted as healthy on the provider list.**
+  A model-scoped backoff leaves `status: "active"`, so a card built from status
+  alone read "1 Healthy · 1 Cooling" for a single account that could not serve
+  the model being asked for. Cooldown and Cooling are now one badge, and
+  neither is counted under Healthy — the counts are mutually exclusive and add
+  up to the account total.
+
 ### Added
 
 - **The update badge opens a dialog instead of a release page.** Pointing it at
