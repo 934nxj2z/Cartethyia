@@ -483,6 +483,9 @@ export function classifyAccountError(
       // auth one. It fell through to `auth_invalidated` and the console showed
       // "Re-login required" on an account whose credential was fine, sending
       // operators to re-authenticate instead of topping up.
+      // Recognising it here keeps it out of `auth_invalidated`; the branch
+      // below scopes the resulting cooldown to the model, because the account
+      // keeps serving its other models.
       providerCode === "112" ||
       providerCode === "insufficient_quota" ||
       providerCode === "quota_exceeded" ||
@@ -716,6 +719,31 @@ export function classifyAccountError(
   }
 
   if (quotaSignal) {
+    /**
+     * Qoder's `112` is a verdict on the (account, model) pair, not on the
+     * credential or the balance as a whole.
+     *
+     * The body is `{"code":"112","message":"{\"pricingUrl\":…}"}` — a link to
+     * the pricing page, i.e. "this model is not in your plan". Observed
+     * behaviour agrees: the account keeps serving every other model after the
+     * refusal. Parking the whole account therefore took healthy models down
+     * with the one that is not entitled, which is the same mistake the
+     * `model_unreachable` branch already avoids for Cursor and buddy.
+     */
+    const qoderPlanGated = providerCode === "112";
+    if (qoderPlanGated) {
+      const hits = Math.max(1, Math.floor(options?.modelBlockHits ?? 1));
+      const cooldownMs = unsupportedModelCooldownMs(hits);
+      return result(
+        "model_unreachable",
+        "cooldown",
+        cooldownMs,
+        new Date(Date.now() + cooldownMs),
+        reason("Model not included in this account's plan"),
+        origin === "upstream" && options?.modelId !== undefined,
+        true,
+      );
+    }
     // xAI Grok Build's free tier resets on a rolling window. Use a duration
     // stated by the provider when present; otherwise park for the conservative
     // 24-hour fallback.

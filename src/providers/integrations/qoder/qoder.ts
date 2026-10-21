@@ -16,6 +16,7 @@ import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operat
 import { qoderMachineOs } from "../../operations/cli-platform";
 import { qoderGatewayCandidates, QODER_CHAT_PATH, QODER_REALMS, type QoderRealm } from "./qoder-realm";
 import { QODER_CN_MODEL_CONFIGS, QODER_INTL_MODEL_CONFIGS, QODER_INTL_MODELS } from "./qoder-catalog";
+import { isQoderVirtualModel, qoderDispatchModelId } from "./qoder-virtual";
 
 interface QoderModeProfile {
   readonly chatUrl: string;
@@ -723,7 +724,25 @@ class QoderAdapter implements ProviderAdapter {
     }
     const secret = readCredentialSecret(context.credential, "Qoder credential is required");
 
-    const modelId = candidate.model_id || request.model;
+    /**
+     * A caller-facing virtual name is translated to its roster key here.
+     *
+     * The translation has to happen before the config lookup and before the
+     * request body: the body carries the roster key, and looking up the
+     * virtual id in the config table would fall through to the synthetic
+     * default and silently dispatch under-declared capabilities.
+     */
+    const requestedModelId = candidate.model_id || request.model;
+    if (isQoderVirtualModel(requestedModelId) && !this.#modelConfigs()[qoderDispatchModelId(requestedModelId)]) {
+      throw new GatewayError(
+        "model_not_found",
+        404,
+        `Qoder virtual model ${requestedModelId} resolves to a roster key this realm does not serve`,
+        { virtual_model: requestedModelId, target: qoderDispatchModelId(requestedModelId) },
+        "upstream",
+      );
+    }
+    const modelId = qoderDispatchModelId(requestedModelId);
     const modelConfig = this.#modelConfigs()[modelId] ?? {
       id: modelId,
       display_name: modelId,

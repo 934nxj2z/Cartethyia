@@ -12,6 +12,7 @@ import { GatewayError } from "../../../protocol/gateway-error";
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
 import { QODER_CHAT_PATH, QODER_MODELS_PATH, qoderGatewayCandidates, type QoderRealm } from "./qoder-realm";
+import { qoderVirtualIdFor, QODER_VIRTUAL_MODELS } from "./qoder-virtual";
 
 /** One upstream catalog row, as `/algo/api/v2/model/list` reports it. */
 export interface QoderCatalogEntry {
@@ -150,7 +151,59 @@ function qoderModels(
 export const QODER_CN_MODELS: readonly ModelDefinition[] = qoderModels(QODER_CN_MODEL_CONFIGS, "qodercn");
 
 /** Static offline catalog for the global/intl realm. */
-export const QODER_INTL_MODELS: readonly ModelDefinition[] = qoderModels(QODER_INTL_MODEL_CONFIGS, "qoder");
+const QODER_INTL_ROSTER: readonly ModelDefinition[] = qoderModels(QODER_INTL_MODEL_CONFIGS, "qoder");
+
+/**
+ * Virtual rows, one per roster key that has a caller-facing name.
+ *
+ * A virtual row inherits its target's limits and capabilities rather than
+ * restating them: the two ids are the same upstream model, so a window or a
+ * vision flag that disagreed between them would be a lie in one of the two
+ * places. A target this realm does not serve contributes no row, which is what
+ * keeps the CN and intl catalogs honest about their own rosters.
+ */
+export function qoderVirtualModels(
+  roster: readonly ModelDefinition[],
+  providerId: string,
+): readonly ModelDefinition[] {
+  const byId = new Map(roster.map((row) => [row.modelId, row]));
+  const rows: ModelDefinition[] = [];
+  for (const virtual of QODER_VIRTUAL_MODELS) {
+    const target = byId.get(virtual.target);
+    if (target === undefined) continue;
+    rows.push(
+      defineModel({
+        id: virtual.id,
+        providerId,
+        wireFamily: "chat",
+        endpoint: QODER_CHAT_PATH,
+        ctx: target.contextLimit ?? DEFAULT_OUTPUT_TOKENS,
+        out: target.outputLimit ?? DEFAULT_OUTPUT_TOKENS,
+        vision: target.modalities.input.includes("image"),
+        reasoning: target.reasoning ?? false,
+        toolCall: target.toolCall ?? false,
+      }),
+    );
+  }
+  return rows;
+}
+
+/**
+ * Static offline catalog for the global/intl realm.
+ *
+ * A roster key that has a caller-facing name is published under that name
+ * only: upstream's keys are opaque slots (`dfmodel`, `cmodel`), and offering
+ * both the slot and its name shows one model twice under two ids nobody can
+ * tell apart. A key with no known name is kept as-is — an unnamed slot is
+ * still reachable, and inventing a name for it would assert what upstream
+ * never stated.
+ *
+ * The key remains what dispatch sends; see `qoder-virtual.ts`.
+ */
+export const QODER_INTL_MODELS: readonly ModelDefinition[] = [
+  ...QODER_INTL_ROSTER.filter((row) => qoderVirtualIdFor(row.modelId) === undefined),
+  ...qoderVirtualModels(QODER_INTL_ROSTER, "qoder"),
+];
 
 /**
  * Reads upstream's `{"chat": [...]}` envelope.
