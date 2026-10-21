@@ -73,7 +73,10 @@ export const KIRO_MODELS: readonly ModelDefinition[] = [
   kiroModel({ id: "claude-sonnet-5.5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true }),
   kiroModel({ id: "claude-sonnet-4.5", ctx: 1_000_000, out: 64_000, vision: true, reasoning: true, toolCall: true }),
   kiroModel({ id: "claude-haiku-4.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true }),
-  kiroModel({ id: "claude-haiku-5.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true }),
+  // 1M/128K, not the 200K/64K of the 4.5 row above it: Haiku moved to the
+  // million-token window and the doubled output ceiling with the rest of the
+  // 5.x generation, and this line had been copied from its predecessor.
+  kiroModel({ id: "claude-haiku-5.5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true }),
   kiroModel({ id: "gpt-5.5", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),
   kiroModel({ id: "gpt-5.6-sol", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),
   kiroModel({ id: "gpt-5.6-terra", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),

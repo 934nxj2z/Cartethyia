@@ -12,6 +12,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Kiro's `claude-haiku-5.5` reported the 4.5 limits.** It carried 200K/64K,
+  copied from the `claude-haiku-4.5` row directly above it, while every other
+  5.x model in the same file uses 1M/128K. Haiku moved to the million-token
+  window and the doubled output ceiling with the rest of its generation, so the
+  ceiling was half what the model accepts.
+
 - **A Cursor quota refusal no longer reports the word "error".** Cursor delivers
   `resource_exhausted` as a failed terminal event, not as a thrown error, and
   the probe verdict read only the terminal's `stop_reason` — a canonical
