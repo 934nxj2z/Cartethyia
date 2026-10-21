@@ -36,7 +36,12 @@ on:
       force:
         description: >-
           Run the verification gates even when upstream has nothing new.
-          Never merges and never pushes.
+          Never merges and never pushes a commit.
+        type: boolean
+        default: false
+      sync_tags:
+        description: >-
+          Mirror upstream's tags onto this fork. Pushes tags only, never commits.
         type: boolean
         default: false
 
@@ -215,6 +220,56 @@ jobs:
 
       # Still gated on a real upstream delta: a forced run has nothing to push,
       # and pushing an empty merge would only wake Railway for no reason.
+      # Tags are a separate ref namespace: `git push` never moves them, and a
+      # GitHub fork does not inherit its parent's tags. Without this, the fork
+      # runs upstream's code while its Releases page still lists only the tag it
+      # was forked at — which reads as "behind" even when the version matches.
+      #
+      # Runs on every real sync, and on demand with sync_tags. Deliberately not
+      # gated on `count != 0`: a release can be tagged without new commits on
+      # main (a tag pushed against an existing commit), and that is exactly the
+      # case this exists to catch.
+      #
+      # `--tags` is a plain tag push, not `--mirror` and not `--force`. It adds
+      # missing tags and fast-forwards moved ones; it never deletes a local tag
+      # and never rewrites an existing one. Upstream tags are treated as
+      # authoritative, which is what a fork of them should mean.
+      - name: Mirror upstream tags
+        if: steps.check.outputs.count != '0' || inputs.sync_tags == true
+        run: |
+          set -eu
+          # Report first, so the summary says what changed even if the push fails.
+          echo "### Tags" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          before="$(git tag --list | sort)"
+          git fetch --tags --no-recurse-submodules upstream
+          after="$(git tag --list | sort)"
+          new_tags="$(comm -13 <(echo "$before") <(echo "$after") || true)"
+          if [ -z "$new_tags" ]; then
+            echo "No new upstream tags." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "New upstream tags:" >> "$GITHUB_STEP_SUMMARY"
+            echo "$new_tags" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          # Push every tag upstream has. Already-present identical tags are a
+          # no-op; a tag that exists locally at a different commit is left alone
+          # by a non-forced push and reported rather than silently rewritten.
+          if ! git push --tags origin 2> "$RUNNER_TEMP/tagpush.err"; then
+            echo "::error::pushing tags failed"
+            cat "$RUNNER_TEMP/tagpush.err"
+            # A rejected tag (already exists, different commit) is not a reason to
+            # fail a sync that otherwise succeeded — say so and move on, because
+            # the alternative is a red run that blocks the commit push below for
+            # a cosmetic reason.
+            if grep -qiE 'rejected|already exists|non-fast-forward' "$RUNNER_TEMP/tagpush.err"; then
+              echo "Tag push rejected; leaving existing tags untouched." >> "$GITHUB_STEP_SUMMARY"
+            else
+              exit 1
+            fi
+          fi
+
       - name: Push the merge
         if: steps.check.outputs.count != '0'
         run: git push origin main
