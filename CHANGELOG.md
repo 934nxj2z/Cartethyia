@@ -10,8 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.0] "Jinhsi" - 2026-10-21
 
-Release preparation includes 69 local commits ahead of the configured upstream;
-they have not been pushed.
+Release preparation includes 69 commits since 2.4.6.
 
 ### Added
 
