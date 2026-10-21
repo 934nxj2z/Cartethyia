@@ -117,6 +117,12 @@ adapter implements them — there is no wire here to translate — so they are
 useful against a compatible upstream you configure yourself, and a model row
 carrying the matching service kind is all that is needed.
 
+A **custom** provider gets every passthrough surface automatically, including
+these three: it has no manifest row narrowing it, and you chose its base URL.
+Search and System One are not widened that way — both need a backend the
+gateway can actually talk to, so forwarding to an arbitrary host would not
+answer.
+
 The route picks the wire. After that, routing, admission, retry, and accounting
 are the same.
 

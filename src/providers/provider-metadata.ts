@@ -570,8 +570,8 @@ export function providerDisplayName(providerId: string): string {
  * A bundled provider gets exactly what its manifest declares. A custom/BYOK
  * provider has no manifest row, and this is where its capability comes from:
  * `llm` alone is read as "every media surface this gateway knows", so a
- * third-party provider can serve image and video generation without the
- * gateway having to be taught its id.
+ * third-party provider can serve image, video, embeddings, and audio without
+ * the gateway having to be taught its id.
  *
  * That widening is deliberate rather than a default of `["llm"]`, because a
  * BYOK provider points at an operator-chosen base URL — the operator already
@@ -579,14 +579,33 @@ export function providerDisplayName(providerId: string): string {
  * out of the generation routes no matter what its upstream actually answers.
  * The upstream still decides: a request for a capability the remote does not
  * have comes back as that remote's own error, not a gateway-side refusal.
+ *
+ * The widened list must track the pass-through surfaces in `SERVICE_KINDS`:
+ * adding one to the canonical tuple and forgetting it here silently excludes
+ * custom providers from a route they can otherwise reach, and nothing fails.
+ *
+ * `systemone` and `websearch` are deliberately absent: both need a provider
+ * the gateway knows how to talk to (a decision API, or a search backend with
+ * its own result shape), so forwarding a body to an arbitrary base URL does
+ * not produce a usable answer. The omitted ones are exactly the pass-through
+ * surfaces — the gateway adds routing and accounting and nothing else.
  */
+const WIDENED_CUSTOM_SERVICE_KINDS: readonly ServiceKind[] = [
+  "llm",
+  "imageGeneration",
+  "videoGeneration",
+  "embedding",
+  "audioTranscription",
+  "audioSpeech",
+];
+
 export function providerServiceKinds(providerId: string): readonly ServiceKind[] {
   const declared = BUNDLED_PROVIDER_METADATA.find((candidate) => candidate.id === providerId)
     ?.serviceKinds;
   // Bundled providers are explicit: they say which surfaces they serve, and a
   // bundled provider without the declaration serves LLM only.
   if (declared !== undefined) return declared;
-  return ["llm", "imageGeneration", "videoGeneration"];
+  return WIDENED_CUSTOM_SERVICE_KINDS;
 }
 
 
