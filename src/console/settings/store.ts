@@ -68,6 +68,38 @@ function normalizeTelemetryPayloadDepth(value: unknown): TelemetryPayloadDepth {
   return "minimum";
 }
 
+/**
+ * Bounds a per-tenant numeric override, or `null` for "use the default".
+ *
+ * Clamped rather than rejected: these are operational knobs an operator tunes
+ * live, and a PATCH that throws on an out-of-range value leaves them stuck at
+ * whatever was stored. Clamping keeps the value inside the range the request
+ * path can actually honour — the same range the deployment env var accepts.
+ *
+ * `null` (and every non-finite value) means "no override", which is distinct
+ * from "override with zero".
+ */
+function normalizeBoundedNumber(value: unknown, min: number, max: number): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  // A value at or below zero is not a setting, it is a typo: clamping it to
+  // the floor would silently give the request a 5-second budget when the
+  // operator meant "no override". Non-positive therefore reads as absent.
+  if (parsed <= 0) return null;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+/** Upstream timeout in seconds: 5 s floor, 600 s ceiling, matching the env var. */
+function normalizeUpstreamTimeoutSeconds(value: unknown): number | null {
+  return normalizeBoundedNumber(value, 5, 600);
+}
+
+/** Compaction age in days: 1 floor, 365 ceiling, matching the env var. */
+function normalizeTelemetryCompactAfterDays(value: unknown): number | null {
+  return normalizeBoundedNumber(value, 1, 365);
+}
+
 function mapRuntimeSettingsRow(
   row: typeof consoleSettings.$inferSelect | undefined,
   redisBackend: RedisBackend,
@@ -95,6 +127,9 @@ function mapRuntimeSettingsRow(
     // requires the flag — never injected it.
     ponyTailEnabled: prefs.ponyTailEnabled === true,
     ponyTailLevel: normalizePonyTailLevel(prefs.ponyTailLevel),
+    forceDisableCooldown: prefs.forceDisableCooldown === true,
+    upstreamTimeoutSeconds: normalizeUpstreamTimeoutSeconds(prefs.upstreamTimeoutSeconds),
+    telemetryCompactAfterDays: normalizeTelemetryCompactAfterDays(prefs.telemetryCompactAfterDays),
     updatedAt,
   };
 }
@@ -133,6 +168,14 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
     if (patch.rtkPruneLevel !== undefined) patchPrefs.rtkPruneLevel = patch.rtkPruneLevel;
     if (patch.ponyTailEnabled !== undefined) patchPrefs.ponyTailEnabled = patch.ponyTailEnabled;
     if (patch.ponyTailLevel !== undefined) patchPrefs.ponyTailLevel = patch.ponyTailLevel;
+    if (patch.forceDisableCooldown !== undefined)
+      patchPrefs.forceDisableCooldown = patch.forceDisableCooldown === true;
+    if (patch.upstreamTimeoutSeconds !== undefined)
+      patchPrefs.upstreamTimeoutSeconds = normalizeUpstreamTimeoutSeconds(patch.upstreamTimeoutSeconds);
+    if (patch.telemetryCompactAfterDays !== undefined)
+      patchPrefs.telemetryCompactAfterDays = normalizeTelemetryCompactAfterDays(
+        patch.telemetryCompactAfterDays,
+      );
 
     const rows = await this.db
       .insert(consoleSettings)

@@ -10,6 +10,63 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.3] - 2026-10-21
 
+### Fixed — performance
+
+- **The usage list slowed down as an install aged, regardless of user count.**
+  Hourly telemetry files were never deleted, so every read scanned every file
+  ever written: the cost tracked total volume, not the number of users. An
+  install serving 20 users got slower purely by serving them longer — 122 ms at
+  42 files, 2.3 s at 720.
+
+  Telemetry is now compacted. Past `CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS`
+  (default 7), hourly request files are folded into one per-day summary per API
+  key, and beyond `CARTETHYIA_TELEMETRY_RETENTION_DAYS` they are deleted. On a
+  30-day, 822 MB, 2.16M-request dataset: 30 files, 14 KB, and a 2.0 ms
+  aggregate read instead of 2,665 ms.
+
+  **Compaction is accumulation, not sampling.** A summary carries running sums,
+  so a period that reported 2B input tokens still reports 2B after its rows are
+  folded — verified exactly on the dataset above. Latency keeps an exact mean
+  and a bucketed (approximate) percentile.
+
+  **Request Detail is expected to stop working for compacted requests — this
+  is by design, not data loss.** Past the compaction age an individual request
+  no longer exists anywhere, so its detail returns 404. The message now says
+  so and names the knob to keep requests longer, rather than the bare "not
+  found" that reads like lost history. The four payload panels were already
+  short-lived independently of this: captured bodies expire 15 minutes after
+  capture, long before any compaction.
+
+  What is not preserved for a compacted window: the request list, per-request
+  filters (status, model, IP), and the detail drawer. Totals in Usage, per-key
+  spend, and quota accounting are unaffected.
+
+### Added — operational settings
+
+Three settings that were deployment-only env vars are now editable per tenant
+under **Settings → Operations**, without a restart.
+
+- **Force disable cooldown.** Routes to accounts that are cooling down,
+  including ones already parked. Off by default, and the page says why: a
+  cooled-down account was parked because the upstream refused it, so dialing it
+  anyway reproduces that refusal on every attempt — and if every candidate is
+  cooling, the request fails instead of waiting for a reset.
+
+  The override is **read-only**: the cooldown is still recorded, still shown in
+  Health, and still recovered by the sweep, so turning it back off needs no
+  cleanup. Per-(account, model) cooldowns are still enforced — those are
+  usually a named quota with a stated reset, where ignoring it only buys
+  repeated refusals. Shared accounts (no tenant of their own) are covered when
+  any tenant asks, since parking one stops everyone.
+
+- **Upstream timeout**, in seconds (5–600). Applied when the request is
+  dispatched, so it can only shorten a deadline that has already started.
+
+- **Telemetry compaction age**, in days (1–365). Hourly files hold every tenant
+  together, so the largest age across all tenants wins: compacting later than
+  asked only costs disk, while compacting earlier would destroy rows someone
+  expected to keep.
+
 ### Changed
 
 - **An unclassified upstream failure cools the account down for 15 minutes.**

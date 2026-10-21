@@ -5,6 +5,7 @@ import type { RedisClient } from "../../persistence/redis";
 import { apiKeys, networkPools, telemetryPayloads } from "../../persistence/schema";
 import {
   queryTelemetryEvents,
+  queryCompactedRows,
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
@@ -513,6 +514,15 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
 
   private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
     const events = await this.periodEvents(tenantId, period);
+    // Periods longer than the compaction age have part of their history in
+    // per-day summaries rather than in request rows. Both are folded in: the
+    // summary carries running sums, so a period that reported 2B input tokens
+    // before its files were compacted still reports 2B after.
+    const since = periodStartDate(period);
+    const compacted = await queryCompactedRows({
+      tenantId,
+      ...(since === undefined ? {} : { since }),
+    });
     const performance = summarizeUsagePerformance(events);
     let requests = 0;
     let inputTokens = 0;
@@ -544,6 +554,19 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       }
       const status = effectiveHttpStatus(event);
       statuses.set(status, (statuses.get(status) ?? 0) + 1);
+    }
+    for (const row of compacted) {
+      requests += row.requests;
+      inputTokens += row.inputTokens;
+      outputTokens += row.outputTokens;
+      cachedTokens += row.cachedTokens;
+      errors += row.failed;
+      cancelled += row.cancelled;
+      truncated += row.truncated;
+      estimatedCostUsd += row.estimatedCostUsd;
+      unpriced += row.unpriced;
+      tokensPerSecSum += row.tokensPerSecSum;
+      tokensPerSecCount += row.tokensPerSecCount;
     }
     return {
       period,

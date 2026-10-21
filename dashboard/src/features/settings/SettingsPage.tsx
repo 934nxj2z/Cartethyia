@@ -1,4 +1,4 @@
-import { Eye, Shield } from "lucide-react";
+import { Eye, Shield, Zap } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Select } from "../../components/ui/select";
 import { Input } from "../../components/ui/input";
@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { ErrorState, LoadingState } from "../../components/ui/state";
 import { Stack } from "../../components/ui/stack";
+import { Switch } from "../../components/ui/switch";
 import { Banner } from "../../components/patterns/banner";
 import { BackupPanel } from "../../components/BackupPanel";
 import { toast } from "../../lib/toast";
@@ -117,6 +118,118 @@ function PrivacyPanel(): ReactNode {
   );
 }
 
+/**
+ * Operational overrides that used to be deployment-only env vars.
+ *
+ * These are the knobs an operator reaches for while an install is running — a
+ * provider misbehaving, a timeout that no longer fits — so they are editable
+ * per tenant and take effect without a restart. Each one says plainly what it
+ * costs, because the defaults exist for a reason.
+ */
+function OperationalPanel(): ReactNode {
+  const query = useRuntimeSettings();
+  const mutation = useUpdateRuntimeSettings();
+  const settings = query.data;
+  if (query.isPending) return <LoadingState label="Loading operational settings…" />;
+  if (query.isError || !settings) {
+    return (
+      <ErrorState
+        message={getErrorMessage(query.error, "Failed to load runtime settings")}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
+  const save = (patch: Parameters<typeof mutation.mutate>[0], message: string): void => {
+    mutation.mutate(patch, {
+      onSuccess: () => toast.success(message),
+      onError: (error) => toast.error(getErrorMessage(error, "Could not update settings.")),
+    });
+  };
+
+  return (
+    <Card className="h-full">
+      <CardHeader
+        title="Operations"
+        subtitle="Routing, timeouts, and telemetry retention for this tenant"
+        icon={<Zap size={16} />}
+      />
+      <CardBody className="flex flex-1 flex-col">
+        <Stack gap="14px" className="flex-1">
+          <div className="flex items-center justify-between gap-6 rounded-control border border-inner-border px-6 py-5">
+            <span className="min-w-0">
+              <strong className="block text-body">Force disable cooldown</strong>
+              <small className="text-badge text-text-tertiary">
+                Route to accounts that are cooling down, including ones already parked.
+              </small>
+            </span>
+            <Switch
+              checked={settings.forceDisableCooldown}
+              onChange={(next) =>
+                save({ forceDisableCooldown: next }, next ? "Cooldowns will be ignored." : "Cooldowns are enforced again.")
+              }
+              aria-label="Force disable cooldown"
+            />
+          </div>
+          {settings.forceDisableCooldown ? (
+            <Banner tone="warning" surface="raised" live="status">
+              <strong>This may cause admission failure.</strong> A cooled-down account was parked
+              because the upstream refused it, so dialing it anyway reproduces that refusal on every
+              attempt — and if every candidate is cooling, the request fails instead of waiting for a
+              reset. The cooldown is still recorded and still recovered by the sweep, so turning this
+              back off needs no cleanup. Per-model cooldowns are still enforced.
+            </Banner>
+          ) : null}
+
+          <div className="settings-field">
+            <Input
+              label="Upstream timeout (seconds)"
+              id="upstream-timeout"
+              type="number"
+              value={settings.upstreamTimeoutSeconds === null ? "" : String(settings.upstreamTimeoutSeconds)}
+              placeholder="Deployment default"
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                save(
+                  { upstreamTimeoutSeconds: raw.length === 0 ? null : Number(raw) },
+                  "Upstream timeout updated.",
+                );
+              }}
+            />
+            <p className="mt-1 text-badge text-text-tertiary">
+              5–600 seconds. Blank uses the deployment default. Applied when the request is
+              dispatched, so it can only shorten a deadline that has already started.
+            </p>
+          </div>
+
+          <div className="settings-field">
+            <Input
+              label="Telemetry compaction age (days)"
+              id="compact-after-days"
+              type="number"
+              value={settings.telemetryCompactAfterDays === null ? "" : String(settings.telemetryCompactAfterDays)}
+              placeholder="Deployment default"
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                save(
+                  { telemetryCompactAfterDays: raw.length === 0 ? null : Number(raw) },
+                  "Compaction age updated.",
+                );
+              }}
+            />
+            <p className="mt-1 text-badge text-text-tertiary">
+              1–365 days. Blank uses the default. Past this age, hourly request files are folded into
+              daily summaries: totals keep counting, but individual requests are no longer listed.
+              Hourly files hold every tenant together, so the largest age across all tenants wins —
+              compacting later than asked only costs disk, while compacting earlier would destroy
+              rows someone expected to keep.
+            </p>
+          </div>
+        </Stack>
+      </CardBody>
+    </Card>
+  );
+}
+
 function PasswordChangeForm(): ReactNode {
   const changePassword = useChangePassword();
   const [currentPassword, setCurrentPassword] = useState("");
@@ -197,6 +310,10 @@ export default function Settings(): ReactNode {
         <section className="flex flex-col gap-5">
           <h2 className="text-badge font-bold uppercase tracking-label text-text-tertiary">Data</h2>
           <BackupPanel />
+        </section>
+        <section className="flex flex-col gap-5">
+          <h2 className="text-badge font-bold uppercase tracking-label text-text-tertiary">Operations</h2>
+          <OperationalPanel />
         </section>
       </CardBody>
     </Card>

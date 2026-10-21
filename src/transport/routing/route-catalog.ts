@@ -3,6 +3,7 @@
 import { asc, eq, ne } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import {
+  consoleSettings,
   models,
   modelAliases,
   modelCombos,
@@ -383,7 +384,7 @@ class RouteCatalogRepository {
   constructor(private readonly db: CartethyiaDatabase) {}
 
   async loadRouteCatalogSnapshot(tenantId?: string): Promise<RouteCatalogSnapshotResult> {
-    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows] =
+    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows, settingsRows] =
       await Promise.all([
         this.db.select(PROVIDER_COLUMNS).from(providers).where(eq(providers.enabled, true)),
         this.db.select(MODEL_COLUMNS).from(models),
@@ -400,8 +401,38 @@ class RouteCatalogRepository {
         this.db.select(CLI_MAPPING_COLUMNS).from(cliToolMappings),
         this.db.select(CLI_MAPPING_SETTING_COLUMNS).from(cliToolSettings),
         this.db.select(POOL_SETTING_COLUMNS).from(poolRoutingSettings),
+        // The cooldown override is a console_settings preference, read inside
+        // the same fan-out rather than per request: one more row set on a
+        // query that already runs, instead of a Postgres round trip on every
+        // admitted request the way `tenantConcurrencyLimit` once did.
+        this.db
+          .select({ tenantId: consoleSettings.tenantId, preferences: consoleSettings.preferences })
+          .from(consoleSettings),
       ]);
     const mergedModelRows = mergeModelCatalog(modelRows);
+    /**
+     * Tenants that asked to ignore an account-wide cooldown.
+     *
+     * Read-only override: the cooldown is still on the row, still shown in
+     * Health, and still recovered by the sweep. This only stops it from
+     * excluding the candidate, so turning the setting off needs no cleanup.
+     *
+     * Per-(account, model) cooldowns are deliberately NOT overridden — see the
+     * preference's own doc.
+     */
+    const cooldownOverrideTenants = new Set<string>();
+    for (const row of settingsRows ?? []) {
+      if (row.preferences?.forceDisableCooldown === true && row.tenantId) {
+        cooldownOverrideTenants.add(row.tenantId);
+      }
+    }
+    /**
+     * A shared account has no tenant of its own (`tenant_id IS NULL`), so a
+     * tenant-keyed override would never match it — yet a shared account is
+     * exactly the one every tenant dials, and parking it stops all of them.
+     * When any tenant asks, the override covers shared accounts too.
+     */
+    const anyTenantOverrides = cooldownOverrideTenants.size > 0;
 
     // Compile tenant-scoped disables into a lookup keyed by the same
     // composite identity the `models` table uses. A disabled key suppresses
@@ -701,16 +732,33 @@ class RouteCatalogRepository {
           // Expired cooldowns read as healthy here without a fire-and-forget
           // write: AccountHealthSweeper materializes the recovery every 30s,
           // so the builder stays a pure read (no UPDATE racing the request).
+          //
+          // `forceDisableCooldown` skips the exclusion entirely. The cooldown
+          // is still real and still recorded — it simply stops deciding
+          // routing. That is what makes the setting reversible: nothing was
+          // written, so turning it off needs no cleanup, and Health still
+          // reports the truth about the account.
           if (account.cooldownUntil && account.cooldownUntil.getTime() > Date.now()) {
-            candidate.health_status = "cooldown";
-            candidate.cooldown_kind = hardCooldownCategory(account.lastErrorCategory)
-              ? "hard"
-              : "soft";
-            // The deadline rides with the exclusion it explains. `plan()` reads
-            // it to answer the all-cooling case with the real reset instead of
-            // a bare 429, so a client backs off for the window that is actually
-            // open rather than inventing one.
-            candidate.cooldown_until = account.cooldownUntil.getTime();
+            const overrideActive =
+              rowTenantId === null
+                ? anyTenantOverrides
+                : cooldownOverrideTenants.has(rowTenantId);
+            if (overrideActive) {
+              // The account is still cooling — this only stops it from being
+              // excluded. `plan()` reads `cooldown_until` to answer the
+              // all-cooling case, so it stays populated either way.
+              candidate.cooldown_until = account.cooldownUntil.getTime();
+            } else {
+              candidate.health_status = "cooldown";
+              candidate.cooldown_kind = hardCooldownCategory(account.lastErrorCategory)
+                ? "hard"
+                : "soft";
+              // The deadline rides with the exclusion it explains. `plan()`
+              // reads it to answer the all-cooling case with the real reset
+              // instead of a bare 429, so a client backs off for the window
+              // that is actually open rather than inventing one.
+              candidate.cooldown_until = account.cooldownUntil.getTime();
+            }
           }
         }
 

@@ -26,6 +26,17 @@ export interface RuntimeSettingsResponse {
   readonly ponyTailEnabled: boolean;
   /** PonyTail directive intensity; `full` by default. */
   readonly ponyTailLevel: PonyTailLevel;
+  /**
+   * Ignores an account-wide cooldown when building route candidates. Off by
+   * default: dialing a cooled-down account reproduces the refusal that parked
+   * it, and can exhaust the candidate list. Overrides nothing else — the
+   * cooldown is still recorded and still recovered by the sweep.
+   */
+  readonly forceDisableCooldown: boolean;
+  /** Per-tenant upstream request timeout in seconds; null means deployment default. */
+  readonly upstreamTimeoutSeconds: number | null;
+  /** Per-tenant telemetry compaction age in days; null means deployment default. */
+  readonly telemetryCompactAfterDays: number | null;
   readonly updatedAt: string;
 }
 

@@ -1,5 +1,7 @@
 import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { readCompactedRows, type CompactedRow } from "./event-compaction";
+import { resolveTelemetryRetentionDays } from "../config/telemetry";
 
 /**
  * Per-request telemetry lives in hourly JSONL files, not in Postgres. The
@@ -213,8 +215,29 @@ function matches(event: TelemetryEventRecord, query: EventQuery, since: number |
 
 /** The events matching a query, already newest first. */
 export async function queryTelemetryEvents(query: EventQuery): Promise<TelemetryEventRecord[]> {
+  // Hourly request files only. A `.compacted.jsonl` also ends in `.jsonl`, and
+  // letting one through meant every summary row was parsed as if it were a
+  // request — a row with no `tenantId`/`createdAt` that then failed `matches`,
+  // but only after paying for the parse.
+  //
+  // The lower bound is the retention window, not just `since`: a caller that
+  // asks for all time still must not scan files that have already been aged
+  // out, and one that passes no `since` at all used to read every file ever
+  // written. Files older than retention are gone or compacted; either way they
+  // are not here.
+  const retentionFloor = hourStamp(
+    new Date(Date.now() - resolveTelemetryRetentionDays() * 24 * 60 * 60_000),
+  );
+  const sinceFloor =
+    query.since === undefined ? retentionFloor : hourStamp(query.since);
+  const floor = sinceFloor > retentionFloor ? sinceFloor : retentionFloor;
   const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
-    .filter((file) => file.endsWith(".jsonl") && (query.since === undefined || eventFileHour(file) >= hourStamp(query.since)))
+    .filter(
+      (file) =>
+        file.endsWith(".jsonl") &&
+        !file.endsWith(".compacted.jsonl") &&
+        eventFileHour(file) >= floor,
+    )
     .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   const since = query.since?.getTime();
   const until = query.until?.getTime();
@@ -268,6 +291,71 @@ export interface EventTotals {
 
 export function emptyTotals(): EventTotals {
   return { requests: 0, succeeded: 0, failed: 0, cancelled: 0, truncated: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, estimatedCost: 0, unpriced: 0, latencySum: 0, latencyCount: 0, tokensPerSecSum: 0, tokensPerSecCount: 0 };
+}
+
+/**
+ * Folds one compacted summary row into a totals bucket.
+ *
+ * Sums only. A summary row already holds running sums, so adding it is
+ * arithmetically identical to adding every request it replaced — a period that
+ * reported 2B input tokens before compaction reports 2B after it.
+ *
+ * Latency is the one field that cannot be exact: a percentile needs every
+ * sample and the summary keeps a histogram instead, so `latencySum` is
+ * reconstructed from `latencyCount` and the sum it stored. The mean is
+ * therefore exact while P50/P95 are approximations, and the reader that
+ * renders a percentile is told which it has.
+ */
+export function accumulateCompacted(totals: EventTotals, row: CompactedRow): void {
+  totals.requests += row.requests;
+  totals.succeeded += row.succeeded;
+  totals.failed += row.failed;
+  totals.cancelled += row.cancelled;
+  totals.truncated += row.truncated;
+  totals.inputTokens += row.inputTokens;
+  totals.cachedTokens += row.cachedTokens;
+  totals.outputTokens += row.outputTokens;
+  totals.estimatedCost += row.estimatedCostUsd;
+  totals.unpriced += row.unpriced;
+  totals.latencySum += row.latencySum;
+  totals.latencyCount += row.latencyCount;
+  totals.tokensPerSecSum += row.tokensPerSecSum;
+  totals.tokensPerSecCount += row.tokensPerSecCount;
+}
+
+/**
+ * The compacted summary rows covering a window, newest day first.
+ *
+ * A day is included when any part of it falls inside `[since, until]`. Whole
+ * days only — the summary has no finer resolution, so a window that starts
+ * mid-day over-counts by the hours before it. That is the documented trade of
+ * compaction: exact totals for whole days, not for arbitrary instants.
+ */
+export async function queryCompactedRows(query: {
+  readonly tenantId?: string;
+  readonly since?: Date;
+  readonly until?: Date;
+}): Promise<readonly CompactedRow[]> {
+  const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
+    .filter((file) => file.endsWith(".compacted.jsonl"))
+    .sort();
+  const since = query.since?.getTime();
+  const until = query.until?.getTime();
+  const rows: CompactedRow[] = [];
+  for (const file of files) {
+    const day = file.slice(0, 10);
+    const dayStart = Date.parse(`${day}T00:00:00Z`);
+    const dayEnd = dayStart + 24 * 60 * 60_000;
+    if (Number.isFinite(dayStart)) {
+      if (until !== undefined && dayStart > until) continue;
+      if (since !== undefined && dayEnd <= since) continue;
+    }
+    for (const row of await readCompactedRows(file)) {
+      if (query.tenantId !== undefined && row.tenantId !== query.tenantId) continue;
+      rows.push(row);
+    }
+  }
+  return rows;
 }
 
 /** Folds one event into a totals bucket. `failed` counts any non-completed terminal status. */

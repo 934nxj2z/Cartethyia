@@ -15,7 +15,7 @@ import { messagesAdapter } from "../surface/messages/adapter";
 import { completionAdapter } from "../surface/completion";
 import { forwardedRequestHeaders, proxySuccessHeaders, buildUpstreamDispatchContext, reportedModelFrom } from "./upstream";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { applyTenantPreferences } from "../request/tenant-preferences";
+import { applyTenantPreferences, applyTenantDeadlineOverride } from "../request/tenant-preferences";
 import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
@@ -128,6 +128,13 @@ export async function handleProviderProxyRequest(
   if (!prepared)
     throw new GatewayError("admission_unavailable", 503, "The request was not prepared, so no route can be dialed. Resend the request.");
   const canonicalRequest = await applyTenantPreferences(prepared, deps.db);
+  // Per-tenant timeout, applied as soon as the tenant is known. The deadline
+  // was armed at admission with the deployment default; this re-arms it.
+  await applyTenantDeadlineOverride(
+    prepared.authorization.snapshot.tenant_id,
+    deps.db,
+    (ms) => state.extendDeadline(ms),
+  );
   const candidates =
     prepared.eligibleRouteCandidates.length > 0 ? prepared.eligibleRouteCandidates : [prepared.candidate];
   const attemptCandidates = candidates;

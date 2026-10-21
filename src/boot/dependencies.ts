@@ -70,6 +70,11 @@ import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
 import { TelemetryPayloadCapture } from "../observability/payload-capture";
+import { compactTelemetryFiles, resolveEffectiveCompactAfterDays } from "../observability/event-compaction";
+import {
+  resolveTelemetryCompactIntervalMs,
+  resolveTelemetryCompactMaxFiles,
+} from "../config/telemetry";
 import { sweepExpiredPoolCooldowns } from "../network/pool-health-machine";
 import { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import { RuntimeMetricsSampler } from "../observability/runtime-metrics";
@@ -302,6 +307,28 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     name: "telemetry-payload-cleanup",
     intervalMs: 15 * 60_000,
     run: () => payloadCapture.cleanupExpired(),
+  });
+  scheduledTasks.register({
+    name: "telemetry-compaction",
+    intervalMs: resolveTelemetryCompactIntervalMs(),
+    // Folds hourly request files into one per-day summary per API key. This is
+    // what stops the usage list from slowing down as an install ages: the list
+    // scans every hourly file on disk, so without this its cost grows with
+    // total volume forever. The totals are accumulated, never averaged, so a
+    // period that reported 2B tokens still reports 2B after compaction.
+    run: async () => {
+      const result = await compactTelemetryFiles({
+        olderThanDays: await resolveEffectiveCompactAfterDays(db),
+        maxFiles: resolveTelemetryCompactMaxFiles(),
+        retentionDays: resolveTelemetryRetentionDays(),
+      });
+      if (result.filesCompacted > 0 || result.filesDeleted > 0) {
+        log.info(
+          `[telemetry] compacted ${result.filesCompacted} file(s) into ${result.daysWritten} day(s), ` +
+            `${result.rowsWritten} summary row(s); deleted ${result.filesDeleted} expired`,
+        );
+      }
+    },
   });
   scheduledTasks.register({
     name: "console-session-sweep",

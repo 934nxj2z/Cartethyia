@@ -1000,7 +1000,14 @@ function RequestDetailDrawer({
           <div className="animate-pulse h-48 rounded-control bg-surface-2" />
         </Stack>
       ) : detailQuery.isError || !detail ? (
-        <ErrorState compact message="Failed to load request detail." onRetry={() => void detailQuery.refetch()} />
+        // The server says *why* a detail is unavailable, and "compacted into
+        // daily summaries" is the answer an operator needs — a generic failure
+        // message reads like lost data and sends them hunting for a bug.
+        <ErrorState
+          compact
+          message={getErrorMessage(detailQuery.error, "Failed to load request detail.")}
+          onRetry={() => void detailQuery.refetch()}
+        />
       ) : (
         <Stack gap="12px">
           <div className="flex items-center gap-4 rounded-control border border-inner-border bg-surface-2 px-6 py-4 min-w-0">

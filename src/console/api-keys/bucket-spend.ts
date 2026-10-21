@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { apiKeys } from "../../persistence/schema";
-import { queryTelemetryEvents } from "../../observability/event-log";
+import { queryCompactedRows, queryTelemetryEvents } from "../../observability/event-log";
 import { utcDayStart, utcMonthStart } from "../shared/day";
 
 /**
@@ -34,8 +34,17 @@ export async function familyBucketSpend(
   const keyIds = [keyId, ...children.map((child) => child.id)];
   const spentSince = async (start: Date): Promise<number> => {
     const events = await queryTelemetryEvents({ apiKeyIds: keyIds, since: start });
-    return events
+    const live = events
       .reduce((sum, event) => sum + (event.inputTokens ?? 0) + (event.outputTokens ?? 0), 0);
+    // A window reaching past the compaction age also has per-day summaries.
+    // They carry running sums, so the spend stays exact: a key that spent 2B
+    // tokens still reports 2B after its request rows were folded.
+    const allowed = new Set(keyIds);
+    const compacted = await queryCompactedRows({ since: start });
+    const folded = compacted
+      .filter((row) => row.apiKeyId !== null && allowed.has(row.apiKeyId))
+      .reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    return live + folded;
   };
   const [daily, monthly] = await Promise.all([
     spentSince(utcDayStart(now)),

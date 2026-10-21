@@ -49,6 +49,9 @@ Variables read outside the spec are therefore **not** listed below:
 | Variable | Kind | Default | Bounds |
 | --- | --- | --- | --- |
 | `CARTETHYIA_TELEMETRY_RETENTION_DAYS` | integer | 30 | 3 – 365 |
+| `CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS` | integer | 7 | 1 – 365 |
+| `CARTETHYIA_TELEMETRY_COMPACT_INTERVAL_MINUTES` | integer | 60 | 5 – 1440 |
+| `CARTETHYIA_TELEMETRY_COMPACT_MAX_FILES` | integer | 48 | 1 – 10000 |
 | `CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES` | integer | 16777216 | 1048576 – 16777216 |
 
 ## Upstream timeouts and retry backoff

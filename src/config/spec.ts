@@ -149,6 +149,35 @@ export const CONFIG_SPEC = {
   CARTETHYIA_DISABLED_TASKS: { kind: "list" },
 
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
+  /**
+   * Age at which hourly telemetry files are compacted into a per-day summary.
+   *
+   * This is the knob that decides how long the request list, per-request
+   * filters, and the detail drawer stay complete. Below this age every request
+   * row is intact; above it only totals survive — still exact totals, but with
+   * no individual rows behind them.
+   *
+   * Lower is faster. The usage list scans every hourly file still on disk, so
+   * its cost tracks this window directly; 7 days keeps a full forensic window
+   * while bounding the scan to roughly a quarter of a 30-day one.
+   */
+  CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS: { kind: "int", default: 7, min: 1, max: 365 },
+  /**
+   * How often the compaction sweep runs, in minutes.
+   *
+   * Compaction reads every file it folds — the same O(total volume) cost the
+   * query path pays, but once instead of per read. Hourly keeps each pass small
+   * (one hour of new files) at the cost of one extra pass an hour; a daily
+   * pass is cheaper in total but does more work at once.
+   */
+  CARTETHYIA_TELEMETRY_COMPACT_INTERVAL_MINUTES: {
+    kind: "int",
+    default: 60,
+    min: 5,
+    max: 1440,
+  },
+  /** Maximum hourly files folded in one pass. The next pass continues. */
+  CARTETHYIA_TELEMETRY_COMPACT_MAX_FILES: { kind: "int", default: 48, min: 1, max: 10_000 },
   CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: {
     kind: "int",
     default: 16 * 1024 * 1024,
