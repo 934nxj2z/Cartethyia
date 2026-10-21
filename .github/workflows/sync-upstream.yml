@@ -218,8 +218,6 @@ jobs:
 
           echo "All four boot scenarios passed."
 
-      # Still gated on a real upstream delta: a forced run has nothing to push,
-      # and pushing an empty merge would only wake Railway for no reason.
       # Tags are a separate ref namespace: `git push` never moves them, and a
       # GitHub fork does not inherit its parent's tags. Without this, the fork
       # runs upstream's code while its Releases page still lists only the tag it
@@ -230,46 +228,53 @@ jobs:
       # main (a tag pushed against an existing commit), and that is exactly the
       # case this exists to catch.
       #
-      # `--tags` is a plain tag push, not `--mirror` and not `--force`. It adds
-      # missing tags and fast-forwards moved ones; it never deletes a local tag
-      # and never rewrites an existing one. Upstream tags are treated as
-      # authoritative, which is what a fork of them should mean.
+      # Upstream is authoritative, so the push is forced — but only over refs
+      # upstream actually has, named one at a time. A bare `--tags --force` would
+      # also be able to move a fork-only tag, and `--mirror` could delete one.
+      # Neither is what "mirror upstream" should mean.
+      #
+      # The force is load-bearing, not laziness: an annotated tag's object hash
+      # covers its tagger identity and timestamp, so a tag recreated anywhere else
+      # (including through the API) has the same name and the same commit but a
+      # different object hash, and a plain push rejects it as "would clobber
+      # existing tag". Forcing is what makes the fork's refs byte-identical to
+      # upstream's instead of merely equivalent.
       - name: Mirror upstream tags
         if: steps.check.outputs.count != '0' || inputs.sync_tags == true
         run: |
           set -eu
-          # Report first, so the summary says what changed even if the push fails.
           echo "### Tags" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          before="$(git tag --list | sort)"
-          git fetch --tags --no-recurse-submodules upstream
-          after="$(git tag --list | sort)"
-          new_tags="$(comm -13 <(echo "$before") <(echo "$after") || true)"
-          if [ -z "$new_tags" ]; then
-            echo "No new upstream tags." >> "$GITHUB_STEP_SUMMARY"
+
+          # --force so local refs adopt upstream's objects rather than keeping a
+          # same-named local tag that merely points at the same commit.
+          git fetch --tags --force --no-recurse-submodules upstream
+
+          pushed=0
+          for tag in $(git ls-remote --tags --refs upstream | sed 's#.*refs/tags/##'); do
+            local_sha="$(git rev-parse "refs/tags/$tag" 2>/dev/null || echo missing)"
+            remote_sha="$(git ls-remote --tags --refs origin "refs/tags/$tag" | cut -f1)"
+            if [ "$local_sha" = "$remote_sha" ]; then
+              continue
+            fi
+            if git push --force origin "refs/tags/$tag:refs/tags/$tag" 2>&1; then
+              echo "updated $tag -> $local_sha"
+              pushed=$((pushed + 1))
+            else
+              echo "::error::failed to push tag $tag"
+              exit 1
+            fi
+          done
+
+          if [ "$pushed" = "0" ]; then
+            echo "All upstream tags already match." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "New upstream tags:" >> "$GITHUB_STEP_SUMMARY"
-            echo "$new_tags" >> "$GITHUB_STEP_SUMMARY"
+            echo "Updated $pushed tag(s)." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          # Push every tag upstream has. Already-present identical tags are a
-          # no-op; a tag that exists locally at a different commit is left alone
-          # by a non-forced push and reported rather than silently rewritten.
-          if ! git push --tags origin 2> "$RUNNER_TEMP/tagpush.err"; then
-            echo "::error::pushing tags failed"
-            cat "$RUNNER_TEMP/tagpush.err"
-            # A rejected tag (already exists, different commit) is not a reason to
-            # fail a sync that otherwise succeeded — say so and move on, because
-            # the alternative is a red run that blocks the commit push below for
-            # a cosmetic reason.
-            if grep -qiE 'rejected|already exists|non-fast-forward' "$RUNNER_TEMP/tagpush.err"; then
-              echo "Tag push rejected; leaving existing tags untouched." >> "$GITHUB_STEP_SUMMARY"
-            else
-              exit 1
-            fi
-          fi
-
+      # Still gated on a real upstream delta: a forced run has nothing to push,
+      # and pushing an empty merge would only wake Railway for no reason.
       - name: Push the merge
         if: steps.check.outputs.count != '0'
         run: git push origin main
