@@ -21,12 +21,16 @@
  * a stubbed socket would test nothing about framing, backpressure, or close.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-// The fixture is a self-signed loopback cert, and the binding verifies
-// certificates unconditionally (rejectUnauthorized). Node's TLS root store is
-// read when the CA list is first built, so this is set before any import that
-// could touch TLS — a per-socket `ca` option would require weakening the
-// production path just to make a test fixture trusted.
-process.env.NODE_EXTRA_CA_CERTS = "test/fixtures/localhost-cert.pem";
+/**
+ * The fixture is a self-signed loopback cert and the binding verifies
+ * certificates unconditionally (`rejectUnauthorized: true`), which is correct
+ * and is not weakened for this test. The fixture CA is therefore trusted
+ * through `NODE_EXTRA_CA_CERTS`, which the runner (`scripts/ci/run.ts`) sets on
+ * the `bun test` subprocess — it is read when the TLS root store is first
+ * built, so it cannot be assigned from inside this file, and a per-socket `ca`
+ * option would mean adding an override to the production dial. Run these via
+ * `bun run test`; a bare `bun test` has no extra CA and the TLS handshake fails.
+ */
 import { readFileSync } from "node:fs";
 import { createSecureServer, type Http2SecureServer, type ServerHttp2Stream } from "node:http2";
 import { ValidatedNetworkBindingFactory } from "../../src/network/pool/resolver";

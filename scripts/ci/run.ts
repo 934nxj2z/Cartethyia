@@ -27,7 +27,8 @@
  * was silently running the dashboard suites a second time. The paths below are
  * the single definition of what each scope covers.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PROJECT_ROOT = join(import.meta.dir, "..", "..");
@@ -75,6 +76,39 @@ const sharedEnv = {
   ...process.env,
 };
 
+/**
+ * Trusts the loopback TLS fixture without touching a production path.
+ *
+ * `test/network/outbound-http2.test.ts` stands up a real self-signed HTTP/2
+ * server, and the binding it exercises pins `rejectUnauthorized: true` — which
+ * is correct and must not be weakened to accommodate a fixture. The supported
+ * way to trust a private CA is `NODE_EXTRA_CA_CERTS`, and it is read when the
+ * TLS root store is first built, so it has to be set on the subprocess rather
+ * than inside the test file (by then the store is already built).
+ *
+ * Two traps make this a merge and not an assignment:
+ *
+ * - Node replaces the extra-CA list rather than appending, so pointing the
+ *   variable at the fixture alone would silently untrust whatever the machine
+ *   already relied on — this workstation, for instance, carries a corporate
+ *   MITM root there.
+ * - A `ca` option on the socket would mean editing the production dial to
+ *   accept a per-caller override, which is the weakening this avoids.
+ *
+ * PEM bundles concatenate, so the existing file's contents are prefixed with
+ * the fixture and written to one temp file per run.
+ */
+function mergedExtraCaCerts(): Record<string, string> {
+  const fixture = join(PROJECT_ROOT, "test", "fixtures", "localhost-cert.pem");
+  if (!existsSync(fixture)) return {};
+  const existing = sharedEnv.NODE_EXTRA_CA_CERTS?.trim();
+  const parts = [readFileSync(fixture, "utf8")];
+  if (existing && existsSync(existing)) parts.push(readFileSync(existing, "utf8"));
+  const bundle = join(tmpdir(), `cartethyia-extra-ca-${process.pid}.pem`);
+  writeFileSync(bundle, parts.join("\n"));
+  return { NODE_EXTRA_CA_CERTS: bundle };
+}
+
 const testDatabaseUrl = sharedEnv.CARTETHYIA_TEST_DATABASE_URL?.trim();
 if (testDatabaseUrl) {
   sharedEnv.CARTETHYIA_DB_MODE = "full";
@@ -107,7 +141,11 @@ function runTests(cwd: string, label: string, paths: readonly string[]): Promise
       ...paths,
       ...testArgs,
     ],
-    { cwd, env: sharedEnv, stdio: ["inherit", "inherit", "inherit"] },
+    {
+      cwd,
+      env: { ...sharedEnv, ...mergedExtraCaCerts() },
+      stdio: ["inherit", "inherit", "inherit"],
+    },
   );
   return proc.exited.then((code) => {
     if (code !== 0) console.error(`[test] ${label} failed with exit code ${code}`);

@@ -794,7 +794,7 @@ function ModelCard({
             >
               <span
                 title={`${model.wireFamily} · ${model.route ?? providerId}`}
-                className="shrink-0 rounded-tiny px-3.5 py-0.5 text-micro font-bold tracking-[0.04em]"
+                className="shrink-0 rounded-tiny px-3.5 py-0.5 text-micro font-bold"
                 // The wire family is a runtime value from the catalog, so its
                 // chip colours stay inline.
                 style={{ ...wireChipStyle(model.wireFamily) }}
