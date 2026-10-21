@@ -204,16 +204,15 @@ export function stubFetch(
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = init?.method ?? "GET";
     calls.push(`${init?.method ?? "GET"} ${url}`);
     for (const route of routes) {
-      if (!url.includes(route.match)) continue;
-      if (init?.method !== undefined && route.match.includes(init.method) === false) {
-        // A method-qualified match (`"POST /providers"`) only answers that verb.
-        if (route.match.startsWith(`${init.method} `)) {
-          return jsonResponse(route.json, route.status ?? 200);
-        }
-        continue;
-      }
+      // A match may be method-qualified (`"POST /providers"`). The verb has to
+      // be split off before testing the path, because `url` never contains it:
+      // comparing the whole string left such a route matching nothing at all.
+      const [matchMethod, matchPath] = splitMethod(route.match);
+      if (matchMethod !== undefined && matchMethod !== method.toUpperCase()) continue;
+      if (!url.includes(matchPath ?? route.match)) continue;
       return jsonResponse(route.json, route.status ?? 200);
     }
     throw new Error(`stubFetch: no route matched ${url}`);
@@ -224,6 +223,16 @@ export function stubFetch(
       globalThis.fetch = original;
     },
   };
+}
+
+/** Splits a leading `"VERB "` off a match string; `undefined` when absent. */
+function splitMethod(match: string): [string | undefined, string | undefined] {
+  const at = match.indexOf(" ");
+  if (at <= 0) return [undefined, undefined];
+  const head = match.slice(0, at);
+  // Only an all-caps token is a verb; a path with a space would not be one.
+  if (head !== head.toUpperCase() || !/^[A-Z]+$/.test(head)) return [undefined, undefined];
+  return [head, match.slice(at + 1)];
 }
 
 /** Builds a JSON `Response` for a fetch stub. */

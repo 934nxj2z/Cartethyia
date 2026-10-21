@@ -1,4 +1,4 @@
-import { Database, Eye, Shield, Zap } from "lucide-react";
+import { Shield } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Select } from "../../components/ui/select";
 import { Input } from "../../components/ui/input";
@@ -7,7 +7,6 @@ import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { ErrorState, LoadingState } from "../../components/ui/state";
 import { Stack } from "../../components/ui/stack";
 import { Switch } from "../../components/ui/switch";
-import { Tabs } from "../../components/ui/tabs";
 import { Banner } from "../../components/patterns/banner";
 import { BackupPanel } from "../../components/BackupPanel";
 import { toast } from "../../lib/toast";
@@ -18,34 +17,24 @@ import {
 } from "../../hooks/settings";
 import { getErrorMessage } from "../../data/api";
 
-/** The sections Settings is split into; one is mounted at a time. */
-type SettingsTab = "security" | "privacy" | "operations" | "data";
-const SETTINGS_TABS: readonly SettingsTab[] = [
-  "security",
-  "privacy",
-  "operations",
-  "data",
-];
-
 /**
- * Header for a tab's content, kept out of `Tabs` because the strip and the
- * panel's own heading are different concerns.
+ * One titled band of settings.
+ *
+ * `id` anchors deep links (#operations) — with every section rendered, the
+ * anchor is what keeps a link from elsewhere in the console useful.
  */
-function SettingsTabPanel({
+function SettingsSection({
   id,
   title,
   description,
   children,
 }: {
-  readonly id: SettingsTab;
+  readonly id: string;
   readonly title: string;
   readonly description: string;
   readonly children: ReactNode;
 }): ReactNode {
   return (
-    // `id` anchors deep links (#operations) so a link from elsewhere in the
-    // console can open the right section rather than always landing on the
-    // first tab.
     <section id={id} aria-label={title} className="min-w-0 scroll-mt-4">
       <h2 className="text-subtitle font-semibold text-text-primary">{title}</h2>
       <p className="mt-1 text-badge text-text-tertiary">{description}</p>
@@ -438,18 +427,6 @@ function PasswordChangeForm(): ReactNode {
 }
 
 export default function Settings(): ReactNode {
-  const [tab, setTab] = useState<SettingsTab>(() => {
-    // A hash is how another page points at a section (#operations); without
-    // reading it the anchor would exist but always open the first tab.
-    const fromHash = window.location.hash.replace("#", "") as SettingsTab;
-    return SETTINGS_TABS.includes(fromHash) ? fromHash : "security";
-  });
-  // Selecting a tab updates the URL so the view is shareable and the Back
-  // button returns to the previous section rather than leaving the page.
-  const selectTab = (id: SettingsTab): void => {
-    setTab(id);
-    window.history.replaceState(null, "", `#${id}`);
-  };
   return (
     <Card>
       <CardHeader
@@ -457,62 +434,42 @@ export default function Settings(): ReactNode {
         subtitle="Account security, privacy, and tenant data"
         icon={<Shield size={16} />}
       />
-      <CardBody>
-        {/*
-         * One tab at a time rather than four stacked panels: the page grows
-         * with every setting added, and an operator changing a timeout does not
-         * want the backup panel in the way. Only the active panel mounts, so
-         * the four panels do not each fire their own query on load.
-         */}
-        <Tabs
-          label="Settings sections"
-          active={tab}
-          onChange={(id) => selectTab(id as SettingsTab)}
-          items={[
-            { id: "security", label: "Security", icon: <Shield size={14} /> },
-            { id: "privacy", label: "Privacy", icon: <Eye size={14} /> },
-            { id: "operations", label: "Operations", icon: <Zap size={14} /> },
-            { id: "data", label: "Data", icon: <Database size={14} /> },
-          ]}
-          panels={{
-            security: (
-              <SettingsTabPanel
-                id="security"
-                title="Security"
-                description="Change the password used to sign in to this console."
-              >
-                <PasswordChangeForm />
-              </SettingsTabPanel>
-            ),
-            privacy: (
-              <SettingsTabPanel
-                id="privacy"
-                title="Privacy"
-                description="What request telemetry stores, and how client addresses are shown."
-              >
-                <PrivacyPanel />
-              </SettingsTabPanel>
-            ),
-            operations: (
-              <SettingsTabPanel
-                id="operations"
-                title="Operations"
-                description="Routing, timeouts, and telemetry retention for this tenant."
-              >
-                <OperationalPanel />
-              </SettingsTabPanel>
-            ),
-            data: (
-              <SettingsTabPanel
-                id="data"
-                title="Data"
-                description="Export or restore this tenant's configuration and history."
-              >
-                <BackupPanel />
-              </SettingsTabPanel>
-            ),
-          }}
-        />
+      {/*
+       * Every section is on the page at once. Nothing is behind a tab or a
+       * disclosure, so an operator can see the whole surface in one scroll and
+       * find a setting by looking rather than by guessing which heading hides
+       * it. The sections carry ids so a link to #operations still lands in the
+       * right place.
+       */}
+      <CardBody className="flex flex-col gap-12">
+        <SettingsSection
+          id="security"
+          title="Security"
+          description="Change the password used to sign in to this console."
+        >
+          <PasswordChangeForm />
+        </SettingsSection>
+        <SettingsSection
+          id="privacy"
+          title="Privacy"
+          description="What request telemetry stores, and how client addresses are shown."
+        >
+          <PrivacyPanel />
+        </SettingsSection>
+        <SettingsSection
+          id="operations"
+          title="Operations"
+          description="Routing, timeouts, and telemetry retention for this tenant."
+        >
+          <OperationalPanel />
+        </SettingsSection>
+        <SettingsSection
+          id="data"
+          title="Data"
+          description="Export or restore this tenant's configuration and history."
+        >
+          <BackupPanel />
+        </SettingsSection>
       </CardBody>
     </Card>
   );
