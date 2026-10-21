@@ -1,4 +1,4 @@
-import type { ServiceKind, WireFamily } from "../protocol/canonical-model";
+import { SERVICE_KINDS, type ServiceKind, type WireFamily } from "../protocol/canonical-model";
 import { QODER_CHAT_PATH, QODER_REALMS } from "./integrations/qoder/qoder-realm";
 import { TRAE_CHAT_PATH, TRAE_REALMS } from "./integrations/trae/trae-realm";
 
@@ -580,32 +580,23 @@ export function providerDisplayName(providerId: string): string {
  * The upstream still decides: a request for a capability the remote does not
  * have comes back as that remote's own error, not a gateway-side refusal.
  *
- * The widened list must track the pass-through surfaces in `SERVICE_KINDS`:
- * adding one to the canonical tuple and forgetting it here silently excludes
- * custom providers from a route they can otherwise reach, and nothing fails.
+ * A custom provider is read as able to serve **every** kind, taken straight
+ * from `SERVICE_KINDS` rather than a second list that can drift from it. A
+ * surface added to the tuple is reachable by custom providers immediately, and
+ * one that is not there cannot be served by anyone.
  *
- * `systemone` and `websearch` are deliberately absent: both need a provider
- * the gateway knows how to talk to (a decision API, or a search backend with
- * its own result shape), so forwarding a body to an arbitrary base URL does
- * not produce a usable answer. The omitted ones are exactly the pass-through
- * surfaces — the gateway adds routing and accounting and nothing else.
+ * `systemone` and `websearch` are included even though a base URL alone rarely
+ * answers them: the upstream still decides, and an operator who points a custom
+ * provider at a host that does speak those shapes should not be blocked by the
+ * gateway guessing it will not.
  */
-const WIDENED_CUSTOM_SERVICE_KINDS: readonly ServiceKind[] = [
-  "llm",
-  "imageGeneration",
-  "videoGeneration",
-  "embedding",
-  "audioTranscription",
-  "audioSpeech",
-];
-
 export function providerServiceKinds(providerId: string): readonly ServiceKind[] {
   const declared = BUNDLED_PROVIDER_METADATA.find((candidate) => candidate.id === providerId)
     ?.serviceKinds;
   // Bundled providers are explicit: they say which surfaces they serve, and a
   // bundled provider without the declaration serves LLM only.
   if (declared !== undefined) return declared;
-  return WIDENED_CUSTOM_SERVICE_KINDS;
+  return SERVICE_KINDS;
 }
 
 

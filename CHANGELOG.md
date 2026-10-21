@@ -128,6 +128,11 @@ they have not been pushed.
   them, so they advertised a surface that 404d; a test pinned that absence, and
   both are updated.
 
+  A **custom** provider is read as able to serve every service kind, so all
+  three are reachable without touching the manifest. The widening is taken from
+  the canonical tuple rather than a second list, so a surface added later is
+  reachable immediately instead of silently excluded.
+
 - **`/v1/images/generations` and `/v1/videos/generations`** are exposed on the
   gateway. Both take an opaque body and let the provider's own adapter shape it,
   so what a model accepts is what that provider accepts. Images are served by
