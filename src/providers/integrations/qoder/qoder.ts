@@ -444,7 +444,12 @@ function qoderStableRecordId(modelId: string, messages: CanonicalRequest["messag
 }
 
 function qoderRequestedMaxTokens(request: CanonicalRequest, modelConfig: QoderModelConfig): number {
-  const configured = typeof modelConfig.max_output_tokens === "number" ? modelConfig.max_output_tokens : 32768;
+  /**
+   * The ceiling is the roster's stated one. The 32k this used to fall back to
+   * clamped every model alike, so a request asking for more was silently
+   * lowered no matter which model it named.
+   */
+  const configured = typeof modelConfig.max_output_tokens === "number" ? modelConfig.max_output_tokens : 65_536;
   const controls = request.generation_controls as Record<string, unknown>;
   const requested =
     typeof controls["max_tokens"] === "number"

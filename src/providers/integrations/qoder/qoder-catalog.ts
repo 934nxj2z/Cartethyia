@@ -79,20 +79,20 @@ interface QoderModelConfig {
  * `chat` array of a real CN account's model list.
  */
 export const QODER_CN_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> = {
-  auto: { id: "auto", display_name: "Auto", max_input_tokens: 200000, is_vl: true, is_reasoning: true },
-  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  q37fmodel: { id: "q37fmodel", display_name: "Qwen3.7-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  gm51model: { id: "gm51model", display_name: "GLM-5.2", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  mmodel: { id: "mmodel", display_name: "MiniMax-M2.7", max_input_tokens: 200000, is_vl: false, is_reasoning: false },
+  auto: { id: "auto", display_name: "Auto", max_output_tokens: 64000, max_input_tokens: 200000, is_vl: true, is_reasoning: true },
+  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  q37fmodel: { id: "q37fmodel", display_name: "Qwen3.7-Flash", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_output_tokens: 384000, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_output_tokens: 384000, max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  gm51model: { id: "gm51model", display_name: "GLM-5.2", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_output_tokens: 131072, max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_output_tokens: 65536, max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M2.7", max_output_tokens: 131072, max_input_tokens: 200000, is_vl: false, is_reasoning: false },
 };
 
 /**
@@ -102,32 +102,43 @@ export const QODER_CN_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> 
  * `qmodel` carries a 1M window. That is why the rosters are not merged.
  */
 export const QODER_INTL_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>> = {
-  auto: { id: "auto", display_name: "Auto", max_input_tokens: 200000, is_vl: true, is_reasoning: false },
-  ultimate: { id: "ultimate", display_name: "Ultimate", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  auto: { id: "auto", display_name: "Auto", max_input_tokens: 200000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
+  ultimate: { id: "ultimate", display_name: "Ultimate", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
   // `fast` is what the live roster reports today; `performance` is the older
   // key for the same slot. Both are kept so a hand-added model id written
   // against either name still resolves — the roster is the offline floor, and
   // discovery supersedes it on the first successful fetch.
-  fast: { id: "fast", display_name: "Fast", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  performance: { id: "performance", display_name: "Performance", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  efficient: { id: "efficient", display_name: "Efficient", max_input_tokens: 200000, is_vl: true, is_reasoning: false },
-  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
-  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
-  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  fast: { id: "fast", display_name: "Fast", max_input_tokens: 1000000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
+  performance: { id: "performance", display_name: "Performance", max_input_tokens: 1000000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
+  efficient: { id: "efficient", display_name: "Efficient", max_input_tokens: 200000, max_output_tokens: 64_000, is_vl: true, is_reasoning: false },
+  smodel: { id: "smodel", display_name: "Sonus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
+  cmodel: { id: "cmodel", display_name: "Cantus", max_input_tokens: 1000000, max_output_tokens: 128_000, is_vl: true, is_reasoning: true },
+  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
+  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: false },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.8-Preview", max_input_tokens: 1000000, max_output_tokens: 65_536, is_vl: true, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_reasoning: true },
+  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_reasoning: true },
+  dfmodel: { id: "dfmodel", display_name: "DeepSeek-Flash", max_input_tokens: 1000000, max_output_tokens: 384_000, is_vl: true, is_reasoning: true },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 1000000, max_output_tokens: 512_000, is_vl: true, is_reasoning: false },
 };
 
-/** Output ceiling when the upstream states none, matching `qoder.ts`. */
-const DEFAULT_OUTPUT_TOKENS = 32_768;
+/**
+ * Output ceilings are stated per row, not derived.
+ *
+ * Qoder's `/model/list` reports no output limit at all — none of the 21 fields
+ * it returns for any row mentions output — so these come from the static
+ * roster, set to what the same model is filed at elsewhere in the catalog
+ * (DeepSeek-V4 at 384k, GLM/Qwen/Kimi/MiniMax at 131k, the GPT-class slots at
+ * 128k). The 32k that used to be hardcoded here applied to every row alike,
+ * which is what made the whole catalog look capped at one number.
+ *
+ * A row with no stated ceiling leaves `out` unset so `defineModel` can still
+ * consult the base catalog rather than publishing a guess.
+ */
 
 function qoderModels(
   configs: Readonly<Record<string, QoderModelConfig>>,
@@ -140,7 +151,7 @@ function qoderModels(
       wireFamily: "chat",
       endpoint: QODER_CHAT_PATH,
       ctx: cfg.max_input_tokens,
-      out: cfg.max_output_tokens ?? DEFAULT_OUTPUT_TOKENS,
+      ...(cfg.max_output_tokens === undefined ? {} : { out: cfg.max_output_tokens }),
       vision: cfg.is_vl,
       reasoning: cfg.is_reasoning,
     }),
@@ -177,8 +188,11 @@ export function qoderVirtualModels(
         providerId,
         wireFamily: "chat",
         endpoint: QODER_CHAT_PATH,
-        ctx: target.contextLimit ?? DEFAULT_OUTPUT_TOKENS,
-        out: target.outputLimit ?? DEFAULT_OUTPUT_TOKENS,
+        // `null`, not a number: an unknown window is unknown, and `defineModel`
+        // substitutes the shared unfiled fallback for null — the same marker a
+        // hand-added row gets.
+        ctx: target.contextLimit ?? null,
+        ...(target.outputLimit === null ? {} : { out: target.outputLimit }),
         vision: target.modalities.input.includes("image"),
         reasoning: target.reasoning ?? false,
         toolCall: target.toolCall ?? false,
@@ -249,7 +263,6 @@ export function qoderCatalogModel(
     // not unlimited, and `defineModel` substitutes its own "unfiled" estimate
     // for null — the same marker a hand-added row gets.
     ctx: entry.maxInputTokens ?? null,
-    out: DEFAULT_OUTPUT_TOKENS,
     vision: entry.isVl,
     reasoning: entry.isReasoning,
   });
