@@ -121,9 +121,13 @@ they have not been pushed.
 - **`/v1/images/generations` and `/v1/videos/generations`** are exposed on the
   gateway. Both take an opaque body and let the provider's own adapter shape it,
   so what a model accepts is what that provider accepts. Images are served by
-  Gemini, Antigravity, Codex, and the Buddy family. Video is narrower:
-  `seedance-2.5` on CodeBuddy/WorkBuddy, submitted as an async task the adapter
-  polls to completion rather than returning a clip inline.
+  Gemini, Antigravity, Codex, and the Buddy family. Video is declared only by
+  CodeBuddy and WorkBuddy, via `seedance-2.5`, submitted as an async task the
+  adapter polls to completion rather than returning a clip inline. A **custom**
+  provider is not limited to either list — `providerServiceKinds` grants an
+  unregistered upstream all three kinds, so any OpenAI-compatible host you point
+  at can serve both routes, and a remote that lacks them answers with its own
+  error rather than a gateway refusal.
 
 - **`models.free_tier`** (migration `0019`, both dialects): whether the provider
   publishes a model as free. Nullable and three-valued — `true` free, `false`
