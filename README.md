@@ -33,7 +33,7 @@ Built with Bun, TypeScript, Elysia, embedded SQLite or external PostgreSQL, and 
 You need Node/npm and **Bun 1.4.0 or newer**.
 
 ```bash
-npm install --global cartethyia
+npm install -g cartethyia
 cartethyia setup
 carte
 ```
@@ -43,9 +43,16 @@ Install it **globally**. A local `npm install cartethyia` puts `cartethyia` and
 will not be found. Either install globally, or run a local one through
 `npx cartethyia`.
 
+Update and remove:
+
+```bash
+npm update -g cartethyia    # update
+npm uninstall -g cartethyia # uninstall
+```
+
 Full install guide, modes, Docker, VPS, systemd, and the one-shot script:
 [getting started](documentation/getting-started.md). To remove it:
-`npm uninstall --global cartethyia`.
+`npm uninstall -g cartethyia`.
 
 ## <img src="https://api.iconify.design/lucide/sparkles.svg?color=%238b949e" width="20" height="20" alt=""> What it actually does
 
