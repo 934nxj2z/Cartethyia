@@ -163,4 +163,28 @@ export const runtimeUpdateBody = t.Object({
   rtkPruneLevel: t.Optional(literalUnion(RTK_LEVELS)),
   ponyTailEnabled: t.Optional(t.Boolean()),
   ponyTailLevel: t.Optional(literalUnion(PONYTAIL_LEVELS)),
+  /*
+   * Operational overrides. Every field a caller may patch must appear here:
+   * this schema is what the route parses the body against, and a key it does
+   * not name is dropped before the store sees it. These four were added to the
+   * request type and the store but never to this object, so a save returned
+   * 200 and changed nothing — the mutation's toast fired while the stored
+   * value stayed put.
+   *
+   * `t.Null()` is what "Deployment default" sends, and it must survive:
+   * clearing an override is a real edit, not an absent one.
+   *
+   * The bounds mirror the store's own normalizers, so an out-of-range value is
+   * rejected here rather than silently clamped on the way in.
+   */
+  forceDisableCooldown: t.Optional(t.Boolean()),
+  upstreamTimeoutSeconds: t.Optional(
+    t.Union([t.Null(), t.Number({ minimum: 5, maximum: 600 })]),
+  ),
+  telemetryCompactAfterDays: t.Optional(
+    t.Union([t.Null(), t.Number({ minimum: 1, maximum: 365 })]),
+  ),
+  imageClampMaxBytes: t.Optional(
+    t.Union([t.Null(), t.Number({ minimum: 64 * 1024, maximum: 100 * 1024 * 1024 })]),
+  ),
 });
