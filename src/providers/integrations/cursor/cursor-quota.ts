@@ -152,6 +152,15 @@ function parseUsageSummary(payload: unknown): {
  * legacy read is still attempted: it is the only surface an api-key account
  * can reach.
  */
+function authStateUserId(context: QuotaCollectionContext | undefined): string | undefined {
+  const raw = context?.auth_state ?? {};
+  for (const key of ["userId", "user_id", "uid", "sub"] as const) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 export async function fetchCursorQuota(
   credential: string,
   fetcher: FetchLike,
@@ -181,12 +190,14 @@ export async function fetchCursorQuota(
     },
   );
 
-  // The summary needs the user id from the access token and only answers for an
-  // OAuth account on the default host; an api-key account has neither.
-  const isOauth = (context?.credential_kind ?? "oauth") !== "api_key";
-  const userId = isOauth ? cursorAccountIdentity(credential) : undefined;
+  // Attempted for every credential kind, not just OAuth. The legacy surface is
+  // the only one an api-key account is *guaranteed*, but gating the summary on
+  // `credential_kind` left api-key accounts showing only `gpt-4 requests` — a
+  // bucket that reads zero on exactly the plans that have a dollar cap. If the
+  // summary answers, it is the better reading whatever kind the row claims.
+  const userId = cursorAccountIdentity(credential) ?? authStateUserId(context);
   let summary: { readonly windows: readonly ProviderQuotaWindow[]; readonly plan: string | null } | null = null;
-  if (isOauth && userId && baseUrl === `https://${CURSOR_API_HOST}`) {
+  if (userId && baseUrl === `https://${CURSOR_API_HOST}`) {
     summary = await call(`https://${CURSOR_WEBSITE_HOST}/api/usage-summary`, {
       accept: "application/json",
       authorization: `Bearer ${credential}`,
