@@ -8,6 +8,40 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.4] - 2026-10-22
+
+### Fixed — the Cursor tool loop
+
+- **A replayed Cursor conversation no longer dies on "tool call no longer
+  pending".** The Cursor tool loop spans two client requests: the model calls a
+  tool, the gateway holds the Run open, the client sends the result. When the
+  gateway restarts between those legs — or the idle Run is reaped — the client
+  resends its complete recorded transcript, and that resend used to fail with
+  a 400 telling the client to resend what it had just sent.
+
+  A replay whose every tool result is answered by a tool call present in the
+  same conversation — and whose call ids exist nowhere in the process — is now
+  rebased into a fresh Run from the recorded history instead of refused. The
+  refusals that protect other tenants stay: a tail-only continuation, a
+  request with no continuation scope, and a call id that is still live under
+  another tenant's session, which would mean adopting someone else's Run.
+
+- **Cursor's host tools execute on the client instead of being refused.**
+  Cursor's edge asks its local executor for native tools — shell, file write,
+  file read. This gateway answered those frames with an explicit error, so the
+  model saw "Cursor host tools are not executed by this gateway", circled, and
+  fell back to the MCP-channel equivalent only on a later try.
+
+  A host exec the client itself declared is now forwarded as a tool call: the
+  client runs its own `_bash` / `_write` / `_read`, and the Run receives the
+  variant's typed result frame (`shell_result` / `write_result` /
+  `read_result`) plus `stream_close` — the frames Cursor's own executor sends,
+  not the generic `mcp_result` that leaves the server unmatched. Argument
+  names follow the schema the client's tool declared, so a tool that rejects
+  unknown properties still accepts the forwarded call. Exec variants without a
+  faithful result frame (grep, ls, subagent, …) and host calls to tools the
+  client never declared keep the explicit refusal.
+
 ## [2.5.3] - 2026-10-21
 
 ### Fixed — performance
