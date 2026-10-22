@@ -1,18 +1,23 @@
 /**
- * A Cline `api_key` account must not be probed for quota.
+ * A Cline `api_key` account is read through the same quota surface as OAuth,
+ * with a different Authorization header.
  *
- * The collector marked api-key credentials and routed them to
- * `probeApiKeyConnectivity`, which asks `GET /api/v1/models` with the key as a
- * bearer token. Cline answers that with `Unauthorized: Please make sure you're
- * using the latest version of Cline and re-authenticate your Cline account.` —
- * the same wording it returns for a dead credential and for an implausible
- * client identity. The probe read it as "API key is invalid or revoked.", so
- * the sweep reported a working account as needing re-authentication, on every
- * pass.
+ * It used to be short-circuited to "quota not available" with no upstream call,
+ * because the key was sent as `Bearer workos:sk_...` and Cline answered 401
+ * with "please make sure you're using the latest version of Cline and
+ * re-authenticate". That message names a version problem, so it read as the
+ * upstream refusing the client rather than a malformed credential — and since
+ * the same wording also covers a dead key, a working account and a dead one
+ * were indistinguishable.
  *
- * There is no quota to read for these accounts: an api_key carries no OAuth
- * envelope and Cline exposes no billing surface for it. The honest answer is
- * "not available", with no upstream call at all.
+ * Verified against a live key: `/users/me` returned 200 with `Bearer sk_...`
+ * and 401 once `workos:` was prepended. So the api key goes down the normal
+ * path, unprefixed.
+ *
+ * Two outcomes must stay distinct:
+ * - a live key on an account with no plan → `windows: []`, `error: null`
+ *   (404 "no plan history" is account state, not a failure);
+ * - a dead key → the request is rejected, so the account reports a real error.
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -21,30 +26,80 @@ import {
   markClineApiKeyCredential,
 } from "../../src/providers/integrations/cline/cline-quota";
 
-/** A fetcher that fails the test if it is ever reached. */
-function forbiddenFetcher(): { readonly fetcher: typeof fetch; readonly calls: () => number } {
-  let calls = 0;
-  const fetcher = (async (): Promise<Response> => {
-    calls += 1;
-    throw new Error("Cline api-key quota must not reach the network.");
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Records every Authorization header the quota surface is called with. */
+function recordingFetcher(routes: {
+  readonly onUsersMe?: () => Response;
+  readonly onPlan?: () => Response;
+  readonly onLimits?: () => Response;
+}): { readonly fetcher: typeof fetch; readonly auths: readonly (string | null)[] } {
+  const auths: (string | null)[] = [];
+  const fetcher = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+    const headers = init?.headers as Record<string, string> | undefined;
+    auths.push(headers?.authorization ?? null);
+    const path = String(url);
+    if (path.endsWith("/users/me")) {
+      return routes.onUsersMe?.() ?? jsonResponse({ id: "u-1" });
+    }
+    if (path.endsWith("/plan")) {
+      return routes.onPlan?.() ?? jsonResponse({ plan: { displayName: "Cline Pro" } });
+    }
+    return routes.onLimits?.() ?? jsonResponse({ limits: [] });
   }) as unknown as typeof fetch;
-  return { fetcher, calls: () => calls };
+  return { fetcher, auths };
 }
 
 describe("fetchClineQuota for an api_key account", () => {
-  test("reports quota unavailable without any upstream call", async () => {
-    const { fetcher, calls } = forbiddenFetcher();
-    const credential = markClineApiKeyCredential("ck_test_key");
+  test("sends the key as a bare bearer token, without workos:", async () => {
+    // The whole fix is one header. `workos:` prefixed is what produced the
+    // "re-authenticate" refusal.
+    const { fetcher, auths } = recordingFetcher({});
+    await fetchClineQuota(markClineApiKeyCredential("sk_test_key"), fetcher);
 
-    // Resolves rather than rejecting: a throwing fetcher would surface as an
-    // account error if the probe were still wired up.
-    const result = await fetchClineQuota(credential, fetcher);
+    expect(auths.length).toBeGreaterThan(0);
+    for (const auth of auths) {
+      expect(auth).toBe("Bearer sk_test_key");
+    }
+  });
 
-    expect(calls()).toBe(0);
-    expect(result.error).toBe("Quota endpoint is not available for this provider.");
+  test("an account with no plan history reports no quota and no error", async () => {
+    // 404 "no plan history" is account state, not a failure: the account is
+    // reachable and simply has nothing metered.
+    const { fetcher } = recordingFetcher({
+      onPlan: () => jsonResponse({ error: "no plan history found for user" }, 404),
+      onLimits: () => jsonResponse({ error: "no plan history found for user" }, 404),
+    });
+
+    const result = await fetchClineQuota(markClineApiKeyCredential("sk_test_key"), fetcher);
+
+    expect(result.error).toBeNull();
     expect(result.windows).toEqual([]);
-    expect(result.plan).toBeNull();
     expect(result.source).toBe("cline");
+  });
+
+  test("a rejected key surfaces as a real error, not as no quota", async () => {
+    // This is the distinction the old short-circuit could not make: before, a
+    // dead key and a live one without a plan both read "not available".
+    const { fetcher } = recordingFetcher({
+      onUsersMe: () =>
+        jsonResponse(
+          {
+            error:
+              "Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account.",
+          },
+          401,
+        ),
+    });
+
+    await expect(fetchClineQuota(markClineApiKeyCredential("sk_dead"), fetcher)).rejects.toThrow(
+      /Unauthorized/i,
+    );
   });
 
   test("marks a raw key once and recognizes the marker", () => {
@@ -53,31 +108,68 @@ describe("fetchClineQuota for an api_key account", () => {
     expect(markClineApiKeyCredential(once)).toBe(once);
   });
 
-  test("an OAuth credential still reaches the quota surface", async () => {
-    // The api-key branch must not swallow the OAuth path: an unmarked
-    // credential still resolves its token and calls upstream.
-    let called = 0;
-    const fetcher = (async (url: unknown): Promise<Response> => {
-      called += 1;
-      const path = String(url);
-      if (path.endsWith("/users/me")) return jsonResponse({ id: "u-1" });
-      if (path.endsWith("/plan")) return jsonResponse({ plan: { displayName: "Cline Pro" } });
-      return jsonResponse({ limits: [] });
-    }) as unknown as typeof fetch;
+  test("an OAuth credential still sends the workos-prefixed token", async () => {
+    // The api-key branch must not change the OAuth path.
+    const { fetcher, auths } = recordingFetcher({});
+    await fetchClineQuota(JSON.stringify({ accessToken: "workos:tok_1" }), fetcher);
 
-    const result = await fetchClineQuota(
-      JSON.stringify({ accessToken: "workos:tok_1" }),
-      fetcher,
-    );
-    expect(called).toBeGreaterThan(0);
-    expect(result.source).toBe("cline");
-    expect(result.plan).toBe("Cline Pro");
+    expect(auths.length).toBeGreaterThan(0);
+    for (const auth of auths) {
+      expect(auth).toBe("Bearer workos:tok_1");
+    }
+  });
+
+  test("an OAuth credential without the prefix still gets one", async () => {
+    const { fetcher, auths } = recordingFetcher({});
+    await fetchClineQuota(JSON.stringify({ accessToken: "tok_1" }), fetcher);
+
+    expect(auths.length).toBeGreaterThan(0);
+    for (const auth of auths) {
+      expect(auth).toBe("Bearer workos:tok_1");
+    }
   });
 });
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "content-type": "application/json" },
+describe("the api_key path through the provider registry", () => {
+  /**
+   * `fetchProviderQuota` is what the account test and the sweeps actually call,
+   * so the fix has to hold there too and not only on the collector directly —
+   * a marker that never reaches the collector would pass the tests above and
+   * still report "not available" in the console.
+   */
+  test("an api_key account reads its identity rather than reporting unavailable", async () => {
+    const { createDefaultProviderRegistry } = await import(
+      "../../src/providers/default-registry"
+    );
+    const { fetchProviderQuota } = await import("../../src/providers/quota/quota-support");
+    const registry = createDefaultProviderRegistry();
+    expect(registry.hasQuotaCollector("cline")).toBe(true);
+
+    const { fetcher } = recordingFetcher({
+      onPlan: () => jsonResponse({ error: "no plan history found for user" }, 404),
+      onLimits: () => jsonResponse({ error: "no plan history found for user" }, 404),
+    });
+
+    const result = await fetchProviderQuota(
+      registry,
+      "cline",
+      markClineApiKeyCredential("sk_test_key"),
+      fetcher as unknown as typeof fetch,
+      { credential_kind: "api_key" },
+    );
+
+    // The old short-circuit answered "Quota endpoint is not available for this
+    // provider." — indistinguishable from the provider simply having no surface.
+    expect(result.error).toBeNull();
+    expect(result.source).toBe("cline");
   });
-}
+
+  test("only cline credentials get the api-key marker", () => {
+    // Marking another provider's key would route it into a branch that strips
+    // or re-prefixes its token.
+    const marker = markClineApiKeyCredential;
+    expect(marker("sk_x")).toBe(`${CLINE_API_KEY_PREFIX}sk_x`);
+    // Documented here rather than asserted against the shared wiring, which
+    // lives in the console layer: the guard is `providerId === "cline"`.
+  });
+});

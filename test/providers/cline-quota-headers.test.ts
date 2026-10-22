@@ -124,21 +124,42 @@ describe("Cline quota headers", () => {
     }
   });
 
-  test("an api-key account never reaches the OAuth-only billing surface", async () => {
-    // An api_key account used to be probed on /models. Cline answers that with
-    // the same "update and re-authenticate" refusal it returns for a dead
-    // credential and for an implausible client identity, so the probe read it
-    // as a revoked key and the sweep reported a working account as needing
-    // re-authentication on every pass. There is no quota for these accounts to
-    // read, so the account now makes no upstream call at all and reports
-    // "not available" — it cannot reach /users/me, and must not reach /models.
-    let requested: string | undefined;
-    const fetcher = (async (url: unknown): Promise<Response> => {
-      requested = String(url);
-      return jsonResponse({ data: [] });
+  test("an api-key account reads the billing surface with a bare bearer token", async () => {
+    // It used to make no call at all and report "not available", because the
+    // key was sent as `Bearer workos:sk_...` and Cline answered 401 with the
+    // "update and re-authenticate" refusal. The key is its own bearer token;
+    // the prefix was the whole problem.
+    const seen: (string | undefined)[] = [];
+    const fetcher = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push(headers?.authorization);
+      const path = String(url);
+      if (path.endsWith("/users/me")) return jsonResponse({ id: "u-1" });
+      return jsonResponse({ limits: [] });
     }) as unknown as typeof fetch;
-    const result = await fetchClineQuota(`${CLINE_API_KEY_PREFIX}key-123`, fetcher);
-    expect(requested).toBeUndefined();
-    expect(result.error).toBe("Quota endpoint is not available for this provider.");
+
+    const result = await fetchClineQuota(`${CLINE_API_KEY_PREFIX}sk_123`, fetcher);
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const auth of seen) expect(auth).toBe("Bearer sk_123");
+    expect(result.source).toBe("cline");
+  });
+
+  test("an api-key account still sends the client identity headers", async () => {
+    // The header set is shared: dropping the client identity is one of the
+    // shapes an upstream "please update" refusal takes.
+    let seen: Record<string, string> | undefined;
+    const fetcher = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+      seen = init?.headers as Record<string, string>;
+      const path = String(url);
+      if (path.endsWith("/users/me")) return jsonResponse({ id: "u-1" });
+      return jsonResponse({ limits: [] });
+    }) as unknown as typeof fetch;
+
+    await fetchClineQuota(`${CLINE_API_KEY_PREFIX}sk_123`, fetcher);
+
+    expect(seen?.["x-client-type"]).toBe("cline-cli");
+    expect(seen?.["x-client-version"]).toBeDefined();
+    expect(seen?.["x-core-version"]).toBeDefined();
   });
 });

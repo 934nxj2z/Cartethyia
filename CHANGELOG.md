@@ -226,12 +226,19 @@ exactly what the limit exists to prevent.
   `workbuddy-ai/<v>`. The international gateway answers the branded spelling
   with 403 code `11140`, the same refusal a wrong-brand header gets.
 
-- **Cline `api_key` accounts are no longer probed for quota.** The probe asked
-  `/api/v1/models`, which Cline answers with "make sure you're using the
-  latest version of Cline and re-authenticate" — the same wording it uses for
-  a dead credential. The probe read it as "invalid or revoked", so the sweep
-  reported a working account as needing re-authentication on every pass. These
-  accounts now report quota as unavailable and make no upstream call.
+- **Cline `api_key` accounts read their quota properly.** They were reported as
+  "Quota endpoint is not available" with no upstream call, because the key was
+  sent as `Bearer workos:sk_...`. Cline answers that with "make sure you're
+  using the latest version of Cline and re-authenticate" — a message that names
+  a version problem, so it read as the upstream refusing the client rather than
+  a misformed header. Verified against a live key: `/users/me` returns 200 with
+  a bare `Bearer sk_...` and 401 once `workos:` is prepended.
+
+  These accounts now use the same quota surface as OAuth, with the key as its
+  own bearer token. Two cases that used to look identical are now told apart:
+  a live key on an account with no plan reports no quota and no error, while a
+  rejected key reports a real failure. Account tests — per account or all at
+  once — go through this same path.
 
 - **Trae `gpt-5.4` reports a 1M context window.** It was filed at 272k.
 

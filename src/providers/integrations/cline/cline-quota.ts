@@ -1,5 +1,5 @@
 import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { authCredential, getJson, record, text, unsupportedQuota } from "../../quota/quota-contracts";
+import { authCredential, getJson, record, text } from "../../quota/quota-contracts";
 import { parseLimitWindows } from "../../quota/quota-limit-windows";
 import { getClineCliVersion, getClineSdkVersion } from "../../operations/client-versions";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
@@ -73,7 +73,6 @@ function isMissingPlanHistory(reason: unknown): boolean {
   return /\b404\b|\bno plan history\b/i.test(message);
 }
 
-const CLINE_PROVIDER_ID = "cline" as const;
 /** Envelope marking a resolved secret as an api key rather than an OAuth grant. */
 export const CLINE_API_KEY_PREFIX = "cline-api-key:" as const;
 
@@ -86,22 +85,30 @@ export async function fetchClineQuota(
   credential: string,
   fetcher: FetchLike,
 ): Promise<ProviderQuotaResult> {
-  // An api_key account has no OAuth envelope, and Cline's quota surface
-  // answers 401 for one — the upstream's message asks the operator to
-  // re-authenticate, which is a false verdict: the key is fine and the gateway
-  // never had a quota to read. Report "not available" and make no upstream
-  // call. A probe here also cannot distinguish a dead key from Cline refusing
-  // the client, so the only honest answer is that quota is unavailable.
-  if (credential.startsWith(CLINE_API_KEY_PREFIX)) {
-    return unsupportedQuota(CLINE_PROVIDER_ID);
+  const isApiKey = credential.startsWith(CLINE_API_KEY_PREFIX);
+  const bearer = isApiKey ? credential.slice(CLINE_API_KEY_PREFIX.length) : null;
+
+  let headers: Record<string, string>;
+  if (isApiKey && bearer) {
+    // An api key is its own bearer token: `Authorization: Bearer sk_...`, with
+    // no `workos:` prefix.
+    //
+    // Prefixing it is what produced "Unauthorized: please make sure you're
+    // using the latest version of Cline and re-authenticate" — verified against
+    // a live key, where the same key returned 200 on `/users/me` bare and 401
+    // once `workos:` was prepended. The message names a version problem, so it
+    // reads as a client the upstream refuses rather than a malformed header,
+    // which is why it went unrecognised for so long.
+    headers = { ...clineQuotaHeaders(), authorization: `Bearer ${bearer}` };
+  } else {
+    const fields = authCredential(credential);
+    const access = text(fields.accessToken);
+    if (!access) throw new Error("Cline credential has no access token.");
+    headers = {
+      ...clineQuotaHeaders(),
+      authorization: `Bearer ${access.startsWith("workos:") ? access : `workos:${access}`}`,
+    };
   }
-  const fields = authCredential(credential);
-  const access = text(fields.accessToken);
-  if (!access) throw new Error("Cline credential has no access token.");
-  const headers = {
-    ...clineQuotaHeaders(),
-    authorization: `Bearer ${access.startsWith("workos:") ? access : `workos:${access}`}`,
-  };
   const me = record(await getJson("https://api.cline.bot/api/v1/users/me", headers, fetcher));
   const userId = text(me?.id);
   if (!userId) throw new Error("Cline account response has no user id.");
