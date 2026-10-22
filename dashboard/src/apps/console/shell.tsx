@@ -25,6 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Palette } from "lucide-react";
+import { HeaderExtras } from "../../components/HeaderExtras";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -912,6 +913,7 @@ export function DashboardShell({
                 health={healthQuery.data}
                 onOpenUpdate={() => setUpdateOpen(true)}
               />
+              <HeaderExtras />
             </div>
           </header>
 
