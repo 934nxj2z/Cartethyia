@@ -129,6 +129,8 @@ export interface CompactedRow extends CompactedBucket {
   readonly apiKeyId: string | null;
 }
 
+const mergeBuckets = mergeBucketsInternal;
+
 /** Adds one occurrence to a count map, ignoring an absent key. */
 function bump(
   counts: Readonly<Record<string, number>> | undefined,
@@ -406,7 +408,8 @@ async function countLines(path: string): Promise<number> {
   return count;
 }
 
-function mergeBuckets(a: CompactedBucket, b: CompactedBucket): CompactedBucket {
+/** Adds two buckets. Exported so the day index can merge without duplicating it. */
+export function mergeBucketsInternal(a: CompactedBucket, b: CompactedBucket): CompactedBucket {
   const histogram = a.latencyHistogram.map((count, index) => count + (b.latencyHistogram[index] ?? 0));
   return {
     byModel: mergeCounts(a.byModel, b.byModel),
