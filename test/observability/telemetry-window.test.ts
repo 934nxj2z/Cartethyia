@@ -11,9 +11,17 @@
  * file mid-write and lose its requests.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
+
+// The directory is resolved when `event-log` is first imported, so the override
+// has to be set before anything pulls it in. Without this the tests write into
+// — and then wipe — the real telemetry directory of whatever machine runs them.
+const sandbox = await mkdtemp(join(tmpdir(), "carte-telemetry-test-"));
+process.env.CARTETHYIA_DATA_DIR = sandbox;
+
+const {
   dayEventFileName,
   dayIndexFileName,
   foldDayIndex,
@@ -21,8 +29,8 @@ import {
   queryIndexedBuckets,
   readDayIndex,
   utcDay,
-} from "../../src/observability/event-day-index";
-import { TELEMETRY_EVENT_DIR } from "../../src/observability/event-log";
+} = await import("../../src/observability/event-day-index");
+const { TELEMETRY_EVENT_DIR } = await import("../../src/observability/event-log");
 
 const DAY = "2026-10-22";
 
@@ -34,7 +42,10 @@ async function reset(): Promise<void> {
 }
 
 beforeEach(reset);
-afterEach(reset);
+afterEach(async () => {
+  await reset();
+  await rm(sandbox, { recursive: true, force: true }).catch(() => undefined);
+});
 
 let sequence = 0;
 
