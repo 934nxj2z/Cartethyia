@@ -152,6 +152,71 @@ function hourStamp(date: Date): string {
 /** Chunk size for the streaming scan: one line can be long, a file cannot. */
 const READ_CHUNK_BYTES = 256 * 1024;
 
+/**
+ * The newest matching events in one file, read backwards from the end.
+ *
+ * Reads fixed blocks from the tail until the page is full, so a day file of any
+ * size costs one block per page rather than a full parse. A partial line at the
+ * very end is dropped: the writer may still be appending to it.
+ */
+async function* readEventFileTail(
+  file: string,
+  tenantId: string | undefined,
+  want: number,
+  since: number | undefined,
+  until: number | undefined,
+): AsyncGenerator<TelemetryEventRecord> {
+  if (want <= 0) return;
+  const handle = await open(join(TELEMETRY_EVENT_DIR, file), "r").catch(() => undefined);
+  if (handle === undefined) return;
+  try {
+    const size = (await handle.stat().catch(() => undefined))?.size ?? 0;
+    if (size === 0) return;
+    const BLOCK = 64 * 1024;
+    let end = size;
+    let carry = "";
+    const found: TelemetryEventRecord[] = [];
+    while (end > 0 && found.length < want) {
+      const start = Math.max(0, end - BLOCK);
+      const length = end - start;
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      const text = buffer.toString("utf8") + carry;
+      const lines = text.split("\n");
+      carry = lines.shift() ?? "";
+      // Newest first: the block was read from the end, so its lines run
+      // backwards through the file.
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index] ?? "";
+        if (line.length === 0) continue;
+        if (tenantId !== undefined && !line.includes(tenantId)) continue;
+        let parsed: TelemetryEventRecord | undefined;
+        try {
+          const value: unknown = JSON.parse(line);
+          if (typeof value === "object" && value !== null) {
+            parsed = value as TelemetryEventRecord;
+          }
+        } catch {
+          continue;
+        }
+        if (parsed === undefined) continue;
+        if (parsed.tenantId !== tenantId) continue;
+        const at = Date.parse(parsed.createdAt);
+        if (Number.isFinite(at)) {
+          if (since !== undefined && at < since) continue;
+          if (until !== undefined && at > until) continue;
+        }
+        found.push(parsed);
+        if (found.length >= want) break;
+      }
+      end = start;
+    }
+    for (const event of found) yield event;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 async function* readEventFiles(
   files: readonly string[],
   allow?: (line: string) => boolean,
@@ -297,6 +362,27 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   // A single-row lookup: stop at the first (newest) match instead of parsing
   // the whole retention window.
   const oneRow = query.requestId !== undefined || query.id !== undefined;
+  // With one file per day, a plain page of the newest rows would otherwise
+  // parse the whole day to return fifty lines. When nothing filters on
+  // content — no status, no key, no account — the newest rows are the last
+  // lines, so they are read backwards from the end and the scan stops once the
+  // page is full.
+  const tailOnly =
+    query.limit !== undefined &&
+    !oneRow &&
+    query.httpStatus === undefined &&
+    query.apiKeyIds === undefined &&
+    query.accountIds === undefined;
+  if (tailOnly) {
+    const newest: TelemetryEventRecord[] = [];
+    for (const file of files) {
+      for await (const event of readEventFileTail(file, query.tenantId, query.limit - newest.length, since, until)) {
+        newest.push(event);
+      }
+      if (newest.length >= query.limit) break;
+    }
+    return newest.slice(0, query.limit);
+  }
   for (const file of files) {
     const matched: TelemetryEventRecord[] = [];
     for await (const event of readEventFiles([file], allow)) {

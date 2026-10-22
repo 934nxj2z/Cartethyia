@@ -71,16 +71,27 @@ function aggregateUsage(rows: readonly (typeof telemetryEvents.$inferInsert)[]) 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Deletes hourly event files whose whole hour is older than the retention
- * cutoff. The current hour's file is never touched: it is still being appended.
+ * Deletes whole days past the retention cutoff: the event file and its index
+ * together.
+ *
+ * The day is the retention unit now, so both go at once. Removing one without
+ * the other is the failure this avoids — an index with no events reports totals
+ * for requests that no longer exist, and events with no index are invisible to
+ * every usage read.
+ *
+ * The cutoff is a whole day, so today's file — still being appended to — is
+ * never a candidate. It used to compare filenames hour by hour, which for a day
+ * file compared the `.events` suffix against an hour stamp and could drop the
+ * open file.
  */
 async function pruneEventFiles(before: Date): Promise<void> {
   const files = await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]);
-  const cutoff = before.toISOString().slice(0, 13).replaceAll(":", "-");
+  const cutoffDay = before.toISOString().slice(0, 10);
   for (const file of files) {
-    if (!file.endsWith(".jsonl")) continue;
-    const hour = file.slice(0, 13);
-    if (hour < cutoff) await rm(join(TELEMETRY_EVENT_DIR, file), { force: true });
+    const day = file.slice(0, 10);
+    if (day.length !== 10 || day >= cutoffDay) continue;
+    if (!file.endsWith(".events.jsonl") && !file.endsWith(".index.json")) continue;
+    await rm(join(TELEMETRY_EVENT_DIR, file), { force: true });
   }
 }
 
