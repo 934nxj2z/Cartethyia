@@ -16,31 +16,38 @@ interface CodexIdentityHeadersOptions {
   readonly sessionId?: string | undefined;
   readonly threadId?: string | undefined;
   readonly windowId?: string | undefined;
-  readonly turnId?: string | undefined;
-  readonly parentTurnId?: string | undefined;
-  readonly conversationId?: string | undefined;
-  readonly installationId?: string | undefined;
   readonly turnMetadataJson?: string | undefined;
   readonly betaFeatures?: string | undefined;
   readonly subAgent?: string | undefined;
   readonly responsesLite?: boolean | undefined;
   readonly turnState?: string | undefined;
-  readonly modelsEtag?: string | undefined;
-  /**
-   * `x-codex-routing-hint: model=<slug>[;tier=<service_tier>]` — codex-rs
-   * sends this on every ChatGPT-OAuth Responses/compaction/WebSocket
-   * request. Callers compute the value; absent/empty omits the header.
-   */
-  readonly routingHint?: string | undefined;
 }
 
+/**
+ * Assembles the request headers the reference ChatGPT-OAuth Responses
+ * dispatch sends (`codex-rs` rust-v0.160.0):
+ *
+ * - default client headers (`default_headers`): `originator`, `user-agent`
+ *   (no `version` header at this tag);
+ * - auth (`add_auth_headers`): `authorization`, `chatgpt-account-id`;
+ * - per-request extras (`build_responses_options`): `x-codex-beta-features`?,
+ *   `x-codex-turn-state`?, `x-oai-attestation`?, lite header when Responses
+ *   Lite, the compatibility projection (`x-codex-window-id`,
+ *   `x-codex-turn-metadata`, `x-codex-parent-thread-id`?, `x-openai-subagent`?);
+ * - transport options (`ApiResponsesOptions` + stream wrapper):
+ *   `x-client-request-id` / `session-id` / `thread-id` / `x-openai-subagent`?.
+ *
+ * Identity values that moved into the body (`client_metadata` — installation,
+ * turn id, parent turn id) are absent here by design. `conversation-id`,
+ * `turn-id`, `parent-turn-id` direct headers and `x-codex-routing-hint`
+ * (WebSocket-only at this tag) are not emitted.
+ */
 export function buildCodexIdentityHeaders(
   options: CodexIdentityHeadersOptions,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   headers["user-agent"] = buildCodexUserAgent(options.version);
   headers["originator"] = "codex_cli_rs";
-  headers["version"] = options.version;
   const token =
     options.credential.secret === undefined
       ? undefined
@@ -50,37 +57,19 @@ export function buildCodexIdentityHeaders(
     (token === undefined ? undefined : getCodexAccountId(token));
   if (accountId !== undefined && accountId.length > 0)
     headers["chatgpt-account-id"] = accountId;
-  headers["OpenAI-Beta"] = "responses=experimental";
   if (options.attestation !== undefined && options.attestation.length > 0)
     headers["x-oai-attestation"] = options.attestation;
   if (options.residency !== undefined && options.residency.length > 0)
     headers["x-openai-internal-codex-residency"] = options.residency;
   if (options.sessionId !== undefined && options.sessionId.length > 0) {
     headers["session-id"] = options.sessionId;
-    headers["x-client-request-id"] = options.sessionId;
-    if (
-      options.conversationId === undefined ||
-      options.conversationId.length === 0
-    ) {
-      headers["conversation-id"] = options.sessionId;
-    }
   }
-  if (options.threadId !== undefined && options.threadId.length > 0)
+  if (options.threadId !== undefined && options.threadId.length > 0) {
     headers["thread-id"] = options.threadId;
+    headers["x-client-request-id"] = options.threadId;
+  }
   if (options.windowId !== undefined && options.windowId.length > 0)
     headers["x-codex-window-id"] = options.windowId;
-  if (options.turnId !== undefined && options.turnId.length > 0)
-    headers["turn-id"] = options.turnId;
-  if (options.parentTurnId !== undefined && options.parentTurnId.length > 0)
-    headers["parent-turn-id"] = options.parentTurnId;
-  if (options.conversationId !== undefined && options.conversationId.length > 0)
-    headers["conversation-id"] = options.conversationId;
-  if (
-    options.installationId !== undefined &&
-    options.installationId.length > 0
-  ) {
-    headers["x-codex-installation-id"] = options.installationId;
-  }
   if (
     options.turnMetadataJson !== undefined &&
     options.turnMetadataJson.length > 0
@@ -99,12 +88,6 @@ export function buildCodexIdentityHeaders(
   if (options.turnState !== undefined && options.turnState.length > 0) {
     headers["x-codex-turn-state"] = options.turnState;
   }
-  if (options.modelsEtag !== undefined && options.modelsEtag.length > 0) {
-    headers["x-models-etag"] = options.modelsEtag;
-  }
-  if (options.routingHint !== undefined && options.routingHint.length > 0) {
-    headers["x-codex-routing-hint"] = options.routingHint;
-  }
   return headers;
 }
 
@@ -118,6 +101,7 @@ export function createCodexRequestMetadata(args: {
   windowId: string;
   turnId: string;
   parentTurnId?: string;
+  subAgent?: string;
   requestKind?: string;
   turnStartedAtUnixMs?: number;
   compaction?: Record<string, unknown>;
@@ -150,6 +134,8 @@ export function createCodexRequestMetadata(args: {
   };
   if (args.parentTurnId !== undefined && args.parentTurnId.length > 0)
     clientMetadata["parent_turn_id"] = args.parentTurnId;
+  if (args.subAgent !== undefined && args.subAgent.length > 0)
+    clientMetadata["x-openai-subagent"] = args.subAgent;
   clientMetadata["x-codex-turn-metadata"] = turnMetadataJson;
   return { clientMetadata, turnMetadataJson };
 }
