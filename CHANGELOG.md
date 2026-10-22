@@ -42,6 +42,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   faithful result frame (grep, ls, subagent, …) and host calls to tools the
   client never declared keep the explicit refusal.
 
+### Fixed — usage telemetry
+
+- **The Usage page no longer reports zero, and no longer loses its history.**
+  Request events were written to a file per 15-minute window — 96 a day — and
+  a periodic job folded those into a per-day summary and deleted the source
+  files. Which of them was still being written was guessed by comparing file
+  names, and that guess was wrong often enough to fold and unlink a file the
+  writer was still appending to. Its requests never reached the summary, so an
+  install could show no traffic at all while serving it.
+
+  Events now append to one file per UTC day, `<day>.events.jsonl`, which is
+  never rewritten or removed while the day is open. Beside it,
+  `<day>.index.json` carries the totals, the per-name breakdown, per-hour
+  slots for the chart, and a byte watermark of how much of the event file has
+  been counted. Progress is tracked by that offset, not by name, so there is
+  nothing left to guess.
+
+- **Usage, breakdown, and the traffic chart read the index instead of the
+  requests.** A read used to parse every file in the period and filter in
+  memory, so its cost grew with traffic. It is now a few small JSON reads.
+  The request list and the detail drawer still read the events, and do so
+  backwards from the end of the file, so a page of the newest rows no longer
+  parses the whole day.
+
+  Totals are accumulated, never averaged — a period that reported 2B input
+  tokens still reports 2B. Folding runs on read as well as on schedule, so a
+  request made moments ago appears immediately; folding twice is harmless
+  because it is a sum.
+
+- **Costs are summed as numbers.** Costs arrive as strings from `numeric`
+  columns and from restored rows, and adding one to a number concatenates
+  instead of summing — three requests produced `000.0009660.0010320.001008`,
+  which the console rendered as an empty cost. Both accumulation points now
+  coerce.
+
+- **Per-key daily and monthly token limits read the current totals again.**
+  They were reading the old per-day summary format, which nothing writes any
+  more, so a key that had already spent was admitted as if it had spent
+  nothing. They read the index now.
+
+- **Retention deletes whole days**, taking the event file and its index
+  together. Removing one without the other was a trap: an index with no events
+  reports totals for requests that are gone, and events with no index are
+  invisible to every usage read.
+
 ## [2.5.3] - 2026-10-21
 
 ### Fixed — performance

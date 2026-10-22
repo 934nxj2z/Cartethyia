@@ -129,18 +129,37 @@ threshold; a missing reading remains unknown rather than exhausted. See
 
 ```mermaid
 flowchart LR
-  req["request"] --> file["data/telemetry-events/*.jsonl"]
-  req --> totals["telemetry_usage_totals"]
-  req --> payload["telemetry_payloads index"]
-  payload --> frames["payload frame files"]
-  console["console reads"] --> file
+  req[\"request\"] --> file[\"data/telemetry-events/<day>.events.jsonl\"]
+  file --> index[\"data/telemetry-events/<day>.index.json\"]
+  req --> totals[\"telemetry_usage_totals\"]
+  req --> payload[\"telemetry_payloads index\"]
+  payload --> frames[\"payload frame files\"]
+  console[\"usage, breakdown, chart\"] --> index
+  console[\"request list, detail\"] --> file
   console --> totals
 ```
 
-Per-request events are hourly JSONL files, not rows in `telemetry_events`. The
-database keeps lifetime totals and a short-lived payload index. Payload bodies
-are files. The index stores `storage`, `file`, `offset`, `length`, `checksum`,
-and `version`.
+Per-request events are appended to one file per UTC day —
+`<YYYY-MM-DD>.events.jsonl` — not rows in `telemetry_events`. The day file is
+append-only and is never rewritten while the day is open.
+
+Beside it, `<YYYY-MM-DD>.index.json` carries the running totals, the per-name
+breakdown sums, per-hour slots, and a byte watermark of how much of the event
+file has been folded in. Usage totals, the breakdown, and the traffic chart
+read **the index**; only the request list and the detail drawer read the event
+file, and they read backwards from its tail in blocks. A usage query therefore
+costs a few small JSON reads rather than a parse of the whole period, and its
+cost does not grow with traffic.
+
+Folding is incremental and idempotent, driven by the watermark rather than by
+comparing file names. An unterminated line — one the writer may still be
+appending to — is left for the next pass instead of counted.
+
+Retention deletes whole days, the event file and its index together.
+
+The database keeps lifetime totals and a short-lived payload index. Payload
+bodies are files. The payload index stores `storage`, `file`, `offset`,
+`length`, `checksum`, and `version`.
 
 Two database modes share one schema:
 
