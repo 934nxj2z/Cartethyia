@@ -153,6 +153,18 @@ function emptyDimension(): IndexedDimension {
   };
 }
 
+/**
+ * A cost as a number.
+ *
+ * Costs arrive as strings from `numeric` columns and from restored rows, and
+ * `0 + "0.000966"` concatenates rather than sums. Coerced once, here, so the
+ * per-name breakdown cannot accumulate a string the way it did.
+ */
+function numericCost(value: unknown): number {
+  const asNumber = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(asNumber) ? asNumber : 0;
+}
+
 /** Folds one event into one named dimension entry. */
 function foldDimension(
   into: Readonly<Record<string, IndexedDimension>> | undefined,
@@ -170,7 +182,7 @@ function foldDimension(
     cachedTokens: prior.cachedTokens + (event.cachedInputTokens ?? 0),
     outputTokens: prior.outputTokens + (event.outputTokens ?? 0),
     errors: prior.errors + failed,
-    estimatedCostUsd: prior.estimatedCostUsd + (event.estimatedCostUsd ?? 0),
+    estimatedCostUsd: prior.estimatedCostUsd + numericCost(event.estimatedCostUsd),
     tokensPerSecSum: prior.tokensPerSecSum + (event.tokensPerSec ?? 0),
     tokensPerSecCount: prior.tokensPerSecCount + (event.tokensPerSec === null ? 0 : 1),
   };

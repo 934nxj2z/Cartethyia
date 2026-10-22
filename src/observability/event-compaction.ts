@@ -131,6 +131,12 @@ export interface CompactedRow extends CompactedBucket {
 
 const mergeBuckets = mergeBucketsInternal;
 
+/** A number from a value that may be a numeric string; 0 when unusable. */
+function numeric(value: unknown): number {
+  const asNumber = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(asNumber) ? asNumber : 0;
+}
+
 /** Adds one occurrence to a count map, ignoring an absent key. */
 function bump(
   counts: Readonly<Record<string, number>> | undefined,
@@ -204,7 +210,11 @@ export function accumulate(
   if (latency !== null && Number.isFinite(latency)) {
     histogram[bucketIndex(latency)] = (histogram[bucketIndex(latency)] ?? 0) + 1;
   }
-  const priced = event.estimatedCostUsd ?? 0;
+  // A cost can arrive as a string: Postgres `numeric` columns come back that
+  // way, and so do restored rows. Adding one to a number concatenates instead of
+  // summing, which turned a cost of 0.000966 into "00.000966". Coerced here so
+  // every downstream sum is arithmetic.
+  const priced = numeric(event.estimatedCostUsd);
   return {
     byModel: bump(into.byModel, event.requestedModel ?? event.reportedModel),
     byProvider: bump(into.byProvider, event.providerId),
