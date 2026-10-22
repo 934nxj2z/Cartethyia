@@ -49,22 +49,6 @@ const SHARED_KEYS: readonly string[] = [
   "sharedCredit",
 ];
 
-/** Sums one numeric field across the given quota objects. */
-function sumField(
-  sources: readonly Record<string, unknown>[],
-  key: string,
-): number | null {
-  let total = 0;
-  let seen = false;
-  for (const source of sources) {
-    const value = number(source[key]);
-    if (value === null) continue;
-    total += value;
-    seen = true;
-  }
-  return seen ? total : null;
-}
-
 /**
  * Whether a shared pool is usable.
  *
@@ -141,8 +125,6 @@ export async function fetchQoderQuota(
     (value): value is Record<string, unknown> => value !== null,
   );
 
-  const remaining = sumField(owned, "remaining");
-  const total = sumField(owned, "total");
   const bothMissing = owned.length === 0;
   // A live account on the free tier really does answer `userQuota` all zeroes
   // with `isQuotaExceeded: true` — verified against a real credential:

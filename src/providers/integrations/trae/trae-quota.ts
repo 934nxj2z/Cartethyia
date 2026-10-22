@@ -98,9 +98,16 @@ function quotaAuth(context: QuotaCollectionContext | undefined): TraeQuotaAuth {
 function uidFromToken(credential: string): string | undefined {
   const payload = decodeJwtPayload(credential);
   if (!payload) return undefined;
-  for (const key of ["userId", "user_id", "uid", "sub"] as const) {
-    const value = payload[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+  // The id is nested: this token's payload is `{data:{id,type,tenant_id},exp,
+  // iat}` — there is no `sub` and no top-level `userId`, so a flat read found
+  // nothing and the request went out with no device identity at all.
+  for (const source of [payload, record(payload["data"])]) {
+    if (!source) continue;
+    for (const key of ["userId", "user_id", "uid", "sub", "id"] as const) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    }
   }
   return undefined;
 }
