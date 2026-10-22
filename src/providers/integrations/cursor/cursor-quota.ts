@@ -105,7 +105,14 @@ function parseLegacyUsage(payload: unknown): readonly ProviderQuotaWindow[] {
     const bucket = record(value);
     if (!bucket) continue;
     const window = centsWindow(`cursor:requests:${key.toLowerCase()}`, `${key} requests`, bucket, reset);
-    if (window) windows.push(window);
+    if (!window) continue;
+    // A bucket with no cap and nothing used is not a balance. Usage-based plans
+    // answer this surface with `gpt-4: {numRequests: 0, maxRequestUsage: null}`
+    // while their real spend sits on the summary — showing the empty row put a
+    // meaningless "gpt-4 requests" window above the number that matters, on
+    // exactly the accounts denominated in dollars.
+    if (window.limit === null && (window.used ?? 0) === 0) continue;
+    windows.push(window);
   }
   return windows;
 }
@@ -159,6 +166,28 @@ function authStateUserId(context: QuotaCollectionContext | undefined): string | 
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;
+}
+
+/**
+ * A stable display identity derived from the credential.
+ *
+ * Cursor's access token carries the account's real subject
+ * (`google-oauth2|user_01K3...`), and that was being shown as the account
+ * label — an identity, not a name. It is reduced to a short opaque tag here so
+ * the console can tell two Cursor accounts apart without publishing either
+ * one's subject.
+ *
+ * Derived rather than random, so the same account keeps the same tag across
+ * refreshes; a tag that changed every read would be worse than the identity it
+ * replaced.
+ */
+function cursorAccountTag(credential: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < credential.length; index += 1) {
+    hash ^= credential.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `cursor-${hash.toString(36).padStart(7, "0").slice(0, 7)}`;
 }
 
 export async function fetchCursorQuota(
@@ -218,6 +247,7 @@ export async function fetchCursorQuota(
       source: "cursor",
       plan: summary?.plan ?? null,
       windows: [],
+      accountLabel: cursorAccountTag(credential),
       error: errors.join("; ") || "Cursor quota endpoints did not answer.",
     };
   }
@@ -225,6 +255,7 @@ export async function fetchCursorQuota(
     source: "cursor",
     plan: summary?.plan ?? null,
     windows,
+    accountLabel: cursorAccountTag(credential),
     // Partial reads keep the error so the console can name the quiet surface,
     // but a summary that answered is enough to report a balance.
     error: summaryWindows.length > 0 && errors.length > 0 ? errors.join("; ") : null,

@@ -241,3 +241,42 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(result.error).toBeNull();
   });
 });
+
+describe("Cursor — the legacy bucket and the account identity", () => {
+  test("an empty legacy bucket is not shown as a window", async () => {
+    // Usage-based plans answer `/auth/usage` with `gpt-4: {numRequests: 0,
+    // maxRequestUsage: null}` while their real spend sits on the summary. The
+    // empty row was shown above the number that mattered.
+    const fetcher = routedFetcher([
+      [
+        "usage-summary",
+        jsonResponse({ individualUsage: { overall: { limit: 2000, used: 500 }, planName: "Pro" } }),
+      ],
+      ["/auth/usage", jsonResponse({ "gpt-4": { numRequests: 0, maxRequestUsage: null } })],
+    ]);
+
+    const result = await fetchCursorQuota(tokenWithSubject("google-oauth2|user_01ABC"), fetcher, {
+      credential_kind: "oauth",
+    });
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.label).not.toContain("gpt-4");
+  });
+
+  test("the account identity is reduced to an opaque tag", () => {
+    // The access token's subject is a real identity; showing it as the account
+    // label published it. The tag is derived, so one account keeps one tag.
+    const fetcher = routedFetcher([
+      [
+        "usage-summary",
+        jsonResponse({ individualUsage: { overall: { limit: 2000, used: 500 } } }),
+      ],
+    ]);
+    return fetchCursorQuota(tokenWithSubject("google-oauth2|user_01ABC"), fetcher, {
+      credential_kind: "oauth",
+    }).then((result) => {
+      expect(result.accountLabel).toMatch(/^cursor-[a-z0-9]+$/);
+      expect(result.accountLabel).not.toContain("google-oauth2");
+    });
+  });
+});
