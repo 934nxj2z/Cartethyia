@@ -9,6 +9,7 @@ import {
   isRelayTarget,
   type RelayDeployRequest,
 } from "./relay-deploy";
+import { parseProxyFile } from "./import-parse";
 import { SPEED_TEST_MAX_BYTES, SPEED_TEST_MIN_BYTES } from "./speed-test-sizes";
 import {
   MAX_BATCH_PROBE_TARGETS,
@@ -152,6 +153,47 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
         await config.snapshotInvalidator?.invalidate();
         return saved;
       },
+    async importPools(
+      access: AccessDecision | undefined,
+      request: {
+        readonly content: string;
+        readonly maxInflight?: number | undefined;
+        readonly weight?: number | undefined;
+        readonly family?: string | null | undefined;
+        readonly labelPrefix?: string | undefined;
+      },
+    ): Promise<{ created: number; skipped: readonly { line: number; reason: string }[] }> {
+      const a = requireTenantScope(access, "dashboard:write");
+      const parsed = parseProxyFile(request.content);
+      const skipped = [...parsed.skipped];
+      let created = 0;
+      for (const [index, row] of parsed.rows.entries()) {
+        try {
+          await operations.createPool(a, {
+            kind: row.kind,
+            endpoint: row.endpoint,
+            ...(row.credential === null ? {} : { credential: row.credential }),
+            ...(request.maxInflight === undefined ? {} : { maxInflight: request.maxInflight }),
+            ...(request.weight === undefined ? {} : { weight: request.weight }),
+            ...(request.family === undefined ? {} : { family: request.family }),
+            ...(row.label !== null
+              ? { label: row.label }
+              : request.labelPrefix
+                ? { label: `${request.labelPrefix} ${index + 1}` }
+                : {}),
+          });
+          created += 1;
+        } catch (error) {
+          // One bad node must not abort the list: the rest are still worth
+          // having, and the reason is reported against its own line.
+          skipped.push({
+            line: index + 1,
+            reason: error instanceof Error ? error.message.slice(0, 160) : "rejected",
+          });
+        }
+      }
+      return { created, skipped };
+    },
     async createPool(
         access: AccessDecision | undefined,
         request: CreateNetworkPoolRequest,
