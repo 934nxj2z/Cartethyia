@@ -39,7 +39,11 @@ export const GROK_FREE_USAGE_EXHAUSTED = "subscription:free-usage-exhausted";
 
 /** Kinds, so the view can tell an indicator from a verdict. */
 export const GROK_HEADER_WINDOW_KIND = "grok:cli-header";
+export const GROK_HEADER_REQUESTS_WINDOW_KIND = "grok:cli-header-requests";
 export const GROK_AUTHORITATIVE_WINDOW_KIND = "grok:free-usage-authoritative";
+
+/** The per-minute request cap the CLI plane applies. */
+const REQUEST_WINDOW_LIMIT = 21;
 
 /** One reading of the CLI token bucket. */
 export interface GrokRateLimitReading {
@@ -99,11 +103,33 @@ export function grokHeaderWindow(reading: GrokRateLimitReading): ProviderQuotaWi
       : null;
   return percentWindow(
     GROK_HEADER_WINDOW_KIND,
-    "CLI token bucket (header)",
+    "Rate limit token (header)",
     null,
     reading.resetsAt,
     used,
     reading.limitTokens,
+    "independent",
+  );
+}
+
+/**
+ * The request bucket as its own window.
+ *
+ * Separate from the token bucket on purpose: `x-ratelimit-remaining-requests`
+ * is a per-minute cap (21) with no token equivalent, and folding it into the
+ * token window produced one number that described neither budget.
+ */
+export function grokHeaderRequestsWindow(
+  reading: GrokRateLimitReading,
+): ProviderQuotaWindow | null {
+  if (reading.remainingRequests === null) return null;
+  return percentWindow(
+    GROK_HEADER_REQUESTS_WINDOW_KIND,
+    "Rate limit request (header)",
+    null,
+    reading.resetsAt,
+    REQUEST_WINDOW_LIMIT - reading.remainingRequests,
+    REQUEST_WINDOW_LIMIT,
     "independent",
   );
 }
@@ -170,8 +196,10 @@ export function grokAuthoritativeWindow(verdict: GrokFreeUsageVerdict): Provider
 
 /** One probe's two readings: the coarse header and the authoritative refusal. */
 export interface GrokRateLimitProbe {
-  /** The CLI bucket from the response headers, or `null` if it carried none. */
+  /** The CLI token bucket from the response headers. */
   readonly header: ProviderQuotaWindow | null;
+  /** The per-minute request bucket, which has no token equivalent. */
+  readonly requests: ProviderQuotaWindow | null;
   /** The free-usage allowance from a 429 body, or `null` when not refused. */
   readonly authoritative: ProviderQuotaWindow | null;
   /** Whether upstream refused the probe at all. */

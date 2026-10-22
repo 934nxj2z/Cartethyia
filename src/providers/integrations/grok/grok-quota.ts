@@ -4,6 +4,7 @@ import { buildGrokAuthUserAgent, getGrokVersion } from "../../operations/client-
 import { decodeGrokCreditsFrame } from "./grok-quota-frame";
 import {
   grokAuthoritativeWindow,
+  grokHeaderRequestsWindow,
   grokHeaderWindow,
   GROK_FREE_USAGE_EXHAUSTED,
   parseGrokFreeUsageVerdict,
@@ -198,9 +199,15 @@ async function probeRateLimit(
       // failure must not read as an exhausted allowance.
       await response.text();
     }
-    return { header: grokHeaderWindow(reading), authoritative, refusal: response.status === 429, note };
+    return {
+      header: grokHeaderWindow(reading),
+      requests: grokHeaderRequestsWindow(reading),
+      authoritative,
+      refusal: response.status === 429,
+      note,
+    };
   } catch {
-    return { header: null, authoritative: null, refusal: false, note: null };
+    return { header: null, requests: null, authoritative: null, refusal: false, note: null };
   }
 }
 
@@ -255,8 +262,11 @@ export async function fetchGrokQuota(
     : storedGrokRateLimit(context.accountId);
   const probe = stored ? null : await probeRateLimit(accessToken, fetcher);
   const ordered: ProviderQuotaWindow[] = [];
-  if (stored) ordered.push(stored);
-  else if (probe?.header) ordered.push(probe.header);
+  if (stored) ordered.push(...stored);
+  else if (probe) {
+    if (probe.header) ordered.push(probe.header);
+    if (probe.requests) ordered.push(probe.requests);
+  }
   ordered.push(...windows);
   if (probe?.authoritative) ordered.push(probe.authoritative);
   // Deliberately not `probe.note` in `error`: a refusal here is the probe's own

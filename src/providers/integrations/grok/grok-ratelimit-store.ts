@@ -13,7 +13,7 @@
 // filed against the wrong one is worse than no reading at all.
 
 import type { ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { grokHeaderWindow, type GrokRateLimitReading } from "./grok-ratelimit";
+import { grokHeaderRequestsWindow, grokHeaderWindow, type GrokRateLimitReading } from "./grok-ratelimit";
 
 /**
  * How long a stored reading stays useful.
@@ -26,7 +26,7 @@ import { grokHeaderWindow, type GrokRateLimitReading } from "./grok-ratelimit";
 const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 
 interface Snapshot {
-  readonly window: ProviderQuotaWindow;
+  readonly windows: readonly ProviderQuotaWindow[];
   readonly capturedAt: number;
 }
 
@@ -38,9 +38,11 @@ export function rememberGrokRateLimit(
   reading: GrokRateLimitReading,
   now = Date.now(),
 ): void {
-  const window = grokHeaderWindow(reading);
-  if (!window) return;
-  snapshots.set(accountId, { window, capturedAt: now });
+  const windows = [grokHeaderWindow(reading), grokHeaderRequestsWindow(reading)].filter(
+    (value): value is ProviderQuotaWindow => value !== null,
+  );
+  if (windows.length === 0) return;
+  snapshots.set(accountId, { windows, capturedAt: now });
   if (snapshots.size > 4096) {
     // Bounded: an unbounded map keyed by account is a leak dressed as a cache.
     for (const [key, value] of snapshots) {
@@ -50,14 +52,14 @@ export function rememberGrokRateLimit(
 }
 
 /** The stored window for one account, or `null` when none is fresh enough. */
-export function storedGrokRateLimit(accountId: string, now = Date.now()): ProviderQuotaWindow | null {
+export function storedGrokRateLimit(accountId: string, now = Date.now()): readonly ProviderQuotaWindow[] | null {
   const snapshot = snapshots.get(accountId);
   if (!snapshot) return null;
   if (now - snapshot.capturedAt > SNAPSHOT_TTL_MS) {
     snapshots.delete(accountId);
     return null;
   }
-  return snapshot.window;
+  return snapshot.windows;
 }
 
 /** Whether a fresh reading exists, so the collector can skip its probe. */
