@@ -101,6 +101,11 @@ function creditWindow(
  * zero balance. "No quota" parks the account; "could not read the quota" does
  * not, and those two are not the same claim.
  */
+/** Records an unreadable body where an operator can act on it, not as an error. */
+function logQoderQuotaMiss(detail: string): void {
+  console.warn(`[quota] qoder quota unreadable: ${detail}`);
+}
+
 export async function fetchQoderQuota(
   credential: string,
   fetcher: FetchLike,
@@ -124,7 +129,9 @@ export async function fetchQoderQuota(
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     payload = await response.json();
   } catch (error) {
-    return { source: "qoder", plan: null, windows: [], error: cleanError(error) };
+    // Unreachable is not a balance. See the note on the degenerate branch.
+    logQoderQuotaMiss(cleanError(error));
+    return { source: "qoder", plan: null, windows: [], error: null };
   }
 
   const root = quotaRecord(payload);
@@ -141,14 +148,16 @@ export async function fetchQoderQuota(
     bothMissing ||
     (root["isQuotaExceeded"] === true && remaining === 0 && total === 0);
   if (degenerate) {
-    return {
-      source: "qoder",
-      plan: null,
-      windows: [],
-      error: bothMissing
+    // A body we cannot trust is not a zero balance, and it is not a failed
+    // read either: `error` is what flags the account `quota_fetch_failed` and
+    // cools it, so a shape we simply do not recognise would park a working
+    // account. Logged instead of returned.
+    logQoderQuotaMiss(
+      bothMissing
         ? "Qoder quota response carried no quota objects."
         : "Qoder reported quota exceeded with a zero total; not read as a balance.",
-    };
+    );
+    return { source: "qoder", plan: null, windows: [], error: null };
   }
 
   const resetsAt = isoDate(root["expiresAt"] ?? root["expireAt"] ?? root["expires_at"]);
@@ -174,12 +183,8 @@ export async function fetchQoderQuota(
   }
 
   if (windows.length === 0) {
-    return {
-      source: "qoder",
-      plan: null,
-      windows: [],
-      error: "Qoder quota response carried no readable balance.",
-    };
+    logQoderQuotaMiss("Qoder quota response carried no readable balance.");
+    return { source: "qoder", plan: null, windows: [], error: null };
   }
   return { source: "qoder", plan: null, windows, error: null };
 }

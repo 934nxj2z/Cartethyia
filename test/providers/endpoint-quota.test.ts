@@ -151,7 +151,9 @@ describe("Trae quota — the two surfaces are independent", () => {
     });
 
     expect(result.windows.length).toBeGreaterThan(0);
-    expect(result.error).toContain("entitlement");
+    // The quiet surface is logged, not returned: `error` is what flags the
+    // account quota_fetch_failed and cools it.
+    expect(result.error).toBeNull();
   });
 
   test("both surfaces dead is a read failure, not a zero balance", async () => {
@@ -161,7 +163,9 @@ describe("Trae quota — the two surfaces are independent", () => {
     });
 
     expect(result.windows).toHaveLength(0);
-    expect(result.error).not.toBeNull();
+    // No windows and no error: an unreachable surface is not evidence about
+    // the account, and must not cool it.
+    expect(result.error).toBeNull();
   });
 });
 
@@ -204,7 +208,7 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(shared?.limit).toBe(2500);
   });
 
-  test("a degenerate body is reported as a read failure", async () => {
+  test("a degenerate body yields no balance and no error", async () => {
     // `isQuotaExceeded` with a zero total is "this account never had an
     // allowance", not "it spent one". Reporting it as a zero balance parks the
     // account on a reading that says nothing.
@@ -215,10 +219,10 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     const result = await fetchQoderQuota("token", fetcher, {});
 
     expect(result.windows).toHaveLength(0);
-    expect(result.error).not.toBeNull();
+    expect(result.error).toBeNull();
   });
 
-  test("both quota objects missing is a read failure", async () => {
+  test("both quota objects missing yields no balance and no error", async () => {
     const result = await fetchQoderQuota(
       "token",
       routedFetcher([["quota/usage", jsonResponse({ isQuotaExceeded: false })]]),
@@ -226,6 +230,6 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     );
 
     expect(result.windows).toHaveLength(0);
-    expect(result.error).toContain("no quota objects");
+    expect(result.error).toBeNull();
   });
 });

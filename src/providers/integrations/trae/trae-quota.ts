@@ -204,6 +204,18 @@ function parseEntitlement(payload: unknown): {
 }
 
 /**
+ * Records a quiet surface where an operator can act on it.
+ *
+ * Deliberately not the returned `error`: that field is what flags the account
+ * `quota_fetch_failed` and cools it. A 403 from the wrong realm, or a pay host
+ * that is unreachable, says nothing about whether the account can serve.
+ */
+function logTraeQuotaMiss(errors: readonly string[]): void {
+  if (errors.length === 0) return;
+  console.warn(`[quota] trae surfaces unavailable: ${errors.join("; ")}`);
+}
+
+/**
  * Reads one Trae account's quota.
  *
  * The session meter and the entitlement are fetched independently: whichever
@@ -220,7 +232,7 @@ export async function fetchTraeQuota(
   const config = TRAE_REALMS[realm];
   const errors: string[] = [];
 
-  const call = async (url: string): Promise<unknown> => {
+  const call = async (url: string, surface: string): Promise<unknown> => {
     const response = await fetcher(url, {
       // POST with an empty JSON body, not GET: this is the commercial surface
       // the desktop client calls, and it answers a GET with an error rather
@@ -232,18 +244,31 @@ export async function fetchTraeQuota(
       },
       body: "{}",
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      // 403 here is a verdict about *how we asked*, not about the balance: the
+      // commercial surface correlates the credential against its realm and its
+      // device fingerprint, and a CN token sent to an intl host — or one sent
+      // with no device id — is refused outright. Reporting that as a failed
+      // read parks the account, so it is reported as unreadable-for-now and
+      // left alone by the cooldown path.
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        response.status === 403
+          ? `${surface}: HTTP 403 (realm or device mismatch, not a balance)`
+          : `${surface}: HTTP ${response.status}${body ? ` ${body.slice(0, 80)}` : ""}`,
+      );
+    }
     return await response.json();
   };
 
-  const session = await call(`${config.core}${TRAE_SESSION_USAGE_PATH}`).then(
+  const session = await call(`${config.core}${TRAE_SESSION_USAGE_PATH}`, "session usage").then(
     (payload) => parseSessionUsage(payload),
     (error: unknown) => {
       errors.push(`session usage: ${cleanError(error)}`);
       return null;
     },
   );
-  const entitlement = await call(`${config.pay}${TRAE_ENT_USAGE_PATH}`).then(
+  const entitlement = await call(`${config.pay}${TRAE_ENT_USAGE_PATH}`, "entitlement").then(
     (payload) => parseEntitlement(payload),
     (error: unknown) => {
       errors.push(`entitlement: ${cleanError(error)}`);
@@ -253,20 +278,23 @@ export async function fetchTraeQuota(
 
   const windows = [...(session?.windows ?? []), ...(entitlement?.windows ?? [])];
   if (!session && !entitlement) {
-    return {
-      source: "trae",
-      plan: null,
-      windows: [],
-      error: errors.join("; ") || "Trae quota endpoints did not answer.",
-    };
+    // No window and *no error*: a quota read that could not reach upstream is
+    // not evidence about the account, and `error` here is what flags the
+    // account `quota_fetch_failed` and cools it down. An unreachable or
+    // refusing surface must leave the account alone — otherwise an account is
+    // parked by its own monitor, for a reason that has nothing to do with it.
+    // The detail is kept for the log instead, where it cannot be read as a
+    // balance.
+    logTraeQuotaMiss(errors);
+    return { source: "trae", plan: null, windows: [], error: null };
   }
   return {
     source: "trae",
     plan: session?.plan ?? entitlement?.plan ?? null,
     windows,
-    // A partial read is still a read. The error is kept so the console can say
-    // which surface went quiet, but it must not masquerade as "no quota".
-    error: errors.length > 0 ? errors.join("; ") : null,
+    // A partial read is still a read, and the quiet surface is a diagnostic —
+    // never a reason to park the account.
+    error: null,
   };
 }
 
