@@ -1,23 +1,30 @@
 /**
- * Source windows: when a file is folded, and when it is not.
+ * The day index: what gets counted, and what does not.
  *
- * The safety rule is the one that matters. A window's file is appended to until
- * the window closes, so folding — and then deleting — the open one would drop
- * every event written afterwards. The sweep runs every `windowMinutes`, so on
- * each pass exactly the window that just closed is eligible.
+ * Two properties matter. A fold is idempotent — running it twice must not
+ * double a total, because folding is the only thing keeping the index in step
+ * with an append-only file. And an unterminated line is not yet an event, so a
+ * writer still appending must not have its partial row counted.
  *
- * Compacted files are never folded or deleted by a fold: they hold the totals
- * the usage page reads, and only the retention window removes them.
+ * Both are the reason the index tracks a byte offset rather than inferring
+ * which file is open from its name, which is what let the old scheme delete a
+ * file mid-write and lose its requests.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { compactTelemetryFiles, compactedFileName } from "../../src/observability/event-compaction";
-import { TELEMETRY_EVENT_DIR, windowFileName } from "../../src/observability/event-log";
-import { queryCompactedRows } from "../../src/observability/event-log";
+import {
+  dayEventFileName,
+  dayIndexFileName,
+  foldDayIndex,
+  listEventDays,
+  queryIndexedBuckets,
+  readDayIndex,
+  utcDay,
+} from "../../src/observability/event-day-index";
+import { TELEMETRY_EVENT_DIR } from "../../src/observability/event-log";
 
-const WINDOW = 15;
-const AT = new Date("2026-10-22T05:40:00.000Z");
+const DAY = "2026-10-22";
 
 async function reset(): Promise<void> {
   for (const name of await readdir(TELEMETRY_EVENT_DIR).catch(() => [])) {
@@ -29,143 +36,154 @@ async function reset(): Promise<void> {
 beforeEach(reset);
 afterEach(reset);
 
+let sequence = 0;
+
 function event(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  sequence += 1;
   return {
-    requestId: "r-1",
+    id: `id-${sequence}`,
+    requestId: `r-${sequence}`,
     tenantId: "tenant-1",
     apiKeyId: "key-1",
-    createdAt: AT.toISOString(),
-    status: "success",
-    model: "m",
+    createdAt: "2026-10-22T05:40:00.000Z",
+    status: "completed",
+    requestedModel: "m",
     providerId: "p",
+    sourceSurface: "chat",
+    clientIp: "127.0.0.1",
     inputTokens: 100,
     outputTokens: 10,
+    cachedInputTokens: 0,
+    latencyMs: 50,
+    estimatedCostUsd: 0.01,
     ...overrides,
   };
 }
 
-async function writeWindow(file: string, events: readonly Record<string, unknown>[]): Promise<void> {
-  await writeFile(
-    join(TELEMETRY_EVENT_DIR, file),
-    `${events.map((e) => JSON.stringify(e)).join("\n")}\n`,
-    "utf8",
-  );
+async function append(body: string): Promise<void> {
+  await appendFile(join(TELEMETRY_EVENT_DIR, dayEventFileName(DAY)), body, "utf8");
 }
 
-describe("window naming", () => {
-  test("a window name is the bucket start, floored to the window", () => {
-    // 05:40 in a 15-minute window belongs to the 05:30 bucket.
-    expect(windowFileName(AT, WINDOW)).toBe("2026-10-22T05-30.jsonl");
+async function totals(): Promise<{ requests: number; input: number }> {
+  const buckets = await queryIndexedBuckets({ tenantId: "tenant-1" });
+  return {
+    requests: buckets.reduce((sum, bucket) => sum + bucket.requests, 0),
+    input: buckets.reduce((sum, bucket) => sum + bucket.inputTokens, 0),
+  };
+}
+
+describe("day file naming", () => {
+  test("a moment maps to its UTC day", () => {
+    expect(utcDay(new Date("2026-10-22T23:59:59.000Z"))).toBe("2026-10-22");
+    expect(utcDay(new Date("2026-10-23T00:00:00.000Z"))).toBe("2026-10-23");
   });
 
-  test("both ends of a window land in the same file", () => {
-    const start = windowFileName(new Date("2026-10-22T05:30:00Z"), WINDOW);
-    const end = windowFileName(new Date("2026-10-22T05:44:59Z"), WINDOW);
-    expect(start).toBe(end);
-  });
-
-  test("the next window gets its own file", () => {
-    const a = windowFileName(new Date("2026-10-22T05:44:59Z"), WINDOW);
-    const b = windowFileName(new Date("2026-10-22T05:45:00Z"), WINDOW);
-    expect(a).not.toBe(b);
+  test("the event and index files are named from the day", () => {
+    expect(dayEventFileName(DAY)).toBe("2026-10-22.events.jsonl");
+    expect(dayIndexFileName(DAY)).toBe("2026-10-22.index.json");
   });
 });
 
 describe("folding", () => {
-  test("the open window is left alone", async () => {
-    // The load-bearing case: this file is still being appended to. Folding and
-    // deleting it would lose every event written after the fold.
-    const open = windowFileName(AT, WINDOW);
-    await writeWindow(open, [event({ inputTokens: 100 })]);
-
-    const result = await compactTelemetryFiles({ windowMinutes: WINDOW, now: AT });
-    expect(result.filesCompacted).toBe(0);
-    expect(await readdir(TELEMETRY_EVENT_DIR)).toContain(open);
+  test("the day's events are counted", async () => {
+    await append(`${JSON.stringify(event())}\n${JSON.stringify(event({ inputTokens: 250 }))}\n`);
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 2 });
+    expect(await totals()).toEqual({ requests: 2, input: 350 });
   });
 
-  test("a closed window is folded and its file removed", async () => {
-    const closed = windowFileName(new Date("2026-10-22T05:20:00Z"), WINDOW);
-    await writeWindow(closed, [event({ inputTokens: 100 })]);
-
-    const result = await compactTelemetryFiles({ windowMinutes: WINDOW, now: AT });
-    expect(result.filesCompacted).toBe(1);
-    expect(await readdir(TELEMETRY_EVENT_DIR)).not.toContain(closed);
-
-    const rows = await queryCompactedRows({ tenantId: "tenant-1" });
-    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(100);
+  test("folding twice does not double-count", async () => {
+    // The load-bearing case: the index and the file are reconciled by byte
+    // offset, so a second pass must find nothing left to fold.
+    await append(`${JSON.stringify(event())}\n`);
+    await foldDayIndex(DAY);
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 0 });
+    expect(await totals()).toEqual({ requests: 1, input: 100 });
   });
 
-  test("several closed windows land in one day summary", async () => {
-    // One file per day, however many windows fed it.
-    const day = "2026-10-22";
-    await writeWindow("2026-10-22T05-00.jsonl", [event({ inputTokens: 10 })]);
-    await writeWindow("2026-10-22T05-15.jsonl", [event({ inputTokens: 20 })]);
-    await writeWindow("2026-10-22T05-30.jsonl", [event({ inputTokens: 30 })]);
-
-    // now is inside 05:30, so only the two earlier windows close.
-    await compactTelemetryFiles({ windowMinutes: WINDOW, now: new Date("2026-10-22T05:35:00Z") });
-    const files = await readdir(TELEMETRY_EVENT_DIR);
-    expect(files).toContain(`${day}.compacted.jsonl`);
-    expect(files).toContain("2026-10-22T05-30.jsonl");
-
-    const rows = await queryCompactedRows({ tenantId: "tenant-1" });
-    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(30);
+  test("events appended after a fold are picked up", async () => {
+    await append(`${JSON.stringify(event())}\n`);
+    await foldDayIndex(DAY);
+    await append(`${JSON.stringify(event({ inputTokens: 7 }))}\n`);
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 1 });
+    expect(await totals()).toEqual({ requests: 2, input: 107 });
   });
 
-  test("a later pass adds the next window without double-counting", async () => {
-    await writeWindow("2026-10-22T05-00.jsonl", [event({ inputTokens: 10 })]);
-    await compactTelemetryFiles({ windowMinutes: WINDOW, now: new Date("2026-10-22T05:20:00Z") });
-
-    await writeWindow("2026-10-22T05-15.jsonl", [event({ inputTokens: 25 })]);
-    await compactTelemetryFiles({ windowMinutes: WINDOW, now: new Date("2026-10-22T05:35:00Z") });
-
-    const rows = await queryCompactedRows({ tenantId: "tenant-1" });
-    // 10 + 25, not 10 + 10 + 25: the existing summary is merged, not re-folded.
-    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(35);
+  test("a partially written line is left for the next pass", async () => {
+    // A writer may still be appending; a line without its newline is not an
+    // event yet, and counting it would count a request that does not exist.
+    await append(`${JSON.stringify(event())}\n${JSON.stringify(event({ inputTokens: 999 })).slice(0, 40)}`);
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 1 });
+    expect(await totals()).toEqual({ requests: 1, input: 100 });
   });
 
-  test("compacted files survive a fold", async () => {
-    // They are the totals the usage page reads; only retention removes them.
-    await writeWindow("2026-10-22T05-00.jsonl", [event({ inputTokens: 10 })]);
-    await compactTelemetryFiles({ windowMinutes: WINDOW, now: new Date("2026-10-22T05:20:00Z") });
-    expect(await readdir(TELEMETRY_EVENT_DIR)).toContain(compactedFileName("2026-10-22"));
+  test("the event file is never deleted by a fold", async () => {
+    // Folding replaces the old scheme's fold-and-delete. The file is the record
+    // and outlives any number of folds.
+    await append(`${JSON.stringify(event())}\n`);
+    await foldDayIndex(DAY);
+    await foldDayIndex(DAY);
+    expect(await readdir(TELEMETRY_EVENT_DIR)).toContain(dayEventFileName(DAY));
+  });
 
-    await compactTelemetryFiles({ windowMinutes: WINDOW, now: new Date("2026-10-22T05:50:00Z") });
-    expect(await readdir(TELEMETRY_EVENT_DIR)).toContain(compactedFileName("2026-10-22"));
+  test("a day with no events folds nothing", async () => {
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 0 });
   });
 });
 
-describe("a file that cannot be read in full", () => {
-  test("is kept rather than deleted with its events", async () => {
-    // Folding now runs every window, so a torn file would be removed within
-    // minutes of being written and every event in it lost. A line that does not
-    // parse means the file stays for a later pass.
-    const file = "2026-10-22T05-00.jsonl";
-    const good = JSON.stringify(event({ inputTokens: 100 }));
-    await writeFile(join(TELEMETRY_EVENT_DIR, file), `${good}\n{broken\n`, "utf8");
-
-    const result = await compactTelemetryFiles({
-      windowMinutes: WINDOW,
-      now: new Date("2026-10-22T05:20:00Z"),
-    });
-    // Not counted as folded, so the pass cannot report success over data it
-    // silently dropped.
-    expect(result.filesCompacted).toBe(0);
-    expect(await readdir(TELEMETRY_EVENT_DIR)).toContain(file);
+describe("the index on disk", () => {
+  test("an unreadable index is rebuilt rather than fatal", async () => {
+    await append(`${JSON.stringify(event())}\n`);
+    await writeFile(join(TELEMETRY_EVENT_DIR, dayIndexFileName(DAY)), "{ not json", "utf8");
+    expect(await foldDayIndex(DAY)).toEqual({ folded: 1 });
+    expect(await totals()).toEqual({ requests: 1, input: 100 });
   });
 
-  test("a fully readable file is still folded and removed", async () => {
-    // The counterpart: the guard must not turn into "never delete anything".
-    const file = "2026-10-22T05-00.jsonl";
-    await writeWindow(file, [event({ inputTokens: 100 }), event({ inputTokens: 200 })]);
+  test("the watermark covers only whole lines", async () => {
+    const line = JSON.stringify(event());
+    await append(`${line}\n`);
+    await foldDayIndex(DAY);
+    const index = await readDayIndex(DAY);
+    expect(index.watermarkBytes).toBe(Buffer.byteLength(line, "utf8") + 1);
+    const size = (await readFile(join(TELEMETRY_EVENT_DIR, dayEventFileName(DAY)), "utf8")).length;
+    expect(index.watermarkBytes).toBeLessThanOrEqual(size);
+  });
 
-    const result = await compactTelemetryFiles({
-      windowMinutes: WINDOW,
-      now: new Date("2026-10-22T05:20:00Z"),
-    });
-    expect(result.filesCompacted).toBe(1);
-    expect(await readdir(TELEMETRY_EVENT_DIR)).not.toContain(file);
-    const rows = await queryCompactedRows({ tenantId: "tenant-1" });
-    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(300);
+  test("breakdown dimensions carry tokens, not just counts", async () => {
+    await append(`${JSON.stringify(event({ requestedModel: "grok/grok-4.6" }))}\n`);
+    await foldDayIndex(DAY);
+    const [bucket] = await queryIndexedBuckets({ tenantId: "tenant-1" });
+    expect(bucket?.dimModel["grok/grok-4.6"]).toMatchObject({ requests: 1, inputTokens: 100 });
+    expect(bucket?.dimProvider["p"]).toMatchObject({ requests: 1 });
+  });
+
+  test("costs sum as numbers even when stored as strings", async () => {
+    await append(
+      `${JSON.stringify(event({ estimatedCostUsd: "0.000966" }))}\n` +
+        `${JSON.stringify(event({ estimatedCostUsd: "0.001032" }))}\n`,
+    );
+    await foldDayIndex(DAY);
+    const [bucket] = await queryIndexedBuckets({ tenantId: "tenant-1" });
+    expect(bucket?.estimatedCostUsd).toBeCloseTo(0.001998, 8);
+  });
+
+  test("hours are recorded for the chart", async () => {
+    await append(`${JSON.stringify(event({ createdAt: "2026-10-22T17:00:00.000Z" }))}\n`);
+    await foldDayIndex(DAY);
+    const [bucket] = await queryIndexedBuckets({ tenantId: "tenant-1" });
+    expect(bucket?.hours[17]?.requests).toBe(1);
+    expect(bucket?.hours[3]?.requests).toBe(0);
+  });
+});
+
+describe("discovery", () => {
+  test("the days present are listed", async () => {
+    await append(`${JSON.stringify(event())}\n`);
+    expect(await listEventDays()).toContain(DAY);
+  });
+
+  test("a read can fold first, so a fresh append is not invisible", async () => {
+    await append(`${JSON.stringify(event())}\n`);
+    const buckets = await queryIndexedBuckets({ tenantId: "tenant-1", foldFirst: true });
+    expect(buckets.reduce((sum, bucket) => sum + bucket.requests, 0)).toBe(1);
   });
 });
