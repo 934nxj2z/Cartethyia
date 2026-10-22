@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { resolveUserConfigDir } from "../../src/config/package-paths";
 import { ENV_PATH, readEnvFile } from "./support/env";
 import { MINIMUM_BUN_VERSION, assertBunVersion } from "./support/bun";
-import { printUpdateInstructions } from "./command/update";
+import { printUpdateInstructions, runDetachedUpdate } from "./command/update";
 import { reportTrayStartup } from "./support/startup-signal";
 
 process.env.CARTETHYIA_CONFIG_DIR ??= resolveUserConfigDir();
@@ -67,12 +67,39 @@ async function main(): Promise<void> {
       await startTray();
       return;
     }
+    case "autostart": {
+      const { enableAutostart, disableAutostart, autostartStatus } = await import("./autostart");
+      const arg = Bun.argv[3]?.trim();
+      if (arg === "off" || arg === "disable") {
+        const state = await disableAutostart();
+        console.log(`Autostart disabled (${state.location || state.platform}).`);
+        return;
+      }
+      if (arg === "status") {
+        const state = autostartStatus();
+        console.log(
+          `Autostart: ${state.enabled ? "enabled" : "not enabled"} — ${state.location || state.platform}` +
+            (state.reason ? ` (${state.reason})` : ""),
+        );
+        return;
+      }
+      // The tray is what autostart launches: a gateway alone has no session to
+      // attach to and no icon to show.
+      const state = await enableAutostart(process.execPath, [Bun.argv[1] ?? "carte", "tray"]);
+      console.log(
+        state.enabled
+          ? `Autostart enabled — ${state.location}`
+          : `Autostart not enabled: ${state.reason ?? "unknown reason"}`,
+      );
+      return;
+    }
     case "doctor": {
       const { doctor } = await import("./command/doctor");
       await doctor();
       return;
     }
     case "update":
+      runDetachedUpdate();
       printUpdateInstructions("this install", null);
       return;
     case "--help":
