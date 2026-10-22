@@ -70,14 +70,8 @@ import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
 import { TelemetryPayloadCapture } from "../observability/payload-capture";
-import {
-  compactTelemetryFiles,
-  resolveEffectiveWindowMinutes,
-} from "../observability/event-compaction";
-import {
-  resolveTelemetryCompactIntervalMs,
-  resolveTelemetryCompactMaxFiles,
-} from "../config/telemetry";
+import { foldDayIndex, listEventDays } from "../observability/event-day-index";
+import { resolveTelemetryCompactIntervalMs } from "../config/telemetry";
 import { sweepExpiredPoolCooldowns } from "../network/pool-health-machine";
 import { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import { RuntimeMetricsSampler } from "../observability/runtime-metrics";
@@ -312,24 +306,21 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     run: () => payloadCapture.cleanupExpired(),
   });
   scheduledTasks.register({
-    name: "telemetry-compaction",
+    name: "telemetry-index-fold",
     intervalMs: resolveTelemetryCompactIntervalMs(),
-    // Folds hourly request files into one per-day summary per API key. This is
-    // what stops the usage list from slowing down as an install ages: the list
-    // scans every hourly file on disk, so without this its cost grows with
-    // total volume forever. The totals are accumulated, never averaged, so a
-    // period that reported 2B tokens still reports 2B after compaction.
+    // Brings each day's index up to date with the bytes appended since the last
+    // pass, so a usage read is a small JSON read rather than a parse of the
+    // whole period. Folding is incremental and idempotent: a crash only leaves
+    // the watermark behind, and the next pass re-reads the tail.
     run: async () => {
-      const result = await compactTelemetryFiles({
-        windowMinutes: await resolveEffectiveWindowMinutes(db),
-        maxFiles: resolveTelemetryCompactMaxFiles(),
-        retentionDays: resolveTelemetryRetentionDays(),
-      });
-      if (result.filesCompacted > 0 || result.filesDeleted > 0) {
-        log.info(
-          `[telemetry] compacted ${result.filesCompacted} file(s) into ${result.daysWritten} day(s), ` +
-            `${result.rowsWritten} summary row(s); deleted ${result.filesDeleted} expired`,
-        );
+      const days = await listEventDays();
+      let folded = 0;
+      for (const day of days) {
+        const result = await foldDayIndex(day).catch(() => ({ folded: 0 }));
+        folded += result.folded;
+      }
+      if (folded > 0) {
+        log.info(`[telemetry] indexed ${folded} event(s) across ${days.length} day(s)`);
       }
     },
   });

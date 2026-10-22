@@ -132,8 +132,17 @@ function normalize(raw: Record<string, unknown>): TelemetryEventRecord | undefin
   };
 }
 
+/**
+ * The comparable hour of an event file's name.
+ *
+ * A name is either `2026-10-22T05-15.jsonl` (an older window file) or
+ * `2026-10-22.events.jsonl` (a day file). Both sort against `hourStamp`: only
+ * the leading date and hour are taken, so the day file's `.events` suffix cannot
+ * make it compare as later or earlier than the window files beside it.
+ */
 function eventFileHour(file: string): string {
-  return file.slice(0, 13);
+  const stamp = file.endsWith(".events.jsonl") ? `${file.slice(0, 10)}T00` : file.slice(0, 13);
+  return stamp;
 }
 
 function hourStamp(date: Date): string {

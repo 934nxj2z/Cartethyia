@@ -54,10 +54,50 @@ export function utcDay(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
+/**
+ * One hour's share of a bucket.
+ *
+ * The Traffic chart asks how a day was spent, which the totals alone cannot
+ * answer. Twenty-four slots per bucket is small — four numbers each — and is
+ * held *inside* the index rather than as the per-hour files this replaced.
+ */
+/**
+ * One named dimension's share of a bucket.
+ *
+ * The breakdown asks for tokens, errors and cost per model/provider/client/IP,
+ * not merely how many requests each took. Counts alone were enough for the old
+ * per-day totals, but the breakdown columns would all have read zero, so each
+ * named entry carries the same running sums the bucket does.
+ */
+export interface IndexedDimension {
+  readonly requests: number;
+  readonly inputTokens: number;
+  readonly cachedTokens: number;
+  readonly outputTokens: number;
+  readonly errors: number;
+  readonly estimatedCostUsd: number;
+  readonly tokensPerSecSum: number;
+  readonly tokensPerSecCount: number;
+}
+
+export interface IndexedHour {
+  readonly requests: number;
+  readonly inputTokens: number;
+  readonly cachedTokens: number;
+  readonly outputTokens: number;
+}
+
 /** One tenant/key pair's running totals for the day. */
 export interface IndexedBucket extends CompactedBucket {
   readonly tenantId: string;
   readonly apiKeyId: string | null;
+  /** Index 0-23, the UTC hour an event fell in. */
+  readonly hours: readonly IndexedHour[];
+  /** Per-name sums for each breakdown dimension. */
+  readonly dimModel: Readonly<Record<string, IndexedDimension>>;
+  readonly dimProvider: Readonly<Record<string, IndexedDimension>>;
+  readonly dimClient: Readonly<Record<string, IndexedDimension>>;
+  readonly dimClientIp: Readonly<Record<string, IndexedDimension>>;
 }
 
 /** The on-disk shape of a day index. */
@@ -80,6 +120,78 @@ export interface DayIndex {
 
 function bucketKey(tenantId: string, apiKeyId: string | null): string {
   return `${tenantId}|${apiKeyId ?? ""}`;
+}
+
+/** Twenty-four empty hour slots. */
+function emptyHours(): IndexedHour[] {
+  return Array.from({ length: 24 }, () => ({
+    requests: 0,
+    inputTokens: 0,
+    cachedTokens: 0,
+    outputTokens: 0,
+  }));
+}
+
+/** The UTC hour (0-23) of an ISO timestamp. */
+function hourOf(createdAt: string): number {
+  const at = Date.parse(createdAt);
+  if (!Number.isFinite(at)) return 0;
+  return Number.parseInt(createdAt.slice(11, 13), 10) || 0;
+}
+
+/** An empty per-name entry. */
+function emptyDimension(): IndexedDimension {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    cachedTokens: 0,
+    outputTokens: 0,
+    errors: 0,
+    estimatedCostUsd: 0,
+    tokensPerSecSum: 0,
+    tokensPerSecCount: 0,
+  };
+}
+
+/** Folds one event into one named dimension entry. */
+function foldDimension(
+  into: Readonly<Record<string, IndexedDimension>> | undefined,
+  name: string | null | undefined,
+  event: FoldedEvent,
+): Record<string, IndexedDimension> {
+  const out: Record<string, IndexedDimension> = { ...(into ?? {}) };
+  const key = typeof name === "string" ? name.trim() : "";
+  if (key === "") return out;
+  const prior = out[key] ?? emptyDimension();
+  const failed = event.status === "failed" ? 1 : 0;
+  out[key] = {
+    requests: prior.requests + 1,
+    inputTokens: prior.inputTokens + (event.inputTokens ?? 0),
+    cachedTokens: prior.cachedTokens + (event.cachedInputTokens ?? 0),
+    outputTokens: prior.outputTokens + (event.outputTokens ?? 0),
+    errors: prior.errors + failed,
+    estimatedCostUsd: prior.estimatedCostUsd + (event.estimatedCostUsd ?? 0),
+    tokensPerSecSum: prior.tokensPerSecSum + (event.tokensPerSec ?? 0),
+    tokensPerSecCount: prior.tokensPerSecCount + (event.tokensPerSec === null ? 0 : 1),
+  };
+  return out;
+}
+
+/** Adds one event's tokens into its hour slot. */
+function withHour(
+  hours: readonly IndexedHour[],
+  event: FoldedEvent,
+): IndexedHour[] {
+  const base = hours.length === 24 ? [...hours] : emptyHours();
+  const index = hourOf(event.createdAt);
+  const prior = base[index] ?? { requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
+  base[index] = {
+    requests: prior.requests + 1,
+    inputTokens: prior.inputTokens + (event.inputTokens ?? 0),
+    cachedTokens: prior.cachedTokens + (event.cachedInputTokens ?? 0),
+    outputTokens: prior.outputTokens + (event.outputTokens ?? 0),
+  };
+  return base;
 }
 
 /** An empty index for a day with nothing counted yet. */
@@ -221,8 +333,27 @@ export async function foldDayIndex(day: string): Promise<{ readonly folded: numb
   for await (const { event, endBytes } of readTail(day, index.watermarkBytes)) {
     const key = bucketKey(event.tenantId, event.apiKeyId ?? null);
     const prior = byKey.get(key);
-    const base = prior ?? { ...emptyBucket(), tenantId: event.tenantId, apiKeyId: event.apiKeyId ?? null };
-    byKey.set(key, { ...accumulate(base, event), tenantId: base.tenantId, apiKeyId: base.apiKeyId });
+    const base: IndexedBucket =
+      prior ?? {
+        ...emptyBucket(),
+        tenantId: event.tenantId,
+        apiKeyId: event.apiKeyId ?? null,
+        hours: emptyHours(),
+        dimModel: {},
+        dimProvider: {},
+        dimClient: {},
+        dimClientIp: {},
+      };
+    byKey.set(key, {
+      ...accumulate(base, event),
+      tenantId: base.tenantId,
+      apiKeyId: base.apiKeyId,
+      hours: withHour(base.hours, event),
+      dimModel: foldDimension(base.dimModel, event.requestedModel ?? event.reportedModel, event),
+      dimProvider: foldDimension(base.dimProvider, event.providerId, event),
+      dimClient: foldDimension(base.dimClient, event.sourceSurface, event),
+      dimClientIp: foldDimension(base.dimClientIp, event.clientIp, event),
+    });
     watermark = Math.max(watermark, endBytes);
     folded += 1;
   }
@@ -248,6 +379,51 @@ export async function listEventDays(): Promise<readonly string[]> {
     if (file.endsWith(".events.jsonl")) days.add(file.slice(0, 10));
   }
   return [...days].sort();
+}
+
+/**
+ * Every bucket for one tenant, across the days a period covers.
+ *
+ * Reads only the index files for those days — a few small JSON reads — rather
+ * than parsing the event files, which is what made a usage query cost grow with
+ * traffic.
+ */
+export async function queryIndexedBuckets(options: {
+  readonly tenantId: string;
+  readonly since?: Date | undefined;
+  /** Fold each day's tail first, so a read never reports a stale total. */
+  readonly foldFirst?: boolean;
+}): Promise<readonly IndexedBucket[]> {
+  const days = await listEventDays();
+  const sinceDay = options.since === undefined ? undefined : utcDay(options.since);
+  const out: IndexedBucket[] = [];
+  for (const day of days) {
+    if (sinceDay !== undefined && day < sinceDay) continue;
+    if (options.foldFirst === true) await foldDayIndex(day).catch(() => ({ folded: 0 }));
+    const index = await readDayIndex(day);
+    for (const bucket of index.buckets) {
+      if (bucket.tenantId !== options.tenantId) continue;
+      out.push(bucket);
+    }
+  }
+  return out;
+}
+
+/** The days a period spans, oldest first. */
+export function daysSince(since: Date | undefined, now = new Date()): readonly string[] {
+  const start = since === undefined ? now : since;
+  const out: string[] = [];
+  const cursor = new Date(Date.UTC(
+    start.getUTCFullYear(),
+    start.getUTCMonth(),
+    start.getUTCDate(),
+  ));
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  while (cursor.getTime() <= end && out.length < 400) {
+    out.push(utcDay(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
 }
 
 export { mergeBucketsInternal as mergeBuckets };

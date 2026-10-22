@@ -10,8 +10,8 @@ import {
   type TelemetryUsageIdentityType,
 } from "../schema";
 import { isGatewayError } from "../../observability/telemetry-status";
-import { TELEMETRY_EVENT_DIR, windowFileName } from "../../observability/event-log";
-import { resolveTelemetryWindowMinutes } from "../../config/telemetry";
+import { TELEMETRY_EVENT_DIR } from "../../observability/event-log";
+import { dayEventFileName, utcDay } from "../../observability/event-day-index";
 
 interface UsageTotalDelta {
   readonly tenantId: string;
@@ -84,12 +84,21 @@ async function pruneEventFiles(before: Date): Promise<void> {
   }
 }
 
-/** Appends one JSON line per event into the current window's file. */
+/**
+ * Appends one JSON line per event to the day's event file.
+ *
+ * One file per UTC day, appended to and never rewritten while the day is open.
+ * It used to be one file per `windowMinutes` window — 96 a day at the default —
+ * which the reader then had to find, open and parse one by one on every usage
+ * query. Which of those files was still being written had to be inferred from
+ * the name, and that inference is what let the open one be deleted mid-write.
+ *
+ * A single growing file has no such ambiguity, and the day index tracks how much
+ * of it has been counted by byte offset.
+ */
 async function appendEvents(rows: readonly (typeof telemetryEvents.$inferInsert)[]): Promise<void> {
   await mkdir(TELEMETRY_EVENT_DIR, { recursive: true });
-  // Same derivation the compactor uses, so the writer and the folder cannot
-  // disagree about which file a moment belongs to.
-  const file = join(TELEMETRY_EVENT_DIR, windowFileName(new Date(), resolveTelemetryWindowMinutes()));
+  const file = join(TELEMETRY_EVENT_DIR, dayEventFileName(utcDay(new Date())));
   const newline = String.fromCharCode(10);
   const body = rows.map((row) => JSON.stringify(row)).join(newline) + newline;
   await appendFile(file, body, "utf8");

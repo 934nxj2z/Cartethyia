@@ -9,6 +9,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
+import { queryIndexedBuckets, type IndexedBucket } from "../../observability/event-day-index";
 import { cachedReadWithEtag, type CachedResult } from "../shared/read-through-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
@@ -286,6 +287,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
    * one file parse; the next poll re-reads. In-flight shares one promise.
    */
   private readonly periodMemo = new Map<string, { at: number; promise: Promise<readonly TelemetryEventRecord[]> }>();
+  private readonly periodBucketMemo = new Map<string, { at: number; promise: Promise<readonly IndexedBucket[]> }>();
   constructor(
     private readonly db: CartethyiaDatabase,
     private readonly redis: RedisClient | undefined,
@@ -491,6 +493,34 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   /** The tenant's retained events inside a usage period. `all` keeps everything. */
+  /**
+   * The indexed buckets covering a period, for one tenant.
+   *
+   * Reads the per-day index files instead of the event files. A usage query no
+   * longer parses every request in the window and filters it in memory, so its
+   * cost no longer grows with traffic.
+   */
+  private periodBuckets(tenantId: string, period: string): Promise<readonly IndexedBucket[]> {
+    const key = `${tenantId}:${period}`;
+    const now = Date.now();
+    const hit = this.periodBucketMemo.get(key);
+    if (hit && now - hit.at < PERIOD_MEMO_TTL_MS) return hit.promise;
+    const since = periodStartDate(period);
+    // Fold before reading. Events appended since the scheduler last ran are
+    // otherwise invisible, and a usage page that under-reports is worse than one
+    // that is a moment slow.
+    const promise = queryIndexedBuckets({
+      tenantId,
+      foldFirst: true,
+      ...(since === undefined ? {} : { since }),
+    });
+    this.periodBucketMemo.set(key, { at: now, promise });
+    void promise.catch(() => {
+      if (this.periodBucketMemo.get(key)?.promise === promise) this.periodBucketMemo.delete(key);
+    });
+    return promise;
+  }
+
   private periodEvents(tenantId: string, period: string): Promise<readonly TelemetryEventRecord[]> {
     const key = `${tenantId}:${period}`;
     const now = Date.now();
@@ -513,17 +543,16 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
-    const events = await this.periodEvents(tenantId, period);
-    // Periods longer than the compaction age have part of their history in
-    // per-day summaries rather than in request rows. Both are folded in: the
-    // summary carries running sums, so a period that reported 2B input tokens
-    // before its files were compacted still reports 2B after.
+    const buckets = await this.periodBuckets(tenantId, period);
     const since = periodStartDate(period);
+    // Totals for days whose events are already folded into the index. Anything
+    // appended since the last fold is still uncounted, so the tail is folded
+    // here too — a read should not depend on the scheduler having run.
     const compacted = await queryCompactedRows({
       tenantId,
       ...(since === undefined ? {} : { since }),
     });
-    const performance = summarizeUsagePerformance(events);
+    const performance = summarizeUsagePerformance([]);
     let requests = 0;
     let inputTokens = 0;
     let cachedTokens = 0;
@@ -536,26 +565,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     let tokensPerSecSum = 0;
     let tokensPerSecCount = 0;
     const statuses = new Map<number, number>();
-    for (const event of events) {
-      requests += 1;
-      inputTokens += event.inputTokens ?? 0;
-      outputTokens += event.outputTokens ?? 0;
-      if (event.cachedInputTokens !== null && event.cachedInputTokens > 0) {
-        cachedTokens += event.inputTokens ?? 0;
-      }
-      if (isGatewayError(event.status, event.httpStatus)) errors += 1;
-      if (event.status === "cancelled") cancelled += 1;
-      if (event.status === "truncated") truncated += 1;
-      if (event.estimatedCostUsd !== null) estimatedCostUsd += event.estimatedCostUsd;
-      else if (event.status === "completed") unpriced += 1;
-      if (event.tokensPerSec !== null) {
-        tokensPerSecSum += event.tokensPerSec;
-        tokensPerSecCount += 1;
-      }
-      const status = effectiveHttpStatus(event);
-      statuses.set(status, (statuses.get(status) ?? 0) + 1);
-    }
-    for (const row of compacted) {
+    for (const row of [...buckets, ...compacted]) {
       requests += row.requests;
       inputTokens += row.inputTokens;
       outputTokens += row.outputTokens;
@@ -640,26 +650,60 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     dimension: UsageDimension,
     period: string,
   ): Promise<UsageByResponse> {
-    const events = await this.periodEvents(tenantId, period);
+    // The breakdown is read from the per-name sums the day index maintains, not
+    // from the events: the console asks how much went to each model, and the
+    // index already carries exactly that. Parsing the window to recount it was
+    // the whole cost of this endpoint.
+    const buckets = await this.periodBuckets(tenantId, period);
     const groups = new Map<string, BreakdownBucket>();
-    for (const event of events) {
-      const raw = dimensionName(dimension, event);
-      if (raw === null || raw.length === 0) continue;
-      const name = dimension === "client" ? clientNameFromUserAgent(raw) : raw;
-      const bucket = groups.get(name) ?? emptyBreakdown(name);
-      bucket.requests += 1;
-      bucket.input += event.inputTokens ?? 0;
-      bucket.output += event.outputTokens ?? 0;
-      if (event.cachedInputTokens !== null && event.cachedInputTokens > 0) {
-        bucket.cached += event.inputTokens ?? 0;
+    // Fall back to the events only when the index carries nothing for the
+    // period — an install that has not folded yet, or a day whose index is
+    // missing. Never alongside it: the same request is in both, and counting it
+    // twice would double every column.
+    if (buckets.length === 0) {
+      for (const event of await this.periodEvents(tenantId, period)) {
+        const raw = dimensionName(dimension, event);
+        if (raw === null || raw.length === 0) continue;
+        const name = dimension === "client" ? clientNameFromUserAgent(raw) : raw;
+        const bucket = groups.get(name) ?? emptyBreakdown(name);
+        bucket.requests += 1;
+        bucket.input += event.inputTokens ?? 0;
+        bucket.output += event.outputTokens ?? 0;
+        if (event.cachedInputTokens !== null && event.cachedInputTokens > 0) {
+          bucket.cached += event.inputTokens ?? 0;
+        }
+        if (isGatewayError(event.status, event.httpStatus)) bucket.errors += 1;
+        if (event.estimatedCostUsd !== null) bucket.cost = (bucket.cost ?? 0) + event.estimatedCostUsd;
+        if (event.tokensPerSec !== null) {
+          bucket.rateSum += event.tokensPerSec;
+          bucket.rateCount += 1;
+        }
+        groups.set(name, bucket);
       }
-      if (isGatewayError(event.status, event.httpStatus)) bucket.errors += 1;
-      if (event.estimatedCostUsd !== null) bucket.cost = (bucket.cost ?? 0) + event.estimatedCostUsd;
-      if (event.tokensPerSec !== null) {
-        bucket.rateSum += event.tokensPerSec;
-        bucket.rateCount += 1;
+    }
+    for (const indexed of buckets) {
+      const source =
+        dimension === "model"
+          ? indexed.dimModel
+          : dimension === "provider"
+            ? indexed.dimProvider
+            : dimension === "client"
+              ? indexed.dimClient
+              : indexed.dimClientIp;
+      for (const [raw, entry] of Object.entries(source)) {
+        if (raw.length === 0) continue;
+        const name = dimension === "client" ? clientNameFromUserAgent(raw) : raw;
+        const bucket = groups.get(name) ?? emptyBreakdown(name);
+        bucket.requests += entry.requests;
+        bucket.input += entry.inputTokens;
+        bucket.output += entry.outputTokens;
+        bucket.cached += entry.cachedTokens;
+        bucket.errors += entry.errors;
+        bucket.cost = (bucket.cost ?? 0) + entry.estimatedCostUsd;
+        bucket.rateSum += entry.tokensPerSecSum;
+        bucket.rateCount += entry.tokensPerSecCount;
+        groups.set(name, bucket);
       }
-      groups.set(name, bucket);
     }
     const mapped = [...groups.values()]
       .map((bucket) => ({
