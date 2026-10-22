@@ -101,10 +101,17 @@ export function grokHeaderWindow(reading: GrokRateLimitReading): ProviderQuotaWi
     reading.remainingTokens !== null && reading.limitTokens !== null
       ? reading.limitTokens - reading.remainingTokens
       : null;
+  // The third argument is the *percentage*, not the count. Passing null left
+  // `usedPercent` null, and the bar renders a null percentage as grey — so a
+  // window that knew its exact used and limit still drew as unknown.
+  const usedPercent =
+    reading.limitTokens !== null && reading.limitTokens > 0 && used !== null
+      ? (used / reading.limitTokens) * 100
+      : null;
   return percentWindow(
     GROK_HEADER_WINDOW_KIND,
     "Rate limit token (header)",
-    null,
+    usedPercent,
     reading.resetsAt,
     used,
     reading.limitTokens,
@@ -123,12 +130,14 @@ export function grokHeaderRequestsWindow(
   reading: GrokRateLimitReading,
 ): ProviderQuotaWindow | null {
   if (reading.remainingRequests === null) return null;
+  const used = REQUEST_WINDOW_LIMIT - reading.remainingRequests;
+  const usedPercent = (used / REQUEST_WINDOW_LIMIT) * 100;
   return percentWindow(
     GROK_HEADER_REQUESTS_WINDOW_KIND,
     "Rate limit request (header)",
-    null,
+    usedPercent,
     reading.resetsAt,
-    REQUEST_WINDOW_LIMIT - reading.remainingRequests,
+    used,
     REQUEST_WINDOW_LIMIT,
     "independent",
   );

@@ -20,6 +20,7 @@ import {
   GROK_AUTHORITATIVE_WINDOW_KIND,
   GROK_HEADER_WINDOW_KIND,
   grokAuthoritativeWindow,
+  grokHeaderRequestsWindow,
   grokHeaderWindow,
   parseGrokFreeUsageVerdict,
   readGrokRateLimitHeaders,
@@ -236,5 +237,56 @@ describe("a reading captured from real traffic replaces the probe", () => {
     );
     expect(storedGrokRateLimit("acc-2")).toBeNull();
     clearGrokRateLimitSnapshots();
+  });
+});
+
+describe("the request bucket is its own window", () => {
+  test("remaining requests is reported separately from tokens", () => {
+    // `x-ratelimit-remaining-requests` is a per-minute cap (21) with no token
+    // equivalent. Folding it into the token window produced one number that
+    // described neither budget.
+    const reading = readGrokRateLimitHeaders({
+      "x-ratelimit-limit-tokens": "1000000",
+      "x-ratelimit-remaining-tokens": "996169",
+      "x-ratelimit-remaining-requests": "20",
+    });
+    const token = grokHeaderWindow(reading);
+    const requests = grokHeaderRequestsWindow(reading);
+
+    expect(token?.limit).toBe(1000000);
+    expect(requests?.limit).toBe(21);
+    expect(requests?.used).toBe(1);
+    expect(requests?.kind).not.toBe(token?.kind);
+  });
+
+  test("a response with no request bucket yields no request window", () => {
+    expect(grokHeaderRequestsWindow(readGrokRateLimitHeaders({}))).toBeNull();
+  });
+});
+
+describe("the windows carry a percentage, so the bar is not grey", () => {
+  test("used and remaining percentages are both populated", () => {
+    // `percentWindow`'s third argument is the percentage, not the count.
+    // Passing null left `usedPercent` null, and the view renders a null
+    // percentage as grey — so a window that knew its exact used and limit
+    // still drew as unknown.
+    const reading = readGrokRateLimitHeaders({
+      "x-ratelimit-limit-tokens": "1000000",
+      "x-ratelimit-remaining-tokens": "996169",
+      "x-ratelimit-remaining-requests": "20",
+    });
+    const token = grokHeaderWindow(reading);
+    const requests = grokHeaderRequestsWindow(reading);
+
+    expect(token?.usedPercent).toBeCloseTo(0.38, 2);
+    expect(token?.remainingPercent).toBeCloseTo(99.62, 2);
+    expect(requests?.usedPercent).toBeCloseTo(4.76, 2);
+  });
+
+  test("an unknown limit leaves the percentage null rather than wrong", () => {
+    const window = grokHeaderWindow(
+      readGrokRateLimitHeaders({ "x-ratelimit-remaining-tokens": "5" }),
+    );
+    expect(window?.usedPercent).toBeNull();
   });
 });
