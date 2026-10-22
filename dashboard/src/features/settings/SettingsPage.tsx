@@ -1,4 +1,4 @@
-import { Shield } from "lucide-react";
+import { Database, Eye, Shield, Zap } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Select } from "../../components/ui/select";
 import { Input } from "../../components/ui/input";
@@ -9,6 +9,7 @@ import { Stack } from "../../components/ui/stack";
 import { Switch } from "../../components/ui/switch";
 import { Banner } from "../../components/patterns/banner";
 import { BackupPanel } from "../../components/BackupPanel";
+import { DataManagementPanel } from "./DataManagementPanel";
 import { toast } from "../../lib/toast";
 import { useChangePassword } from "../../hooks/auth";
 import {
@@ -29,6 +30,20 @@ import { getErrorMessage } from "../../data/api";
 const TIMEOUT_CHOICES = [5, 15, 30, 60, 120, 300, 600] as const;
 const COMPACTION_CHOICES = [1, 3, 7, 14, 30, 90, 365] as const;
 const ATTACHMENT_CHOICES = [1, 5, 10, 25, 50, 100] as const;
+
+/**
+ * The icon for a section, keyed by its id.
+ *
+ * Kept as a map rather than a prop so a section cannot be added without
+ * deciding what it looks like, and so the four cannot drift apart in style.
+ */
+function SectionIcon({ name }: { readonly name: string }): ReactNode {
+  const props = { size: 16 } as const;
+  if (name === "privacy") return <Eye {...props} />;
+  if (name === "operations") return <Zap {...props} />;
+  if (name === "data") return <Database {...props} />;
+  return <Shield {...props} />;
+}
 
 /**
  * Options for a bounded-number dropdown, including the operator's own value.
@@ -69,11 +84,14 @@ function SettingsSection({
   readonly children: ReactNode;
 }): ReactNode {
   return (
-    <section id={id} aria-label={title} className="min-w-0 scroll-mt-4">
-      <h2 className="text-subtitle font-semibold text-text-primary">{title}</h2>
-      <p className="mt-1 text-badge text-text-tertiary">{description}</p>
-      <div className="mt-7 min-w-0">{children}</div>
-    </section>
+    <Card id={id} aria-label={title} className="min-w-0 scroll-mt-4">
+      <CardHeader
+        title={title}
+        subtitle={description}
+        icon={<SectionIcon name={id} />}
+      />
+      <CardBody className="flex flex-col">{children}</CardBody>
+    </Card>
   );
 }
 
@@ -96,6 +114,14 @@ function PrivacyPanel(): ReactNode {
   }
 
   return (
+    /*
+     * One column, top to bottom. Side by side, the eye zig-zags: read across
+     * for the label, back for the control, across again. Stacked, each field
+     * is one vertical gesture and the help text stays under what it explains.
+     *
+     * Capture depth only exists when payloads are "full", so it simply does
+     * not appear otherwise rather than leaving a gap in a grid.
+     */
     <Stack gap="16px">
       <div className="settings-field">
         <Select
@@ -126,7 +152,7 @@ function PrivacyPanel(): ReactNode {
             { value: "full", label: "Full — redacted bodies, 15 minutes" },
           ]}
         />
-        <p className="mt-1 text-badge text-text-tertiary">
+        <p className="mt-3 text-caption text-text-tertiary">
           Request metadata is always kept. Bodies stay off until you turn them
           on, and anything captured is redacted and deleted after 15 minutes.
         </p>
@@ -194,7 +220,7 @@ function PrivacyPanel(): ReactNode {
             { value: "full", label: "Show full IP" },
           ]}
         />
-        <p className="mt-1 text-badge text-text-tertiary">
+        <p className="mt-1 text-caption text-text-tertiary">
           Raw addresses stay stored. This only changes how they are shown.
         </p>
       </div>
@@ -243,7 +269,7 @@ function OperationalPanel(): ReactNode {
       <div className="flex items-center justify-between gap-6 rounded-control border border-inner-border px-6 py-5">
         <span className="min-w-0">
           <strong className="block text-body">Force disable cooldown</strong>
-          <small className="text-badge text-text-tertiary">
+          <small className="text-caption text-text-tertiary">
             Route to accounts that are cooling down, including ones already
             parked.
           </small>
@@ -305,7 +331,7 @@ function OperationalPanel(): ReactNode {
               { value: "", label: "Deployment default" },
             ]}
           />
-          <p className="mt-1 text-badge text-text-tertiary">
+          <p className="mt-3 text-caption text-text-tertiary">
             5–600 seconds. Applied when the request is dispatched, so it can
             only shorten a deadline that has already started.
           </p>
@@ -334,7 +360,7 @@ function OperationalPanel(): ReactNode {
               { value: "", label: "Deployment default" },
             ]}
           />
-          <p className="mt-1 text-badge text-text-tertiary">
+          <p className="mt-3 text-caption text-text-tertiary">
             1–365 days. Past this age, hourly request files are folded into
             daily summaries: totals keep counting, but individual requests are
             no longer listed. Hourly files hold every tenant together, so the
@@ -374,7 +400,7 @@ function OperationalPanel(): ReactNode {
               { value: "", label: "Deployment default (10 MB)" },
             ]}
           />
-          <p className="mt-1 text-badge text-text-tertiary">
+          <p className="mt-3 text-caption text-text-tertiary">
             Per image. An oversized attachment is refused before send rather
             than after the upstream rejects it — a block too large poisons every
             retry and every replayed turn. Raising this asserts your upstreams
@@ -494,20 +520,28 @@ export default function Settings(): ReactNode {
        * right place.
        */}
       <CardBody className="flex flex-col gap-12">
-        <SettingsSection
-          id="security"
-          title="Security"
-          description="Change the password used to sign in to this console."
-        >
-          <PasswordChangeForm />
-        </SettingsSection>
-        <SettingsSection
-          id="privacy"
-          title="Privacy"
-          description="What request telemetry stores, and how client addresses are shown."
-        >
-          <PrivacyPanel />
-        </SettingsSection>
+        {/*
+         * Security and Privacy side by side on desktop: both are short, and
+         * they are the two an operator opens the page for. Operations and Data
+         * stay full width because their controls are wider and their help text
+         * longer — squeezing them into a column would wrap every line.
+         */}
+        <div className="grid grid-cols-2 gap-8 w-full min-w-0 max-medium:grid-cols-1">
+          <SettingsSection
+            id="security"
+            title="Security"
+            description="Change the password used to sign in to this console."
+          >
+            <PasswordChangeForm />
+          </SettingsSection>
+          <SettingsSection
+            id="privacy"
+            title="Privacy"
+            description="What request telemetry stores, and how client addresses are shown."
+          >
+            <PrivacyPanel />
+          </SettingsSection>
+        </div>
         <SettingsSection
           id="operations"
           title="Operations"
@@ -521,6 +555,13 @@ export default function Settings(): ReactNode {
           description="Export or restore this tenant's configuration and history."
         >
           <BackupPanel />
+        </SettingsSection>
+        <SettingsSection
+          id="data-management"
+          title="Data Management"
+          description="See what the gateway keeps on disk, reclaim space, and flush queued writes."
+        >
+          <DataManagementPanel />
         </SettingsSection>
       </CardBody>
     </Card>

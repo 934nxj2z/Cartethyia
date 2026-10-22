@@ -431,7 +431,11 @@ html[data-blur-cards-on="false"] .composer-glass {
 }
 
 .form-label {
-  font-size: 12px;
+  /* 13px (`--text-body`), a step above the 12px control text and the help text
+     below it. At 12px the label, the control's own value, and the help text
+     were all the same size, so a field had no visual hierarchy — the three
+     roles read as one undifferentiated block. */
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--text-primary);
   display: flex;

@@ -2,7 +2,6 @@ import { Download, Trash2, Upload } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { Banner } from "./patterns/banner";
-import { SectionHeading } from "./ui/layout";
 import { Input } from "./ui/input";
 import { Stack } from "./ui/stack";
 import { Switch } from "./ui/switch";
@@ -32,8 +31,31 @@ import type { DeleteAllScope } from "../../../src/console/backup/store";
  * The copy carries the two facts an operator needs before they click, because
  * both behave in ways that are surprising otherwise: the export is plain JSON
  * containing every provider credential, and history restored from older than
- * the retention window is pruned again on the next sweep.
+ * is pruned again on the next sweep.
  */
+
+/**
+ * A heading one step below the card header.
+ *
+ * `SectionHeading` renders `text-title` (18px) whatever `level` says — the
+ * level only picks the tag, not the size — so using it inside a card made
+ * "Backup" read larger than the card's own title above it. This is 14px, the
+ * same as a card header, which is the right size for a child of one.
+ */
+function SubsectionHeading({
+  title,
+  description,
+}: {
+  readonly title: string;
+  readonly description: string;
+}): ReactNode {
+  return (
+    <div className="mb-6 min-w-0">
+      <h3 className="text-body-lg font-bold text-text-primary">{title}</h3>
+      <p className="mt-1 text-caption text-text-secondary">{description}</p>
+    </div>
+  );
+}
 
 /** Renders a router-import report: what landed, what did not, and why. */
 function ImportReportPanel({
@@ -62,7 +84,7 @@ function ImportReportPanel({
           <p className="text-caption text-yellow">
             Skipped ({report.skipped.length}) — nothing was guessed:
           </p>
-          <ul className="text-badge text-text-tertiary mt-2 ml-8">
+          <ul className="text-caption text-text-tertiary mt-2 ml-8">
             {report.skipped.map((entry) => (
               <li key={entry}>{entry}</li>
             ))}
@@ -72,7 +94,7 @@ function ImportReportPanel({
       {report.warnings.length > 0 ? (
         <div>
           <p className="text-caption text-text-secondary">Warnings:</p>
-          <ul className="text-badge text-text-tertiary mt-2 ml-8">
+          <ul className="text-caption text-text-tertiary mt-2 ml-8">
             {report.warnings.map((entry) => (
               <li key={entry}>{entry}</li>
             ))}
@@ -354,14 +376,13 @@ export function BackupPanel(): ReactNode {
     <>
       <div className="grid grid-cols-2 gap-8 w-full min-w-0 max-medium:grid-cols-1">
         <section aria-label="Backup" className="min-w-0">
-          <SectionHeading
+          <SubsectionHeading
             title="Backup"
             description="Download a JSON snapshot, or restore one you already trust."
-            level={3}
           />
           <Stack gap="14px">
             <fieldset className="grid grid-cols-2 gap-5 min-w-0 border-0 m-0 p-0 max-medium:grid-cols-1">
-              <legend className="mb-4 text-text-secondary text-badge font-semibold">
+              <legend className="mb-4 text-text-secondary text-caption font-semibold">
                 Include in the download
               </legend>
               <label className="flex items-start gap-5 min-h-21 px-6 py-5 border border-inner-border rounded-control bg-surface-2 text-text-primary text-caption leading-snug cursor-pointer hover:border-border-strong hover:bg-hover has-checked:border-accent has-checked:bg-accent-soft">
@@ -398,7 +419,7 @@ export function BackupPanel(): ReactNode {
                 <strong className="block text-body">
                   Highly Compress Backup
                 </strong>
-                <small className="text-badge text-text-tertiary">
+                <small className="text-caption text-text-tertiary">
                   Makes the download smaller.
                 </small>
               </span>
@@ -408,7 +429,7 @@ export function BackupPanel(): ReactNode {
                 aria-label="Highly Compress Backup"
               />
             </div>
-            <p className="mt-1 text-badge text-text-tertiary">
+            <p className="mt-1 text-caption text-text-tertiary">
               The file contains provider credentials. Treat it like the
               database. Prompt and response bodies, health-event history, and
               console sessions are left out.
@@ -447,7 +468,7 @@ export function BackupPanel(): ReactNode {
               />
             </div>
             {format !== null ? (
-              <p className="mt-1 text-badge text-text-tertiary">
+              <p className="mt-1 text-caption text-text-tertiary">
                 Detected format:{" "}
                 {format === "nine_router"
                   ? "router export"
@@ -478,14 +499,13 @@ export function BackupPanel(): ReactNode {
         </section>
 
         <section aria-label="Delete data" className="settings-danger min-w-0">
-          <SectionHeading
+          <SubsectionHeading
             title="Delete data"
             description="Removes the scopes you check. Console users, sessions, and audit history stay."
-            level={3}
           />
           <Stack gap="12px">
             <fieldset className="grid grid-cols-1 gap-5 min-w-0 border-0 m-0 p-0">
-              <legend className="mb-4 text-text-secondary text-badge font-semibold">
+              <legend className="mb-4 text-text-secondary text-caption font-semibold">
                 Delete
               </legend>
               {(
@@ -564,14 +584,14 @@ export function BackupPanel(): ReactNode {
         <Stack gap="12px">
           {inspection !== null ? (
             <>
-              <p className="text-badge text-text-tertiary">
+              <p className="text-caption text-text-tertiary">
                 {inspection.format === "nine_router"
                   ? "Router export — it is converted at restore time, so every table it produces is restored."
                   : `${inspection.total} rows · exported ${inspection.exportedAt || "unknown date"}`}
               </p>
               {inspection.rows.length > 0 ? (
                 <fieldset className="grid grid-cols-1 gap-4 min-w-0 border-0 m-0 p-0">
-                  <legend className="mb-3 text-text-secondary text-badge font-semibold">
+                  <legend className="mb-3 text-text-secondary text-caption font-semibold">
                     Restore these tables
                   </legend>
                   <div className="flex justify-end gap-4">
@@ -692,7 +712,7 @@ export function BackupPanel(): ReactNode {
               {restoreError}
             </p>
           ) : null}
-          <p className="mt-1 text-badge text-text-tertiary">
+          <p className="mt-1 text-caption text-text-tertiary">
             {passwordFor === "delete"
               ? "This cannot be undone. The password is verified again before anything is removed."
               : passwordFor === "restore"

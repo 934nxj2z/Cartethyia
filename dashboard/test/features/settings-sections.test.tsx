@@ -82,10 +82,27 @@ describe("Settings sections", () => {
   test("all four sections render at once", async () => {
     const { container, unmount, restore } = await mountSettings();
     try {
-      const titles = Array.from(container.querySelectorAll("section > h2")).map(
-        (h) => h.textContent,
+      // Each section is a card whose header carries the h2, nested several
+      // levels down. Match on the header's own class so a wrapper added later
+      // does not break this.
+      // Scoped to the four section ids, because the page's own "Settings"
+      // header is also an h2 and is not a section.
+      const titles = [
+        "security",
+        "privacy",
+        "operations",
+        "data",
+        "data-management",
+      ].map((id) =>
+        container.querySelector(`#${id} h2.card-header-title`)?.textContent,
       );
-      expect(titles).toEqual(["Security", "Privacy", "Operations", "Data"]);
+      expect(titles).toEqual([
+        "Security",
+        "Privacy",
+        "Operations",
+        "Data",
+        "Data Management",
+      ]);
     } finally {
       unmount();
       restore();
@@ -129,11 +146,18 @@ describe("Settings sections", () => {
     }
   });
 
-  test("no card is nested inside another card", async () => {
-    // Doubles the border and the padding; caught only by looking.
+  test("each section is its own card", async () => {
+    // The section card is the intended nesting: the page card holds a titled
+    // card per section. What must not happen is a third level — a card inside
+    // a section card, which is the doubled-border shape this replaced.
+    //
+    // Matched on `.card-solid` — the class Card actually emits. A `.card`
+    // selector matches nothing and would pass no matter the markup.
     const { container, unmount, restore } = await mountSettings();
     try {
-      expect(container.querySelectorAll(".card .card")).toHaveLength(0);
+      // Five sections: Security, Privacy, Operations, Data, Data Management.
+      expect(container.querySelectorAll(".card-solid .card-solid")).toHaveLength(5);
+      expect(container.querySelectorAll(".card-solid .card-solid .card-solid")).toHaveLength(0);
     } finally {
       unmount();
       restore();
@@ -143,7 +167,7 @@ describe("Settings sections", () => {
   test("each section is still deep-linkable", async () => {
     const { container, unmount, restore } = await mountSettings();
     try {
-      for (const id of ["security", "privacy", "operations", "data"]) {
+      for (const id of ["security", "privacy", "operations", "data", "data-management"]) {
         expect(container.querySelector(`#${id}`)).not.toBeNull();
       }
     } finally {
@@ -151,7 +175,124 @@ describe("Settings sections", () => {
       restore();
     }
   });
+
+  test("Security and Privacy share a row, Operations and Data do not", async () => {
+    // The desktop split: the two short sections sit side by side. Asserted on
+    // the grid wrapper rather than computed layout, which a test DOM has none
+    // of.
+    const { container, unmount, restore } = await mountSettings();
+    try {
+      const security = container.querySelector("#security");
+      const privacy = container.querySelector("#privacy");
+      const operations = container.querySelector("#operations");
+      expect(security?.parentElement).toBe(privacy?.parentElement);
+      expect(security?.parentElement?.className).toContain("grid-cols-2");
+      // Operations keeps its own full-width row.
+      expect(operations?.parentElement).not.toBe(security?.parentElement);
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("the Privacy controls are stacked, not side by side", async () => {
+    // One column: reading two-up made the eye zig-zag between label, control,
+    // and help text. Pinned as a class because a test DOM has no layout.
+    const { container, unmount, restore } = await mountSettings();
+    try {
+      const privacy = container.querySelector("#privacy");
+      const fields = Array.from(
+        privacy?.querySelectorAll(".settings-field") ?? [],
+      );
+      expect(fields.length).toBeGreaterThanOrEqual(2);
+      // Every field shares one parent, and that parent is not a grid.
+      const parents = new Set(fields.map((f) => f.parentElement));
+      expect(parents.size).toBe(1);
+      expect(fields[0]?.parentElement?.className).not.toContain("grid-cols-");
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("every text size used is a defined token", async () => {
+    // The scale is micro/badge/caption/body/body-lg/lead/title/display/hero.
+    // `text-subtitle` was used for section headings but no such token exists,
+    // so those headings fell back to the browser default and read larger than
+    // anything else on the page — the inconsistency was invisible in review
+    // because the class name looks right.
+    const DEFINED = [
+      "text-micro",
+      "text-badge",
+      "text-caption",
+      "text-body",
+      "text-body-lg",
+      "text-lead",
+      "text-title",
+      "text-display",
+      "text-hero",
+    ];
+    const { container, unmount, restore } = await mountSettings();
+    try {
+      // Collected from the markup, not filtered by the allowlist: a size is
+      // "text-*" minus alignment and colour utilities, and anything left that
+      // is not a defined token is a size that does not exist.
+      const NOT_A_SIZE =
+        /^text-(text|accent|danger|warning|success|inherit|current|transparent|left|right|center|justify|start|end|white|black|ellipsis|wrap|nowrap|clip|uppercase|lowercase|capitalize)/;
+      const used = new Set<string>();
+      for (const el of Array.from(container.querySelectorAll("*"))) {
+        for (const cls of el.classList) {
+          if (!cls.startsWith("text-") || NOT_A_SIZE.test(cls)) continue;
+          used.add(cls);
+        }
+      }
+      expect(used.size).toBeGreaterThan(0);
+      expect([...used].filter((c) => !DEFINED.includes(c))).toEqual([]);
+    } finally {
+      unmount();
+      restore();
+    }
+  });
 });
+
+  test("Backup headings sit below the card header, not above it", async () => {
+    // "Backup" and "Delete data" used `text-title` (18px) while the card
+    // header above them is 14px, so the child read bigger than its parent.
+    // Asserted on the class: a test DOM resolves no font sizes.
+    const { container, unmount, restore } = await mountSettings();
+    try {
+      const backup = container.querySelector("#data h3");
+      expect(backup?.textContent).toBe("Backup");
+      expect(backup?.className).toContain("text-body-lg");
+      expect(backup?.className).not.toContain("text-title");
+      const del = container.querySelector("#data h3 + p");
+      expect(del?.className).toContain("text-caption");
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("a field's label reads larger than its help text", async () => {
+    // The hierarchy that was missing: label, control value, and help text were
+    // all 12px, so one field was three equal blocks. Pinned as a class
+    // comparison rather than a computed size, which a test DOM does not resolve.
+    const { container, unmount, restore } = await mountSettings();
+    try {
+      const field = container.querySelector("#privacy .settings-field");
+      expect(field).not.toBeNull();
+      const label = field?.querySelector(".form-label");
+      const help = field?.querySelector("p");
+      expect(label).not.toBeNull();
+      expect(help).not.toBeNull();
+      // 13px label vs 12px help: `text-body` must not appear on the help text.
+      expect(help?.className).toContain("text-caption");
+      expect(help?.className).not.toContain("text-body");
+    } finally {
+      unmount();
+      restore();
+    }
+  });
 
 describe("boundedOptions", () => {
   const CHOICES = [5, 30, 600] as const;
