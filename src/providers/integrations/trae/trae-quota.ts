@@ -34,6 +34,7 @@ import {
   text,
 } from "../../quota/quota-contracts";
 import type { QuotaCollectionContext } from "../../quota/quota-support";
+import { decodeJwtPayload } from "../../authentication/oauth-flow-store";
 import { buildTraeHeaders } from "./trae-headers";
 import {
   TRAE_ENT_USAGE_PATH,
@@ -84,6 +85,24 @@ function quotaAuth(context: QuotaCollectionContext | undefined): TraeQuotaAuth {
   const uidRaw = raw["uid"] ?? raw["userId"] ?? raw["user_id"];
   const uid = typeof uidRaw === "string" && uidRaw.trim() ? uidRaw.trim() : "";
   return { realm, uid };
+}
+
+/**
+ * The account id out of the access token itself.
+ *
+ * The device fingerprint is derived from the uid, so an empty one presents no
+ * device at all — and this surface correlates the credential against its
+ * device, answering `1001` for a token that is perfectly valid. The JWT carries
+ * the id, so it is read there when the auth state does not have it.
+ */
+function uidFromToken(credential: string): string | undefined {
+  const payload = decodeJwtPayload(credential);
+  if (!payload) return undefined;
+  for (const key of ["userId", "user_id", "uid", "sub"] as const) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
 }
 
 /** One bucket of `remain_usage`, paired with its cap from the sibling object. */
@@ -229,6 +248,7 @@ export async function fetchTraeQuota(
   context?: QuotaCollectionContext,
 ): Promise<ProviderQuotaResult> {
   const { realm, uid } = quotaAuth(context);
+  const resolvedUid = uid || uidFromToken(credential) || "";
   const config = TRAE_REALMS[realm];
   const errors: string[] = [];
 
@@ -239,7 +259,7 @@ export async function fetchTraeQuota(
       // than a meter — which read as "no quota" for every account.
       method: "POST",
       headers: {
-        ...buildTraeHeaders({ realm, token: credential, uid: uid || "0" }),
+        ...buildTraeHeaders({ realm, token: credential, uid: resolvedUid }),
         "content-type": "application/json",
       },
       body: "{}",

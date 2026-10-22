@@ -208,17 +208,25 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(shared?.limit).toBe(2500);
   });
 
-  test("a degenerate body yields no balance and no error", async () => {
-    // `isQuotaExceeded` with a zero total is "this account never had an
-    // allowance", not "it spent one". Reporting it as a zero balance parks the
-    // account on a reading that says nothing.
+  test("a live free-tier zero balance is reported, not discarded", async () => {
+    // Verified against a real credential: a live free-tier account answers
+    // `userQuota` all zeroes with `isQuotaExceeded: true`. That is a balance of
+    // zero, not an unreadable body — discarding it hid the account entirely.
     const fetcher = routedFetcher([
-      ["quota/usage", jsonResponse({ isQuotaExceeded: true, userQuota: { remaining: 0, total: 0 } })],
+      [
+        "quota/usage",
+        jsonResponse({
+          isQuotaExceeded: true,
+          totalUsagePercentage: 0,
+          userQuota: { total: 0, used: 0, remaining: 0 },
+        }),
+      ],
     ]);
 
     const result = await fetchQoderQuota("token", fetcher, {});
 
-    expect(result.windows).toHaveLength(0);
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.used).toBe(0);
     expect(result.error).toBeNull();
   });
 

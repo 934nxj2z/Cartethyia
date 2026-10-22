@@ -144,9 +144,14 @@ export async function fetchQoderQuota(
   const remaining = sumField(owned, "remaining");
   const total = sumField(owned, "total");
   const bothMissing = owned.length === 0;
-  const degenerate =
-    bothMissing ||
-    (root["isQuotaExceeded"] === true && remaining === 0 && total === 0);
+  // A live account on the free tier really does answer `userQuota` all zeroes
+  // with `isQuotaExceeded: true` — verified against a real credential:
+  // `{"isQuotaExceeded":true,"userQuota":{"total":0,"used":0,"remaining":0},
+  // "totalUsagePercentage":0.0,...}`. That is a balance of zero, not an
+  // unreadable body. Only a response with *both* quota objects absent is
+  // unreadable, and it is logged rather than returned — never as an error,
+  // which would cool the account.
+  const degenerate = bothMissing;
   if (degenerate) {
     // A body we cannot trust is not a zero balance, and it is not a failed
     // read either: `error` is what flags the account `quota_fetch_failed` and
