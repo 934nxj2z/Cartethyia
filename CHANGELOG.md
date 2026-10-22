@@ -143,6 +143,19 @@ exactly what the limit exists to prevent.
   exactly as it is — selection is a filter, not a rewrite, so "restore one
   table" no longer overwrites the rest with the file's older copy.
 
+- **A Data Management section reports what the gateway keeps on disk.**
+  Hourly request files, daily summaries, and payload frames are each measured
+  separately, with how much is reclaimable right now. **Reclaim** drops files
+  the gateway no longer reads, and **Flush** drains queued telemetry, usage,
+  and health writes immediately rather than waiting for the interval.
+
+  Every action touches files only, never database rows. Hourly files are
+  refused: they are the only copy of their requests until compaction folds
+  them up, so deleting one would lose real history. The card says so instead
+  of offering a button that would fail. Payload frames go whole or not at all,
+  because frames are appended to a file — one is dropped only once nothing in
+  it is still live.
+
 ### Fixed
 
 - **Remote Routing stayed off after being switched on.** The API-key update
@@ -150,6 +163,23 @@ exactly what the limit exists to prevent.
   allowlist never included the column, so a grant like `routing:cli_mapping`
   was accepted and silently dropped. The toggle appeared to save and the badge
   stayed "no CLI scope".
+
+- **The Force-disable-cooldown toggle could not be switched.** Its button sat
+  inside a `<label htmlFor>` pointing at that same button, so one click
+  activated the control twice — the label forwarded the activation and the
+  click reached the button as well. Both calls read the same state and both
+  asked to flip it, so it flipped twice and landed back where it started.
+
+- **Settings text no longer fights itself.** A field's label, its value, and
+  its help text were all 12px, so one field was three equal blocks with no
+  order; the label and value are 13px now. Backup headings were 18px while the
+  card above them was 14px, so "Backup" read larger than the card it sat
+  inside. And `text-subtitle` was in use where no such size exists, so those
+  headings fell back to the browser default — the class name looked right,
+  which is why it went unnoticed.
+
+- **Privacy settings are stacked rather than side by side.** Reading a field
+  two-up meant zig-zagging across for the label and back for the control.
 
 - **A Qoder model that declares `is_vl: false` is now excluded from image
   routes.** The router's capability profile granted image support to every row
