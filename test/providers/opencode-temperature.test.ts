@@ -30,13 +30,13 @@ const prepare = OPENCODE_FREE_SPEC.prepareRequest!;
 describe("OpenCode Free request preparation", () => {
   test("builds and forwards the default agent tools when the client sends none", async () => {
     const prepared = prepare({
-      ...request("opencode/longcat-2.5-preview-free", undefined),
+      ...request("opencode/big-pickle", undefined),
       stream: false,
       tools: [],
     });
     const candidate: ProviderDispatchTarget = {
       provider_id: "opencode",
-      model_id: "longcat-2.5-preview-free",
+      model_id: "big-pickle",
       wire_family: "responses",
       endpoint_path: "/v1/responses",
       capabilities: {},

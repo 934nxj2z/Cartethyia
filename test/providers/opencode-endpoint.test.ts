@@ -29,7 +29,7 @@ describe("OpenCode dispatch base", () => {
   });
 
   test("a free model lands on the URL a replay proved returns 200", () => {
-    const free = OPENCODE_FREE_MODELS.find((model) => model.modelId === "longcat-2.5-preview-free");
+    const free = OPENCODE_FREE_MODELS.find((model) => model.modelId === "big-pickle");
     expect(dispatchUrl("opencode", free?.endpointPath ?? "")).toBe(
       "https://opencode.ai/inference/v1/chat/completions",
     );

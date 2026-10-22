@@ -116,8 +116,12 @@ export function isSystemoneZenModel(modelId: string): boolean {
  * fail a probe.
  */
 export function isFreeTierZenModel(modelId: string): boolean {
-  if (unavailableFreeZenIds().includes(modelId)) return false;
-  return modelId.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(modelId);
+  // Dispatch ids arrive provider-prefixed (`opencode/big-pickle`) while the
+  // catalog and `KNOWN_FREE_ZEN_IDS` hold the bare id, so match on the bare
+  // id rather than the prefixed one.
+  const bare = modelId.slice(modelId.indexOf("/") + 1);
+  if (unavailableFreeZenIds().includes(bare)) return false;
+  return bare.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(bare);
 }
 
 /**
@@ -493,22 +497,17 @@ export function systemoneLimits(): Pick<ModelDefinition, "contextLimit" | "outpu
 
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  // Free-tier chat models the shared Zen listing advertises with the `-free`
-  // convention. Each was dispatched through this adapter (its own fingerprint
-  // headers, agent tools) and answered, so the row is routable, not merely
-  // listed. Limits come from the models.dev snapshot under `opencode`; a row
-  // the snapshot does not file keeps an explicit limit rather than the generic
-  // default.
-  defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
-  defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
-  // Absent from the snapshot: keep declared limits rather than the generic default.
-  defineModel({ id: "longcat-2.5-preview-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1_000_000, out: 131_072, reasoning: true, free: true }),
+  // `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` and
+  // `longcat-2.5-preview-free` are gone: the live Zen roster no longer lists
+  // them. A row the provider's own roster dropped can disappear from the wire
+  // without notice, which makes it a stale row — one that routes to a 404 at
+  // dispatch time rather than failing at catalog load. `big-pickle` and the
+  // rest of the shared Zen listing remain.
   systemoneZen("jev-1.13-free", true),
 ];
 
 export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "muse-spark-1.2", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   defineModel({ id: "muse-spark-1.3", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   systemoneZen("jev-1.13", false),

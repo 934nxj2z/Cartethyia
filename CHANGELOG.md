@@ -116,6 +116,14 @@ exactly what the limit exists to prevent.
 
 ### Changed
 
+- **`nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` and
+  `longcat-2.5-preview-free` are no longer catalogued for OpenCode.** The live
+  Zen roster no longer lists them. A row the provider's own roster has dropped
+  can vanish from the wire without notice, which makes it a stale row — one
+  that fails at dispatch with a 404 rather than at catalog load. Removed from
+  the free and Zen catalogs alike; `big-pickle` and the rest of the shared Zen
+  listing remain.
+
 - **An unclassified upstream failure cools the account down for 15 minutes.**
   It was 60 seconds, which returned the account to rotation and re-dialled an
   upstream that had just answered something this gateway does not understand,
