@@ -13,7 +13,7 @@
  */
 import { beforeAll, describe, expect, test } from "bun:test";
 import { createElement } from "react";
-import Settings from "../../src/features/settings/SettingsPage";
+import Settings, { boundedOptions } from "../../src/features/settings/SettingsPage";
 import { mount, stubFetch } from "../helpers/render";
 import { registerDom } from "../helpers/dom";
 
@@ -150,5 +150,37 @@ describe("Settings sections", () => {
       unmount();
       restore();
     }
+  });
+});
+
+describe("boundedOptions", () => {
+  const CHOICES = [5, 30, 600] as const;
+  const suffix = (v: number): string => `${v}s`;
+
+  test("offers every choice when nothing is stored", () => {
+    expect(boundedOptions(CHOICES, null, suffix)).toEqual([
+      { value: "5", label: "5s" },
+      { value: "30", label: "30s" },
+      { value: "600", label: "600s" },
+    ]);
+  });
+
+  test("keeps a stored value that is already a choice", () => {
+    const options = boundedOptions(CHOICES, 30, suffix);
+    // Duplicating it would render the same entry twice.
+    expect(options.filter((o) => o.value === "30")).toHaveLength(1);
+    expect(options).toHaveLength(3);
+  });
+
+  test("a value outside the list is offered, in order", () => {
+    // The load-bearing case: a value set elsewhere must still be selectable,
+    // or the trigger renders empty for a setting that is in force and reads as
+    // "unset" — inviting the operator to change something already correct.
+    expect(boundedOptions(CHOICES, 45, suffix)).toEqual([
+      { value: "5", label: "5s" },
+      { value: "30", label: "30s" },
+      { value: "45", label: "45s" },
+      { value: "600", label: "600s" },
+    ]);
   });
 });

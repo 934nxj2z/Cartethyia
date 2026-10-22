@@ -89,6 +89,14 @@ under **Settings → Operations**, without a restart.
   doubling borders and padding. Sections keep their ids, so a link to
   `#operations` still lands in the right place.
 
+- **Upstream timeout, compaction age, and attachment size are dropdowns in a
+  grid** rather than free number fields. Each is a bounded value the backend
+  clamps anyway, so offering the reachable range says what is actually
+  available instead of accepting anything and correcting it out of sight. A
+  value already stored that is not among the offered choices is still listed,
+  because otherwise the control renders empty for a setting that is in force —
+  which reads as unset and invites changing something already correct.
+
 - **The backup size limit no longer claims 8 GiB the install cannot accept.**
   It promised a ceiling far above the listener's own body cap, so the number
   described a limit nothing could reach: an upload above the listener's cap was
