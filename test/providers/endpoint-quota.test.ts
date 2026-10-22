@@ -60,7 +60,7 @@ describe("Cursor quota — the summary outranks the legacy surface", () => {
       [
         "usage-summary",
         jsonResponse({
-          individualUsage: { overall: { limit: 2000, used: 500 }, planName: "Pro" },
+          individualUsage: { plan: { enabled: true, limit: 200000, autoPercentUsed: 25 }, planName: "Pro" },
           billingCycleEnd: "2026-11-01T00:00:00.000Z",
         }),
       ],
@@ -74,7 +74,7 @@ describe("Cursor quota — the summary outranks the legacy surface", () => {
     );
 
     expect(result.error).toBeNull();
-    expect(result.windows).toHaveLength(1);
+    // 25% of a $2,000 cap.
     expect(result.windows[0]?.used).toBe(500);
     expect(result.windows[0]?.limit).toBe(2000);
     expect(result.plan).toBe("Pro");
@@ -250,7 +250,9 @@ describe("Cursor — the legacy bucket and the account identity", () => {
     const fetcher = routedFetcher([
       [
         "usage-summary",
-        jsonResponse({ individualUsage: { overall: { limit: 2000, used: 500 }, planName: "Pro" } }),
+        jsonResponse({
+          individualUsage: { plan: { enabled: true, autoPercentUsed: 25, apiPercentUsed: 10, limit: 2000 } },
+        }),
       ],
       ["/auth/usage", jsonResponse({ "gpt-4": { numRequests: 0, maxRequestUsage: null } })],
     ]);
@@ -259,8 +261,8 @@ describe("Cursor — the legacy bucket and the account identity", () => {
       credential_kind: "oauth",
     });
 
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]?.label).not.toContain("gpt-4");
+    // The named rails, not the empty legacy bucket.
+    expect(result.windows.map((w) => w.label).join(",")).toBe("Cursor Models,Other Models");
   });
 
   test("the account identity is reduced to an opaque tag", () => {
@@ -269,7 +271,7 @@ describe("Cursor — the legacy bucket and the account identity", () => {
     const fetcher = routedFetcher([
       [
         "usage-summary",
-        jsonResponse({ individualUsage: { overall: { limit: 2000, used: 500 } } }),
+        jsonResponse({ individualUsage: { plan: { enabled: true, autoPercentUsed: 5 } } }),
       ],
     ]);
     return fetchCursorQuota(tokenWithSubject("google-oauth2|user_01ABC"), fetcher, {

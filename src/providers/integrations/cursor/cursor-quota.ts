@@ -129,26 +129,71 @@ function parseUsageSummary(payload: unknown): {
   readonly windows: readonly ProviderQuotaWindow[];
   readonly plan: string | null;
 } {
-  const root = quotaRecord(payload);
+  const root = record(payload) ?? {};
   const individual = record(root["individualUsage"]);
   if (!individual) return { windows: [], plan: null };
   const reset = resetsAt(root);
   const windows: ProviderQuotaWindow[] = [];
 
-  const overall = record(individual["overall"]);
+  // The plan bucket is denominated two ways and the reference reads the
+  // percentages, not the dollar figures: an included plan carries `limit: 0`
+  // because there is no dollar cap to spend against, so reading `used`/`limit`
+  // reported every such account as `0 / 0` — a balance that looks empty and
+  // means nothing.
   const plan = record(individual["plan"]);
-  const onDemand = record(individual["onDemand"]);
+  const limitCents = number(plan?.["limit"]);
+  const limitUsd = limitCents !== null && limitCents > 0 ? limitCents / 100 : null;
 
-  for (const [source, kind, label] of [
-    [overall, "cursor:usd:individual-overall", "Personal usage"],
-    [plan, "cursor:usd:individual-plan", "Included plan usage"],
-    [onDemand, "cursor:usd:individual-on-demand", "On-demand usage"],
-  ] as const) {
-    if (!source) continue;
-    const window = centsWindow(kind, label, source, reset);
+  const percentWindowFor = (
+    kind: string,
+    label: string,
+    percent: number | null,
+    withLimit: boolean,
+  ): ProviderQuotaWindow | null => {
+    if (percent === null) return null;
+    const fraction = Math.max(0, percent) / 100;
+    if (withLimit && limitUsd !== null) {
+      return percentWindow(kind, label, percent, reset, limitUsd * fraction, limitUsd, "independent");
+    }
+    // No dollar cap, so the percentage is the whole reading: reported against a
+    // 100-point scale rather than as a dollar figure the plan does not have.
+    return percentWindow(kind, label, percent, reset, percent, 100, "independent");
+  };
+
+  const auto = percentWindowFor(
+    "cursor:usd:individual-auto",
+    "Cursor Models",
+    number(plan?.["autoPercentUsed"]),
+    false,
+  );
+  if (auto) windows.push(auto);
+  const api = percentWindowFor(
+    "cursor:usd:individual-api",
+    "Other Models",
+    number(plan?.["apiPercentUsed"]),
+    true,
+  );
+  if (api) windows.push(api);
+  if (!auto && !api) {
+    const fallback =
+      percentWindowFor(
+        "cursor:usd:individual-plan",
+        "Personal Usage",
+        number(plan?.["totalPercentUsed"]),
+        true,
+      ) ?? centsWindow("cursor:usd:individual-plan", "Personal Usage", plan ?? {}, reset);
+    if (fallback) windows.push(fallback);
+  }
+
+  // On-demand is spend beyond the included rails. Kept even when the plan
+  // bucket answered, because it is the part of the bill that grows.
+  const onDemand = record(individual["onDemand"]);
+  if (onDemand && onDemand["enabled"] !== false) {
+    const window = centsWindow("cursor:usd:individual-on-demand", "On-demand usage", onDemand, reset);
     if (window) windows.push(window);
   }
-  return { windows, plan: text(individual["planName"] ?? root["planName"]) };
+
+  return { windows, plan: text(individual["planName"] ?? root["membershipType"]) };
 }
 
 /**
