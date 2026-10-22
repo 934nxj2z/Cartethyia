@@ -2,6 +2,7 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { readCompactedRows, type CompactedRow } from "./event-compaction";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
+import { resolveDataDir } from "../persistence/db-mode";
 
 /**
  * Per-request telemetry lives in hourly JSONL files, not in Postgres. The
@@ -9,7 +10,16 @@ import { resolveTelemetryRetentionDays } from "../config/telemetry";
  * `telemetry_events` reads through here, so the file is the single source for
  * recent requests and the table is no longer written.
  */
-export const TELEMETRY_EVENT_DIR = "./data/telemetry-events";
+/**
+ * Where hourly event files and their compacted summaries live.
+ *
+ * Resolved from the configured data directory, never relative to the working
+ * directory: the gateway can be started from anywhere, and a relative path
+ * makes the written history depend on where the operator happened to be —
+ * start it from another folder and every past request reads as zero, because
+ * the files were written somewhere else entirely.
+ */
+export const TELEMETRY_EVENT_DIR = join(resolveDataDir(), "telemetry-events");
 
 /**
  * The source file an event lands in: one per closed `windowMinutes` bucket.

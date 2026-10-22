@@ -106,6 +106,18 @@ export interface CompactedBucket {
   readonly tokensPerSecCount: number;
   /** Requests whose cost could not be priced. */
   readonly unpriced: number;
+  /**
+   * Requests per breakdown dimension, kept so the Usage breakdown survives the
+   * source files being deleted.
+   *
+   * Only the *counts* are kept, never the events: a day's breakdown asks how
+   * many requests went to a model, not which ones. That is what makes this
+   * small enough to keep — a full event is ~1KB, a count is a few bytes.
+   */
+  readonly byModel: Readonly<Record<string, number>>;
+  readonly byProvider: Readonly<Record<string, number>>;
+  readonly byClient: Readonly<Record<string, number>>;
+  readonly byClientIp: Readonly<Record<string, number>>;
 }
 
 /** One compacted row: the totals of everything it replaced, for one key/day. */
@@ -117,8 +129,33 @@ export interface CompactedRow extends CompactedBucket {
   readonly apiKeyId: string | null;
 }
 
+/** Adds one occurrence to a count map, ignoring an absent key. */
+function bump(
+  counts: Readonly<Record<string, number>> | undefined,
+  key: string | null | undefined,
+): Record<string, number> {
+  const out: Record<string, number> = { ...(counts ?? {}) };
+  const name = typeof key === "string" ? key.trim() : "";
+  if (name !== "") out[name] = (out[name] ?? 0) + 1;
+  return out;
+}
+
+/** Adds two count maps. */
+function mergeCounts(
+  a: Readonly<Record<string, number>> | undefined,
+  b: Readonly<Record<string, number>> | undefined,
+): Record<string, number> {
+  const out: Record<string, number> = { ...(a ?? {}) };
+  for (const [key, value] of Object.entries(b ?? {})) out[key] = (out[key] ?? 0) + value;
+  return out;
+}
+
 export function emptyBucket(): CompactedBucket {
   return {
+    byModel: {},
+    byProvider: {},
+    byClient: {},
+    byClientIp: {},
     requests: 0,
     inputTokens: 0,
     cachedTokens: 0,
@@ -167,6 +204,10 @@ export function accumulate(
   }
   const priced = event.estimatedCostUsd ?? 0;
   return {
+    byModel: bump(into.byModel, event.requestedModel ?? event.reportedModel),
+    byProvider: bump(into.byProvider, event.providerId),
+    byClient: bump(into.byClient, event.sourceSurface),
+    byClientIp: bump(into.byClientIp, event.clientIp),
     requests: into.requests + 1,
     inputTokens: into.inputTokens + (event.inputTokens ?? 0),
     cachedTokens: into.cachedTokens + (event.cachedInputTokens ?? 0),
@@ -368,6 +409,10 @@ async function countLines(path: string): Promise<number> {
 function mergeBuckets(a: CompactedBucket, b: CompactedBucket): CompactedBucket {
   const histogram = a.latencyHistogram.map((count, index) => count + (b.latencyHistogram[index] ?? 0));
   return {
+    byModel: mergeCounts(a.byModel, b.byModel),
+    byProvider: mergeCounts(a.byProvider, b.byProvider),
+    byClient: mergeCounts(a.byClient, b.byClient),
+    byClientIp: mergeCounts(a.byClientIp, b.byClientIp),
     requests: a.requests + b.requests,
     inputTokens: a.inputTokens + b.inputTokens,
     cachedTokens: a.cachedTokens + b.cachedTokens,
@@ -423,6 +468,16 @@ export async function pruneStaleFiles(
     deleted += 1;
   }
   return deleted;
+}
+
+/** Reads a count map, discarding non-numeric values rather than failing. */
+function countMap(value: unknown): Record<string, number> {
+  if (typeof value !== "object" || value === null) return {};
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) out[key] = entry;
+  }
+  return out;
 }
 
 async function* readHourly(path: string): AsyncGenerator<TelemetryEventRecord> {
@@ -535,6 +590,12 @@ export async function readCompactedRows(file: string): Promise<readonly Compacte
         day: String(parsed["day"] ?? ""),
         tenantId: String(parsed["tenantId"] ?? ""),
         apiKeyId: typeof parsed["apiKeyId"] === "string" ? parsed["apiKeyId"] : null,
+        // Breakdown counts survive from older rows as absent, which is an empty
+        // map rather than a failure — the totals still read correctly.
+        byModel: countMap(parsed["byModel"]),
+        byProvider: countMap(parsed["byProvider"]),
+        byClient: countMap(parsed["byClient"]),
+        byClientIp: countMap(parsed["byClientIp"]),
         requests: Number(parsed["requests"] ?? 0),
         inputTokens: Number(parsed["inputTokens"] ?? 0),
         cachedTokens: Number(parsed["cachedTokens"] ?? 0),
