@@ -515,6 +515,15 @@ export function classifyAccountError(
       lower.includes("free-usage") ||
       lower.includes("free usage") ||
       lower.includes("exceeded your current quota") ||
+      // Trae answers an exhausted quota with **HTTP 502** and the body `Your
+      // requests have exceeded the quota.` The status is what misled the
+      // classifier: 502 read as a gateway failure, so this fell through to
+      // `server_error` — a 30s cooldown that does not mutate the account, so
+      // the account stayed in rotation and every other model on it kept being
+      // invoked inside a window the provider had already closed. The body is
+      // the verdict; the 502 is incidental. Matched on the phrase, not on the
+      // status, which is why this sits in `quotaSignal` ahead of the 5xx arm.
+      lower.includes("have exceeded the quota") ||
       lower.includes("balance exhausted") ||
       lower.includes("insufficient balance") ||
       lower.includes("out of credits") ||

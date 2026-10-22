@@ -116,6 +116,15 @@ exactly what the limit exists to prevent.
 
 ### Changed
 
+- **A Trae quota exhaustion that arrives as HTTP 502 is classified as quota.**
+  Trae answers an exhausted quota with status 502 and the body `Your requests
+  have exceeded the quota.` The status was what misled the classifier: 502 read
+  as a gateway failure, so it was recorded as `server_error` with a 30-second
+  cooldown that never touched the account. The account therefore stayed in
+  rotation and every other model on it kept being invoked inside a window the
+  provider had already closed. The body is the verdict, not the status, so this
+  is now read as `quota_exhausted` and flags account-wide.
+
 - **`nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` and
   `longcat-2.5-preview-free` are no longer catalogued for OpenCode.** The live
   Zen roster no longer lists them. A row the provider's own roster has dropped
