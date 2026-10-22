@@ -74,8 +74,15 @@ interface TraeQuotaAuth {
  */
 function quotaAuth(context: QuotaCollectionContext | undefined): TraeQuotaAuth {
   const raw = context?.auth_state ?? {};
+  // `realm` is not persisted by the OAuth client — it is a property of which
+  // provider id the account was registered under, so the CN wrapper forces it
+  // rather than trusting an absent field.
   const realm = raw["realm"] === "cn" || raw["region"] === "CN" ? "cn" : "intl";
-  const uid = typeof raw["uid"] === "string" && raw["uid"].trim() ? raw["uid"].trim() : "";
+  // The OAuth client stores the account id as `userId`; `uid` is the name the
+  // dispatch header builder uses. Reading only one of them left the device
+  // fingerprint empty for every account.
+  const uidRaw = raw["uid"] ?? raw["userId"] ?? raw["user_id"];
+  const uid = typeof uidRaw === "string" && uidRaw.trim() ? uidRaw.trim() : "";
   return { realm, uid };
 }
 
@@ -215,8 +222,15 @@ export async function fetchTraeQuota(
 
   const call = async (url: string): Promise<unknown> => {
     const response = await fetcher(url, {
-      method: "GET",
-      headers: buildTraeHeaders({ realm, token: credential, uid: uid || "0" }),
+      // POST with an empty JSON body, not GET: this is the commercial surface
+      // the desktop client calls, and it answers a GET with an error rather
+      // than a meter — which read as "no quota" for every account.
+      method: "POST",
+      headers: {
+        ...buildTraeHeaders({ realm, token: credential, uid: uid || "0" }),
+        "content-type": "application/json",
+      },
+      body: "{}",
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
