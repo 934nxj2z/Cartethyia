@@ -10,6 +10,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.5.4] - 2026-10-22
 
+### Added
+
+- **LarRouter is a bundled provider.** An OpenAI-compatible reseller at
+  `https://larprouter.com/v1`. It is discovery-backed, so its 13 models and
+  their context windows come from its own `/v1/models` rather than from a
+  catalog row that would drift.
+
+- **Proxy lists can be pasted in.** Resellers hand out proxies in three shapes
+  — a JSON array, bare URIs, and `host:port:user:password` rows — and none is
+  what `POST /network/pools` takes. `POST /console/api/network/pools/import`
+  accepts all three, so an operator pastes the file instead of converting it.
+  Unparseable lines are reported per line rather than failing the import.
+
+- **`carte autostart` registers the tray with the OS.** The tray only runs
+  while someone starts it, which is not much use for a gateway meant to be
+  always-on. Windows gets a Run value, macOS a launch agent, Linux a desktop
+  entry — each in the user's own location, so nothing needs elevation. It is
+  opt-in and reversible: `carte autostart off` removes it, and
+  `carte autostart status` reports which entry exists.
+
+- **More providers report quota.** Cursor, Trae and Qoder gained endpoint
+  quota reads, so their accounts show remaining allowance in the console
+  instead of only failing at dispatch. Trae reads the account's provisioned
+  region host and authenticates its commercial surface with `Cloud-IDE-JWT`;
+  Grok reports both its rate-limit window and its request bucket.
+
+- **A language switch and a donation button in the console topbar.** The
+  language control is a placeholder: the locales are listed and the current
+  one is marked, but no translation catalogue is wired up yet, so the console
+  stays in English. Choosing a locale is not offered as a working feature.
+
 ### Fixed — the Cursor tool loop
 
 - **A replayed Cursor conversation no longer dies on "tool call no longer
