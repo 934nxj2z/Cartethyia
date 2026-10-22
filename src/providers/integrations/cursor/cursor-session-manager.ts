@@ -28,6 +28,26 @@ export interface CursorContinuationScope {
   readonly providerAccountId: string;
 }
 
+/**
+ * The host exec frame a pending call forwards: Cursor asked its executor for a
+ * native host tool (shell, write, read) and the canonical client is executing
+ * it locally, so the result leg must answer the variant's typed result frame —
+ * not the generic `mcp_result` the MCP channel waits on.
+ */
+export interface CursorHostExecDetail {
+  readonly variant: "shell" | "write" | "read";
+  /** The shell command Cursor's executor re-reports in the result echo. */
+  readonly command?: string;
+  /** The shell working directory echo, when the args carried one. */
+  readonly workingDirectory?: string;
+  /** The target path echo for write/read frames. */
+  readonly path?: string;
+  /** Line count of the written content, computed from the call's args. */
+  readonly lines?: number;
+  /** Byte size of the written content, computed from the call's args. */
+  readonly fileSize?: number;
+}
+
 /** One pending external tool call awaiting the client's result. */
 export interface CursorPendingToolCall {
   /** Unguessable call id handed to the client. */
@@ -41,6 +61,8 @@ export interface CursorPendingToolCall {
   readonly execIdString?: string;
   /** Bare function name the client declared. */
   readonly toolName: string;
+  /** The forwarded host exec, when this call is one. */
+  readonly host?: CursorHostExecDetail;
 }
 
 /** Everything one live Run session owns. */
