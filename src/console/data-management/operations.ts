@@ -77,8 +77,8 @@ async function scan(
   return { bytes, files };
 }
 
-const isCompacted = (name: string): boolean => name.endsWith(".compacted.jsonl");
-const isHourly = (name: string): boolean => name.endsWith(".jsonl") && !isCompacted(name);
+const isIndex = (name: string): boolean => name.endsWith(".index.json");
+const isHourly = (name: string): boolean => name.endsWith(".events.jsonl");
 // Both extensions: old `.jsonb` files are still on disk and still counted.
 const isFrame = (name: string): boolean =>
   name.endsWith(".jsonl") || name.endsWith(".jsonb");
@@ -98,8 +98,8 @@ export function createDataManagementOperations(config: DataManagementConfig) {
 
     const [hourly, compacted, staleCompacted, frames, staleFrames, healthEventCount] = await Promise.all([
       scan(config.telemetryDir, isHourly),
-      scan(config.telemetryDir, isCompacted),
-      scan(config.telemetryDir, (name) => isCompacted(name) && dayBefore(name, retentionCutoff)),
+      scan(config.telemetryDir, isIndex),
+      scan(config.telemetryDir, (name) => isIndex(name) && dayBefore(name, retentionCutoff)),
       scan(payloadDir(), isFrame),
       scan(payloadDir(), isFrame, payloadCutoff),
       config.healthEvents?.count(),
@@ -108,7 +108,7 @@ export function createDataManagementOperations(config: DataManagementConfig) {
     const buckets: DiskUsageBucket[] = [
       {
         id: "telemetry_hourly",
-        label: "Hourly request files",
+        label: "Daily request files",
         bytes: hourly.bytes,
         files: hourly.files,
         note: "Feeds the request list and detail drawer.",
@@ -117,10 +117,10 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       },
       {
         id: "telemetry_compacted",
-        label: "Daily summaries",
+        label: "Day indexes",
         bytes: compacted.bytes,
         files: compacted.files,
-        note: `Feeds totals only. Past ${config.retentionDays} days, nothing reads them.`,
+        note: "Feeds usage totals, breakdowns and the chart.",
         reclaimableBytes: staleCompacted.bytes,
         reclaimableFiles: staleCompacted.files,
       },
@@ -170,12 +170,12 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       };
     }
     if (action === "telemetry_retention") {
-      // Only summaries past retention. An hourly file that old would normally
-      // have been compacted already, but excluding it here too means a
-      // misconfigured compaction cannot turn this into data loss.
+      // Only day indexes past retention, and only together with their events.
+      // Deleting one without the other is the failure this avoids: an index
+      // with no events reports totals for requests that are gone.
       const cutoff = Date.now() - config.retentionDays * 24 * 60 * 60_000;
       return unlinkWhere(action, config.telemetryDir, (name) =>
-        isCompacted(name) && dayBefore(name, cutoff),
+        (isIndex(name) || isHourly(name)) && dayBefore(name, cutoff),
       );
     }
     if (!config.allowHourlyReclaim) {

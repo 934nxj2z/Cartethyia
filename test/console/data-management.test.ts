@@ -60,8 +60,8 @@ afterEach(clear);
 
 describe("disk usage", () => {
   test("counts each category separately, not as one total", async () => {
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}T03.jsonl`), "x".repeat(100));
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(2)}.compacted.jsonl`), "y".repeat(50));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}.events.jsonl`), "x".repeat(100));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(2)}.index.json`), "y".repeat(50));
     await writeFile(join(PAYLOAD_DIR, "frame.jsonb"), "z".repeat(25));
 
     const usage = await OPS.usage();
@@ -75,8 +75,8 @@ describe("disk usage", () => {
   });
 
   test("a summary past retention is reported reclaimable, a newer one is not", async () => {
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(90)}.compacted.jsonl`), "y".repeat(64));
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(2)}.compacted.jsonl`), "y".repeat(32));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(90)}.index.json`), "y".repeat(64));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(2)}.index.json`), "y".repeat(32));
 
     const usage = await OPS.usage();
     const compacted = usage.buckets.find((b) => b.id === "telemetry_compacted");
@@ -94,8 +94,8 @@ describe("disk usage", () => {
 
 describe("reclaim", () => {
   test("removing past-retention summaries leaves newer ones alone", async () => {
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(90)}.compacted.jsonl`), "y".repeat(10));
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}.compacted.jsonl`), "y".repeat(20));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(90)}.index.json`), "y".repeat(10));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}.index.json`), "y".repeat(20));
 
     const result = await OPS.reclaim("telemetry_retention");
     expect(result.deletedFiles).toBe(1);
@@ -107,7 +107,7 @@ describe("reclaim", () => {
   test("hourly files are refused", async () => {
     // The safety boundary: these are the only copy of their requests until
     // compaction folds them up, so losing one loses real history.
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}T03.jsonl`), "x".repeat(10));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}.events.jsonl`), "x".repeat(10));
     await expect(OPS.reclaim("telemetry_hourly")).rejects.toBeInstanceOf(
       ReclaimNotAllowedError,
     );
@@ -115,7 +115,7 @@ describe("reclaim", () => {
   });
 
   test("a reclaim never touches a category it was not asked about", async () => {
-    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}T03.jsonl`), "x".repeat(10));
+    await writeFile(join(TELEMETRY_DIR, `${dayOffset(1)}.events.jsonl`), "x".repeat(10));
     await OPS.reclaim("telemetry_retention");
     // An hourly file survives a retention reclaim even when nothing is pruned.
     expect(await readdir(TELEMETRY_DIR)).toHaveLength(1);

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { apiKeys } from "../../persistence/schema";
-import { queryCompactedRows, queryTelemetryEvents } from "../../observability/event-log";
+import { queryIndexedBuckets } from "../../observability/event-day-index";
 import { utcDayStart, utcMonthStart } from "../shared/day";
 
 /**
@@ -33,18 +33,20 @@ export async function familyBucketSpend(
     .where(eq(apiKeys.parentKeyId, keyId));
   const keyIds = [keyId, ...children.map((child) => child.id)];
   const spentSince = async (start: Date): Promise<number> => {
-    const events = await queryTelemetryEvents({ apiKeyIds: keyIds, since: start });
-    const live = events
-      .reduce((sum, event) => sum + (event.inputTokens ?? 0) + (event.outputTokens ?? 0), 0);
-    // A window reaching past the compaction age also has per-day summaries.
-    // They carry running sums, so the spend stays exact: a key that spent 2B
-    // tokens still reports 2B after its request rows were folded.
+    // Folded first, so the index covers every event written so far including the
+    // current day's — then read from the index alone.
+    //
+    // Deliberately not index *plus* events: they hold the same requests, and
+    // adding them doubled every bucket. Folding first is what makes the index
+    // sufficient on its own; the watermark is the point up to which it is
+    // complete.
     const allowed = new Set(keyIds);
-    const compacted = await queryCompactedRows({ since: start });
-    const folded = compacted
-      .filter((row) => row.apiKeyId !== null && allowed.has(row.apiKeyId))
-      .reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
-    return live + folded;
+    const indexed = await queryIndexedBuckets({ since: start, foldFirst: true }).catch(
+      () => [],
+    );
+    return indexed
+      .filter((bucket) => bucket.apiKeyId !== null && allowed.has(bucket.apiKeyId))
+      .reduce((sum, bucket) => sum + bucket.inputTokens + bucket.outputTokens, 0);
   };
   const [daily, monthly] = await Promise.all([
     spentSince(utcDayStart(now)),

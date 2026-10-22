@@ -401,7 +401,8 @@ export async function listEventDays(): Promise<readonly string[]> {
  * traffic.
  */
 export async function queryIndexedBuckets(options: {
-  readonly tenantId: string;
+  /** Omit to read every tenant — a caller that filters by key, not by tenant. */
+  readonly tenantId?: string | undefined;
   readonly since?: Date | undefined;
   /** Fold each day's tail first, so a read never reports a stale total. */
   readonly foldFirst?: boolean;
@@ -414,7 +415,7 @@ export async function queryIndexedBuckets(options: {
     if (options.foldFirst === true) await foldDayIndex(day).catch(() => ({ folded: 0 }));
     const index = await readDayIndex(day);
     for (const bucket of index.buckets) {
-      if (bucket.tenantId !== options.tenantId) continue;
+      if (options.tenantId !== undefined && bucket.tenantId !== options.tenantId) continue;
       out.push(bucket);
     }
   }

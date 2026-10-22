@@ -5,11 +5,14 @@ import type { RedisClient } from "../../persistence/redis";
 import { apiKeys, networkPools, telemetryPayloads } from "../../persistence/schema";
 import {
   queryTelemetryEvents,
-  queryCompactedRows,
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
 import { queryIndexedBuckets, type IndexedBucket } from "../../observability/event-day-index";
+import {
+  LATENCY_BUCKETS_MS,
+  percentileFromHistogram,
+} from "../../observability/event-compaction";
 import { cachedReadWithEtag, type CachedResult } from "../shared/read-through-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
@@ -246,6 +249,41 @@ export function summarizeUsagePerformance(
     latencyP99Ms: percentile(latencies, 0.99),
     latencySampleCount: latencies.length,
     resolveSampleCount: resolveCount,
+  };
+}
+
+/**
+ * The performance summary from indexed buckets rather than from events.
+ *
+ * The index keeps a latency sum, a sample count, and a histogram, so the mean
+ * stays exact and the percentiles stay bucketed — the same precision the
+ * per-event version had, without parsing the period's requests.
+ */
+export function summarizeBucketPerformance(
+  buckets: readonly IndexedBucket[],
+): UsagePerformanceSummary {
+  let latencySum = 0;
+  let latencyCount = 0;
+  const histogram: number[] = [];
+  for (const bucket of buckets) {
+    latencySum += bucket.latencySum;
+    latencyCount += bucket.latencyCount;
+    for (let index = 0; index < bucket.latencyHistogram.length; index += 1) {
+      histogram[index] = (histogram[index] ?? 0) + (bucket.latencyHistogram[index] ?? 0);
+    }
+  }
+  const fill =
+    histogram.length > 0
+      ? histogram
+      : new Array<number>(LATENCY_BUCKETS_MS.length + 1).fill(0);
+  return {
+    avgResolveMs: 0,
+    avgDurationMs: latencyCount > 0 ? latencySum / latencyCount : 0,
+    latencyP50Ms: percentileFromHistogram(fill, 50) ?? 0,
+    latencyP95Ms: percentileFromHistogram(fill, 95) ?? 0,
+    latencyP99Ms: percentileFromHistogram(fill, 99) ?? 0,
+    latencySampleCount: latencyCount,
+    resolveSampleCount: 0,
   };
 }
 
@@ -544,15 +582,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
 
   private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
     const buckets = await this.periodBuckets(tenantId, period);
-    const since = periodStartDate(period);
-    // Totals for days whose events are already folded into the index. Anything
-    // appended since the last fold is still uncounted, so the tail is folded
-    // here too — a read should not depend on the scheduler having run.
-    const compacted = await queryCompactedRows({
-      tenantId,
-      ...(since === undefined ? {} : { since }),
-    });
-    const performance = summarizeUsagePerformance([]);
+    const performance = summarizeBucketPerformance(buckets);
     let requests = 0;
     let inputTokens = 0;
     let cachedTokens = 0;
@@ -565,7 +595,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     let tokensPerSecSum = 0;
     let tokensPerSecCount = 0;
     const statuses = new Map<number, number>();
-    for (const row of [...buckets, ...compacted]) {
+    for (const row of buckets) {
       requests += row.requests;
       inputTokens += row.inputTokens;
       outputTokens += row.outputTokens;

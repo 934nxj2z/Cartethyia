@@ -38,7 +38,7 @@ export function isSupportedUsagePeriod(period: string): boolean {
  */
 async function detailNotFoundMessage(requestId: string, noun = "Request"): Promise<string> {
   const compacted = await readdir("./data/telemetry-events").catch(() => [] as string[]);
-  const hasSummaries = compacted.some((file) => file.endsWith(".compacted.jsonl"));
+  const hasSummaries = compacted.some((file) => file.endsWith(".index.json"));
   if (!hasSummaries) return `${noun} ${requestId} not found`;
   return (
     `${noun} ${requestId} is no longer stored individually: requests older than ` +
