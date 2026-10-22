@@ -87,6 +87,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   reports totals for requests that are gone, and events with no index are
   invisible to every usage read.
 
+### Fixed — Cline quota refresh
+
+- **A Cline account on an API key is no longer cooled every minute.** The
+  scheduled quota sweep built its refresh dependencies without the
+  provider-specific credential envelope, so the collector received the raw
+  stored secret. An `sk_...` key with no envelope takes the OAuth branch, gets
+  `workos:` prepended, and Cline refuses it with "please make sure you're using
+  the latest version of Cline and re-authenticate".
+
+  The account was therefore marked `quota_fetch_failed` and cooled on every
+  sweep while refreshing cleanly from the console — which runs the same code
+  with that one field set. Confirmed against a live key: the unmarked
+  credential fails with exactly that message, the marked one returns no error.
+
+  Both paths now share one marker function, so a third caller cannot omit it.
+
 ## [2.5.3] - 2026-10-21
 
 ### Fixed — performance
