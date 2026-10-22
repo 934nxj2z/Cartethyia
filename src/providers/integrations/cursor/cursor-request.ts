@@ -304,9 +304,9 @@ export function buildExecHeartbeat(execId: number): Uint8Array {
 }
 
 /** `ACM#5 exec_client_control_message.stream_close{id}` after an exec result. */
-export function buildExecStreamClose(execId: number): Uint8Array {
+export function buildExecStreamClose(execId: number, execIdString?: string): Uint8Array {
   return encodeMessage("AgentClientMessage", {
-    exec_client_control_message: { stream_close: { id: execId } },
+    exec_client_control_message: { stream_close: { id: execId, ...(execIdString === undefined ? {} : { exec_id: execIdString }) } },
   });
 }
 
@@ -335,10 +335,12 @@ export function buildKvGetBlobResult(id: number, blobData: Uint8Array): Uint8Arr
 export function buildRequestContextResult(
   execId: number,
   requestContext: Record<string, unknown>,
+  execIdString?: string,
 ): Uint8Array {
   return encodeMessage("AgentClientMessage", {
     exec_client_message: {
       id: execId,
+      exec_id: execIdString ?? "",
       request_context_result: { success: { request_context: requestContext } },
     },
   });
@@ -355,10 +357,12 @@ export function buildRequestContextResult(
 export function buildMcpStateResult(
   execId: number,
   descriptors: readonly CursorToolDescriptor[],
+  execIdString?: string,
 ): Uint8Array {
   return encodeMessage("AgentClientMessage", {
     exec_client_message: {
       id: execId,
+      exec_id: execIdString ?? "",
       mcp_state_exec_result: {
         success: {
           servers: [
@@ -389,6 +393,7 @@ function imageContentItem(data: Uint8Array, mimeType: string): Record<string, un
  */
 export function buildMcpResult(input: {
   readonly execId: number;
+  readonly execIdString?: string;
   readonly text: string;
   readonly isError: boolean;
   readonly images?: readonly { data: Uint8Array; mimeType: string }[];
@@ -402,6 +407,7 @@ export function buildMcpResult(input: {
   return encodeMessage("AgentClientMessage", {
     exec_client_message: {
       id: input.execId,
+      exec_id: input.execIdString ?? "",
       mcp_result: { success: { content, is_error: input.isError } },
     },
   });
@@ -416,12 +422,75 @@ export function buildMcpResult(input: {
  * what lets the model continue without the gateway ever touching a filesystem
  * or a shell on the caller's behalf.
  */
-export function buildMcpRejected(execId: number, reason: string): Uint8Array {
+export function buildMcpRejected(
+  execId: number,
+  reason: string,
+  execIdString?: string,
+): Uint8Array {
   return encodeMessage("AgentClientMessage", {
     exec_client_message: {
       id: execId,
+      exec_id: execIdString ?? "",
       mcp_result: { rejected: { reason, is_readonly: true } },
     },
+  });
+}
+
+/**
+ * `ACM#2 exec_client_message{*_allowlist_precheck_result}` for frames 41/42/43.
+ *
+ * Cursor asks whether a shell command, MCP tool, or web fetch would be
+ * permitted *before* it emits the real call. This gateway executes none of its
+ * own surface, so every precheck is answered `allowlisted: false` — the model
+ * never learns otherwise than that the tool must be routed through the
+ * advertised MCP channel it was told about.
+ */
+export function buildAllowlistPrecheckResult(
+  execId: number,
+  kind: "shell" | "mcp" | "web_fetch",
+  execIdString?: string,
+): Uint8Array {
+  const frame =
+    kind === "shell"
+      ? "shell_allowlist_precheck_result"
+      : kind === "mcp"
+        ? "mcp_allowlist_precheck_result"
+        : "web_fetch_allowlist_precheck_result";
+  return encodeMessage("AgentClientMessage", {
+    exec_client_message: { id: execId, exec_id: execIdString ?? "", [frame]: { allowlisted: false } },
+  });
+}
+
+/**
+ * `ACM#5 exec_client_control_message.throw{id}`: fails an exec frame in band.
+ *
+ * An unrecognized (or unimplementable) exec variant must still be answered —
+ * silently returning strands the exec id and the server waits forever on a
+ * reply that never comes. Cursor's own executor recovers exactly this way, so
+ * the server surfaces the error to the model instead of blocking the turn.
+ */
+export function buildExecThrow(execId: number, error: string, execIdString?: string): Uint8Array {
+  return encodeMessage("AgentClientMessage", {
+    exec_client_control_message: {
+      throw: { id: execId, error, ...(execIdString === undefined ? {} : { exec_id: execIdString }) },
+    },
+  });
+}
+
+/**
+ * `ACM#6 interaction_response{id}` answering one permission gate.
+ *
+ * Result names must match the queried variant's response frame; bodies stay
+ * opaque so every gate is answered as a policy object rather than a decoded
+ * args blob.
+ */
+export function buildInteractionResponse(
+  queryId: number,
+  resultName: string,
+  result: Record<string, unknown>,
+): Uint8Array {
+  return encodeMessage("AgentClientMessage", {
+    interaction_response: { id: queryId, [resultName]: result },
   });
 }
 

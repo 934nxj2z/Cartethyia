@@ -34,6 +34,11 @@ export interface CursorPendingToolCall {
   readonly callId: string;
   /** Cursor's exec message id the result must echo. */
   readonly execId: number;
+  /**
+   * Cursor's exec UUID for the frame, when the build carries one.
+   * Newer edges pair exec replies on it as well as the numeric id.
+   */
+  readonly execIdString?: string;
   /** Bare function name the client declared. */
   readonly toolName: string;
 }

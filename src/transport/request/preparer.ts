@@ -85,12 +85,13 @@ export function resolveContinuationAffinity(
     // id replayed from another key or tenant resolves nothing.
     const record = lookupPendingCall(callId, scope);
     if (record === undefined) {
-      throw new GatewayError(
-        "invalid_request",
-        400,
-        "This tool result refers to a Cursor tool call that is no longer pending. Resend the complete conversation.",
-        { callId },
-      );
+      // A replayed conversation carries every earlier tool result, and results
+      // previous legs already answered resolve nothing here — they are history,
+      // not the flight being continued. The request is a continuation only
+      // through the ids that still resolve; when none do, the ordinary routing
+      // path decides (a Cursor adapter may rebase the full history into a
+      // fresh Run).
+      continue;
     }
     if (affinity !== undefined && affinity.providerAccountId !== record.providerAccountId) {
       throw new GatewayError(

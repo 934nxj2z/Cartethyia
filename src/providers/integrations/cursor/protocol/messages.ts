@@ -1503,6 +1503,27 @@ export function createMessageTypes(): protobuf.Root {
     { id: 1, name: "request_context", type: "RequestContextPayload" },
   ])
 
+  // Allowlist prechecks (exec #41/#42/#43): Cursor asks whether a shell
+  // command / MCP tool / web fetch would be permitted before it emits the
+  // real call. Without an args frame this is decodable, but its exec id is
+  // then stranded — the server waits forever for the matching result.
+  addType(root, "ShellAllowlistPrecheckArgs", [
+    { id: 1, name: "command", type: "string" },
+    { id: 2, name: "working_directory", type: "string" },
+    { id: 3, name: "parsing_result", type: "bytes" },
+    { id: 4, name: "classifier_result", type: "bytes" },
+    { id: 5, name: "tool_call_id", type: "string" },
+  ])
+  addType(root, "McpAllowlistPrecheckArgs", [
+    { id: 1, name: "provider_identifier", type: "string" },
+    { id: 2, name: "tool_name", type: "string" },
+    { id: 3, name: "tool_call_id", type: "string" },
+  ])
+  addType(root, "WebFetchAllowlistPrecheckArgs", [
+    { id: 1, name: "url", type: "string" },
+    { id: 2, name: "tool_call_id", type: "string" },
+  ])
+
   addType(root, "RequestContextResult", [
     { id: 1, name: "success", type: "RequestContextSuccess" },
   ])
@@ -1568,6 +1589,9 @@ export function createMessageTypes(): protobuf.Root {
       { id: 18, name: "read_mcp_resource_exec_args", type: "ReadMcpResourceExecArgs" },
       { id: 28, name: "subagent_args", type: "SubagentArgs" },
       { id: 36, name: "mcp_state_exec_args", type: "McpStateExecArgs" },
+      { id: 41, name: "shell_allowlist_precheck_args", type: "ShellAllowlistPrecheckArgs" },
+      { id: 42, name: "mcp_allowlist_precheck_args", type: "McpAllowlistPrecheckArgs" },
+      { id: 43, name: "web_fetch_allowlist_precheck_args", type: "WebFetchAllowlistPrecheckArgs" },
       { id: 44, name: "git_diff_request", type: "GetDiffRequest" },
       { id: 45, name: "pi_read_args", type: "PiReadToolArgs" },
       { id: 46, name: "pi_bash_args", type: "PiBashToolArgs" },
@@ -1582,6 +1606,7 @@ export function createMessageTypes(): protobuf.Root {
       "shell_args", "write_args", "delete_args", "grep_args", "read_args", "ls_args",
       "request_context_args", "mcp_args", "shell_stream_args", "background_shell_spawn_args",
       "list_mcp_resources_exec_args", "read_mcp_resource_exec_args", "mcp_state_exec_args",
+      "shell_allowlist_precheck_args", "mcp_allowlist_precheck_args", "web_fetch_allowlist_precheck_args",
       "subagent_args", "git_diff_request",
       "pi_read_args", "pi_bash_args", "pi_edit_args", "pi_write_args",
       "pi_grep_args", "pi_find_args", "pi_ls_args",
