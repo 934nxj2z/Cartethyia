@@ -11,6 +11,26 @@ import { resolveTelemetryRetentionDays } from "../config/telemetry";
  */
 export const TELEMETRY_EVENT_DIR = "./data/telemetry-events";
 
+/**
+ * The source file an event lands in: one per closed `windowMinutes` bucket.
+ *
+ * The name is the bucket's own start (`YYYY-MM-DDTHH-MM`), so both the writer
+ * and the compactor derive it from a timestamp and cannot disagree. It is also
+ * what makes "is this window closed?" a name comparison rather than a read.
+ */
+export function windowFileName(at: Date, windowMinutes: number): string {
+  // `2026-10-22T05-15.jsonl`: ISO to the minute with the colon replaced, so the
+  // name sorts chronologically and needs no separate timestamp column.
+  return `${bucketStart(at, windowMinutes).toISOString().slice(0, 16).replace(":", "-")}.jsonl`;
+}
+
+/** The start of the window containing `at`, floored to `windowMinutes`. */
+export function bucketStart(at: Date, windowMinutes: number): Date {
+  const ms = Math.max(1, Math.floor(windowMinutes)) * 60_000;
+  return new Date(Math.floor(at.getTime() / ms) * ms);
+}
+
+
 export interface TelemetryEventRecord {
   readonly id: string;
   readonly createdAt: string;

@@ -10,6 +10,8 @@ import {
   type TelemetryUsageIdentityType,
 } from "../schema";
 import { isGatewayError } from "../../observability/telemetry-status";
+import { TELEMETRY_EVENT_DIR, windowFileName } from "../../observability/event-log";
+import { resolveTelemetryWindowMinutes } from "../../config/telemetry";
 
 interface UsageTotalDelta {
   readonly tenantId: string;
@@ -66,7 +68,6 @@ function aggregateUsage(rows: readonly (typeof telemetryEvents.$inferInsert)[]) 
  * operations, lifetime aggregates, and retention.
  */
 
-const EVENT_DIR = "./data/telemetry-events";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -74,19 +75,21 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * cutoff. The current hour's file is never touched: it is still being appended.
  */
 async function pruneEventFiles(before: Date): Promise<void> {
-  const files = await readdir(EVENT_DIR).catch(() => [] as string[]);
+  const files = await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]);
   const cutoff = before.toISOString().slice(0, 13).replaceAll(":", "-");
   for (const file of files) {
     if (!file.endsWith(".jsonl")) continue;
     const hour = file.slice(0, 13);
-    if (hour < cutoff) await rm(join(EVENT_DIR, file), { force: true });
+    if (hour < cutoff) await rm(join(TELEMETRY_EVENT_DIR, file), { force: true });
   }
 }
 
-/** Appends one JSON line per event. One file per hour, so retention is a file delete. */
+/** Appends one JSON line per event into the current window's file. */
 async function appendEvents(rows: readonly (typeof telemetryEvents.$inferInsert)[]): Promise<void> {
-  await mkdir(EVENT_DIR, { recursive: true });
-  const file = join(EVENT_DIR, new Date().toISOString().slice(0, 13).replaceAll(":", "-") + ".jsonl");
+  await mkdir(TELEMETRY_EVENT_DIR, { recursive: true });
+  // Same derivation the compactor uses, so the writer and the folder cannot
+  // disagree about which file a moment belongs to.
+  const file = join(TELEMETRY_EVENT_DIR, windowFileName(new Date(), resolveTelemetryWindowMinutes()));
   const newline = String.fromCharCode(10);
   const body = rows.map((row) => JSON.stringify(row)).join(newline) + newline;
   await appendFile(file, body, "utf8");

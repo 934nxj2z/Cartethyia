@@ -148,7 +148,7 @@ describe("compaction is safe to run repeatedly", () => {
       "utf8",
     );
 
-    const first = await compactTelemetryFiles({ olderThanDays: 0, now: new Date("2026-10-21T00:00:00Z") });
+    const first = await compactTelemetryFiles({ now: new Date("2026-10-21T00:00:00Z") });
     expect(first.filesCompacted).toBe(1);
     const afterFirst = await queryCompactedRows({ tenantId: "tenant-1" });
     const firstTotal = afterFirst.reduce((sum, row) => sum + row.inputTokens, 0);
@@ -156,7 +156,7 @@ describe("compaction is safe to run repeatedly", () => {
 
     // A second pass over the same directory finds no hourly files left, and
     // must not re-fold the summary that is already there.
-    const second = await compactTelemetryFiles({ olderThanDays: 0, now: new Date("2026-10-21T00:00:00Z") });
+    const second = await compactTelemetryFiles({ now: new Date("2026-10-21T00:00:00Z") });
     expect(second.filesCompacted).toBe(0);
     const afterSecond = await queryCompactedRows({ tenantId: "tenant-1" });
     expect(afterSecond.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(firstTotal);

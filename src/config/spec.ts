@@ -166,14 +166,30 @@ export const CONFIG_SPEC = {
    * How often the compaction sweep runs, in minutes.
    *
    * Compaction reads every file it folds — the same O(total volume) cost the
-   * query path pays, but once instead of per read. Hourly keeps each pass small
-   * (one hour of new files) at the cost of one extra pass an hour; a daily
-   * pass is cheaper in total but does more work at once.
+   * query path pays, but once instead of per read. This is also the size of the
+   * source window below unless that one is set.
    */
   CARTETHYIA_TELEMETRY_COMPACT_INTERVAL_MINUTES: {
     kind: "int",
     default: 60,
     min: 5,
+    max: 1440,
+  },
+  /**
+   * Minutes of events held in one source file before it is folded into the
+   * day's summary.
+   *
+   * This is the window the per-request view lives in: request list, filters,
+   * and the detail drawer read the source files, so raising it keeps detail
+   * around longer at the cost of more files to scan. Lowering it moves
+   * requests into the summary sooner, where only totals survive.
+   *
+   * Defaults to the sweep interval, so one window closes per pass.
+   */
+  CARTETHYIA_TELEMETRY_WINDOW_MINUTES: {
+    kind: "int",
+    default: 15,
+    min: 1,
     max: 1440,
   },
   /** Maximum hourly files folded in one pass. The next pass continues. */

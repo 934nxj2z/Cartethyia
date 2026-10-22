@@ -28,7 +28,8 @@ import { getErrorMessage } from "../../data/api";
  * option, because "unset" is a real state rather than one of the numbers.
  */
 const TIMEOUT_CHOICES = [5, 15, 30, 60, 120, 300, 600] as const;
-const COMPACTION_CHOICES = [1, 3, 7, 14, 30, 90, 365] as const;
+/** How long requests stay in full before being folded into the day summary. */
+const WINDOW_CHOICES = [5, 15, 30, 60, 180, 720, 1440] as const;
 const ATTACHMENT_CHOICES = [1, 5, 10, 25, 50, 100] as const;
 
 /**
@@ -339,33 +340,33 @@ function OperationalPanel(): ReactNode {
 
         <div className="settings-field">
           <Select
-            label="Telemetry compaction age"
-            id="compact-after-days"
-            value={settings.telemetryCompactAfterDays?.toString() ?? ""}
+            label="Request detail window"
+            id="telemetry-window-minutes"
+            value={settings.telemetryWindowMinutes?.toString() ?? ""}
             placeholder="Deployment default"
             onValueChange={(value) =>
               save(
                 {
-                  telemetryCompactAfterDays: value === "" ? null : Number(value),
+                  telemetryWindowMinutes: value === "" ? null : Number(value),
                 },
-                "Compaction age updated.",
+                "Detail window updated.",
               )
             }
             options={[
               ...boundedOptions(
-                COMPACTION_CHOICES,
-                settings.telemetryCompactAfterDays,
-                (v) => (v === 1 ? "1 day" : `${v} days`),
+                WINDOW_CHOICES,
+                settings.telemetryWindowMinutes,
+                (v) => (v === 60 ? "1 hour" : v === 1440 ? "1 day" : `${v} minutes`),
               ),
               { value: "", label: "Deployment default" },
             ]}
           />
           <p className="mt-3 text-caption text-text-tertiary">
-            1–365 days. Past this age, hourly request files are folded into
-            daily summaries: totals keep counting, but individual requests are
-            no longer listed. Hourly files hold every tenant together, so the
-            largest age across all tenants wins — compacting later than asked
-            only costs disk, while compacting earlier would destroy rows
+            1–1440 minutes. Requests are kept in full for this long, then folded
+            into the day's summary: totals keep counting, but the request list
+            and detail drawer no longer show them. Files hold every tenant
+            together, so the largest window across all tenants wins — keeping
+            them longer only costs disk, while folding sooner gives up detail
             someone expected to keep.
           </p>
         </div>

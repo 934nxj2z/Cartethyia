@@ -1075,7 +1075,7 @@ export interface ConsoleSettingsPreferences {
    * deployment default. Lower keeps less history but bounds the usage-list
    * scan; see the compaction notes in `event-compaction.ts`.
    */
-  telemetryCompactAfterDays?: number | null;
+  telemetryWindowMinutes?: number | null;
   /**
    * Per-tenant ceiling for one inline attachment, in bytes, overriding the
    * deployment default of 10 MB.

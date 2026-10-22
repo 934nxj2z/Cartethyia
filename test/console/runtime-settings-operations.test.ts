@@ -16,7 +16,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { getDb } from "../../src/persistence/boot";
 import { consoleSettings } from "../../src/persistence/schema";
 import { DrizzleRuntimeSettingsStore } from "../../src/console/settings/store";
-import { resolveEffectiveCompactAfterDays } from "../../src/observability/event-compaction";
+import { resolveEffectiveWindowMinutes } from "../../src/observability/event-compaction";
 import { dbDescribe, requireDatabase } from "../helpers/database";
 import { createWorld, type GatewayWorld } from "../helpers/fixtures";
 
@@ -66,7 +66,7 @@ dbDescribe("operational runtime settings", () => {
     await writeBag({});
     const settings = await store.get(world.tenantId);
     expect(settings.upstreamTimeoutSeconds).toBeNull();
-    expect(settings.telemetryCompactAfterDays).toBeNull();
+    expect(settings.telemetryWindowMinutes).toBeNull();
   });
 
   test("an out-of-range timeout is clamped to the env var's own bounds", async () => {
@@ -81,13 +81,13 @@ dbDescribe("operational runtime settings", () => {
     // stored as one: they mean "no override".
     await writeBag({ upstreamTimeoutSeconds: -5 });
     expect((await store.get(world.tenantId)).upstreamTimeoutSeconds).toBeNull();
-    await writeBag({ telemetryCompactAfterDays: "not a number" });
-    expect((await store.get(world.tenantId)).telemetryCompactAfterDays).toBeNull();
+    await writeBag({ telemetryWindowMinutes: "not a number" });
+    expect((await store.get(world.tenantId)).telemetryWindowMinutes).toBeNull();
   });
 
   test("a compaction age override round-trips", async () => {
-    await writeBag({ telemetryCompactAfterDays: 14 });
-    expect((await store.get(world.tenantId)).telemetryCompactAfterDays).toBe(14);
+    await writeBag({ telemetryWindowMinutes: 14 });
+    expect((await store.get(world.tenantId)).telemetryWindowMinutes).toBe(14);
   });
 
   test("the effective compaction age never compacts earlier than the widest ask", async () => {
@@ -95,8 +95,8 @@ dbDescribe("operational runtime settings", () => {
     // preferences is the largest: compacting earlier than one tenant asked for
     // destroys rows that tenant expected to keep, while compacting later only
     // costs disk.
-    await writeBag({ telemetryCompactAfterDays: 21 });
-    const effective = await resolveEffectiveCompactAfterDays(getDb());
+    await writeBag({ telemetryWindowMinutes: 21 });
+    const effective = await resolveEffectiveWindowMinutes(getDb());
     expect(effective).toBeGreaterThanOrEqual(21);
   });
 

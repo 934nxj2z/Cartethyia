@@ -24,12 +24,16 @@
  *   N .. M days   compacted daily summary
  *   beyond M      deleted
  */
-import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TELEMETRY_EVENT_DIR, type TelemetryEventRecord } from "./event-log";
+import {
+  TELEMETRY_EVENT_DIR,
+  windowFileName,
+  type TelemetryEventRecord,
+} from "./event-log";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { consoleSettings } from "../persistence/schema";
-import { resolveTelemetryCompactAfterDays, resolveTelemetryRetentionDays } from "../config/telemetry";
+import { resolveTelemetryWindowMinutes } from "../config/telemetry";
 
 /**
  * The compaction age to apply on a pass with no explicit age given.
@@ -37,27 +41,29 @@ import { resolveTelemetryCompactAfterDays, resolveTelemetryRetentionDays } from 
  * Hourly files are **not** partitioned per tenant — one file per hour holds
  * every tenant's rows — so a per-tenant age cannot be honoured per file. The
  * safest reading of several tenants' preferences is the **largest**: compacting
- * earlier than one tenant asked for destroys rows that tenant expected to keep,
- * while compacting later than another wanted only costs disk and a slower scan.
- * Losing data is not reversible; using more disk is.
+ * smaller than one tenant asked for moves its requests into the summary before
+ * that tenant expected, losing the per-request view of them, while keeping them
+ * longer than another wanted only costs disk and a slower scan. Losing detail
+ * is not reversible; using more disk is.
  *
  * Falls back to the deployment default when no tenant overrides, and never
  * exceeds the retention window (compacting at or past the delete age would
  * fold a file and discard it in the same pass).
  */
-export async function resolveEffectiveCompactAfterDays(db: CartethyiaDatabase): Promise<number> {
-  const fallback = resolveTelemetryCompactAfterDays();
-  const retention = resolveTelemetryRetentionDays();
+export async function resolveEffectiveWindowMinutes(db: CartethyiaDatabase): Promise<number> {
+  const fallback = resolveTelemetryWindowMinutes();
   try {
     const rows = await db
       .select({ preferences: consoleSettings.preferences })
       .from(consoleSettings);
     let widest = fallback;
     for (const row of rows) {
-      const days = row.preferences?.telemetryCompactAfterDays;
-      if (typeof days === "number" && Number.isFinite(days) && days > widest) widest = days;
+      const minutes = row.preferences?.telemetryWindowMinutes;
+      if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > widest) {
+        widest = minutes;
+      }
     }
-    return Math.min(Math.floor(widest), retention);
+    return Math.floor(widest);
   } catch {
     return fallback;
   }
@@ -235,11 +241,6 @@ function isHourlyFile(file: string): boolean {
   return file.endsWith(".jsonl") && !isCompactedFile(file);
 }
 
-/** The UTC day an hourly file belongs to: its name starts `YYYY-MM-DDTHH`. */
-function dayOfHourlyFile(file: string): string {
-  return file.slice(0, 10);
-}
-
 export interface CompactionResult {
   readonly filesCompacted: number;
   readonly daysWritten: number;
@@ -248,7 +249,13 @@ export interface CompactionResult {
 }
 
 /**
- * Compacts hourly files older than `olderThanDays` into per-day summaries.
+ * Folds closed source windows into per-day summaries.
+ *
+ * A window is folded once it has closed, not once it reaches an age: the file
+ * is still being appended to until its window ends, so an age-based rule that
+ * folded the open window would delete it while writes were still landing in
+ * it. Every summary is merged into the day's existing one, so folding is
+ * idempotent — an interrupted pass resumes without double-counting.
  *
  * Reads each hourly file once — the same O(total volume) cost the query path
  * pays, but paid once instead of on every read. Idempotent: a day's summary is
@@ -262,16 +269,21 @@ export interface CompactionResult {
  * neither place.
  */
 export async function compactTelemetryFiles(options: {
-  readonly olderThanDays: number;
+  /** Minutes per source window; a window is folded once it has closed. */
+  readonly windowMinutes?: number;
   readonly maxFiles?: number;
   readonly now?: Date;
   readonly retentionDays?: number;
 }): Promise<CompactionResult> {
   const now = options.now ?? new Date();
-  const cutoff = now.getTime() - options.olderThanDays * 24 * 60 * 60_000;
+  const windowMinutes = options.windowMinutes ?? 60;
+  // Only windows that have closed. The open one is still being appended to, so
+  // folding and deleting it would drop every event written afterwards — the
+  // name is the window start, so this is a comparison on the name alone.
+  const openWindow = windowFileName(now, windowMinutes);
   const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
     .filter(isHourlyFile)
-    .filter((file) => Date.parse(`${dayOfHourlyFile(file)}T00:00:00Z`) < cutoff)
+    .filter((file) => file < openWindow)
     .sort();
   const batch = options.maxFiles === undefined ? files : files.slice(0, options.maxFiles);
   if (batch.length === 0) {
@@ -280,15 +292,25 @@ export async function compactTelemetryFiles(options: {
 
   // day -> (tenant, key) -> totals
   const days = new Map<string, Map<string, CompactedBucket>>();
+  // Files whose every line parsed, so unlinking them loses nothing. A file with
+  // an unreadable line is kept: deleting it would drop events silently, and
+  // folding now runs often enough that a torn file would otherwise be removed
+  // within minutes of being written.
+  const readable = new Set<string>();
   for (const file of batch) {
-    const day = dayOfHourlyFile(file);
+    let lines = 0;
+    let parsed = 0;
+    const day = file.slice(0, 10);
     for await (const event of readHourly(join(TELEMETRY_EVENT_DIR, file))) {
+      parsed += 1;
       const bucketKey = `${event.tenantId ?? ""}|${event.apiKeyId ?? ""}`;
       const buckets = days.get(day) ?? new Map<string, CompactedBucket>();
       const current = buckets.get(bucketKey) ?? emptyBucket();
       buckets.set(bucketKey, accumulate(current, event));
       days.set(day, buckets);
     }
+    lines = await countLines(join(TELEMETRY_EVENT_DIR, file));
+    if (lines === parsed) readable.add(file);
   }
 
   let rowsWritten = 0;
@@ -315,17 +337,32 @@ export async function compactTelemetryFiles(options: {
     rowsWritten += rows.length;
   }
 
-  // Only now that every summary is on disk do the hourly files go away.
+  // Only now that every summary is on disk do the source files go away, and
+  // only the ones that were read in full.
   for (const file of batch) {
+    if (!readable.has(file)) continue;
     await unlink(join(TELEMETRY_EVENT_DIR, file)).catch(() => undefined);
   }
 
+  // A file kept back still holds events that belong in the summary, so it is
+  // not counted as folded — reporting otherwise would hide that it is stuck.
+  const folded = batch.filter((file) => readable.has(file));
+
   return {
-    filesCompacted: batch.length,
+    filesCompacted: folded.length,
     daysWritten: days.size,
     rowsWritten,
     filesDeleted: await pruneStaleFiles(options.retentionDays, now),
   };
+}
+
+/** Newline count of a file, so a torn or unparsable line is detectable. */
+async function countLines(path: string): Promise<number> {
+  const data = await readFile(path).catch(() => undefined);
+  if (data === undefined) return 0;
+  let count = 0;
+  for (const byte of data) if (byte === 0x0a) count += 1;
+  return count;
 }
 
 function mergeBuckets(a: CompactedBucket, b: CompactedBucket): CompactedBucket {

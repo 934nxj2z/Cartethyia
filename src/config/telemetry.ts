@@ -44,6 +44,20 @@ export function resolveTelemetryCompactIntervalMs(): number {
   return minutes * 60_000;
 }
 
+/**
+ * Minutes of events per source file, before it is folded into the day summary.
+ *
+ * Defaults to the sweep interval so exactly one window closes per pass: a
+ * window longer than the interval would leave files waiting several passes, and
+ * a shorter one would let several close between passes.
+ */
+export function resolveTelemetryWindowMinutes(): number {
+  return readInt(
+    "CARTETHYIA_TELEMETRY_WINDOW_MINUTES",
+    CONFIG_SPEC.CARTETHYIA_TELEMETRY_WINDOW_MINUTES,
+  );
+}
+
 /** Maximum hourly files folded in one compaction pass. */
 export function resolveTelemetryCompactMaxFiles(): number {
   return readInt(

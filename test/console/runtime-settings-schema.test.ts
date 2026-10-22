@@ -34,7 +34,7 @@ const REQUEST_KEYS: readonly (keyof UpdateRuntimeSettingsRequest)[] = [
   "ponyTailLevel",
   "forceDisableCooldown",
   "upstreamTimeoutSeconds",
-  "telemetryCompactAfterDays",
+  "telemetryWindowMinutes",
   "imageClampMaxBytes",
 ];
 
@@ -59,7 +59,7 @@ describe("runtimeUpdateBody", () => {
     for (const key of [
       "forceDisableCooldown",
       "upstreamTimeoutSeconds",
-      "telemetryCompactAfterDays",
+      "telemetryWindowMinutes",
       "imageClampMaxBytes",
     ]) {
       expect(SCHEMA_KEYS).toContain(key);
@@ -69,7 +69,7 @@ describe("runtimeUpdateBody", () => {
   test("null is accepted for the numeric overrides", () => {
     // "Deployment default" is sent as null. Rejecting it would make clearing an
     // override impossible, which is a different bug with the same symptom.
-    const nullable = ["upstreamTimeoutSeconds", "telemetryCompactAfterDays", "imageClampMaxBytes"];
+    const nullable = ["upstreamTimeoutSeconds", "telemetryWindowMinutes", "imageClampMaxBytes"];
     for (const key of nullable) {
       const schema = (runtimeUpdateBody.properties as Record<string, { anyOf?: unknown[] }>)[key];
       expect(schema).toBeDefined();

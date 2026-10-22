@@ -70,7 +70,10 @@ import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
 import { TelemetryPayloadCapture } from "../observability/payload-capture";
-import { compactTelemetryFiles, resolveEffectiveCompactAfterDays } from "../observability/event-compaction";
+import {
+  compactTelemetryFiles,
+  resolveEffectiveWindowMinutes,
+} from "../observability/event-compaction";
 import {
   resolveTelemetryCompactIntervalMs,
   resolveTelemetryCompactMaxFiles,
@@ -318,7 +321,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     // period that reported 2B tokens still reports 2B after compaction.
     run: async () => {
       const result = await compactTelemetryFiles({
-        olderThanDays: await resolveEffectiveCompactAfterDays(db),
+        windowMinutes: await resolveEffectiveWindowMinutes(db),
         maxFiles: resolveTelemetryCompactMaxFiles(),
         retentionDays: resolveTelemetryRetentionDays(),
       });

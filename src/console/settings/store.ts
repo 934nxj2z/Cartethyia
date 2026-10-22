@@ -95,9 +95,9 @@ function normalizeUpstreamTimeoutSeconds(value: unknown): number | null {
   return normalizeBoundedNumber(value, 5, 600);
 }
 
-/** Compaction age in days: 1 floor, 365 ceiling, matching the env var. */
-function normalizeTelemetryCompactAfterDays(value: unknown): number | null {
-  return normalizeBoundedNumber(value, 1, 365);
+/** Source window in minutes: 1 floor, 1440 (one day) ceiling, matching the env var. */
+function normalizeTelemetryWindowMinutes(value: unknown): number | null {
+  return normalizeBoundedNumber(value, 1, 1440);
 }
 
 /** Inline attachment ceiling in bytes: 64 KB floor, 100 MB ceiling. */
@@ -134,7 +134,7 @@ function mapRuntimeSettingsRow(
     ponyTailLevel: normalizePonyTailLevel(prefs.ponyTailLevel),
     forceDisableCooldown: prefs.forceDisableCooldown === true,
     upstreamTimeoutSeconds: normalizeUpstreamTimeoutSeconds(prefs.upstreamTimeoutSeconds),
-    telemetryCompactAfterDays: normalizeTelemetryCompactAfterDays(prefs.telemetryCompactAfterDays),
+    telemetryWindowMinutes: normalizeTelemetryWindowMinutes(prefs.telemetryWindowMinutes),
     imageClampMaxBytes: normalizeImageClampMaxBytes(prefs.imageClampMaxBytes),
     updatedAt,
   };
@@ -178,9 +178,9 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
       patchPrefs.forceDisableCooldown = patch.forceDisableCooldown === true;
     if (patch.upstreamTimeoutSeconds !== undefined)
       patchPrefs.upstreamTimeoutSeconds = normalizeUpstreamTimeoutSeconds(patch.upstreamTimeoutSeconds);
-    if (patch.telemetryCompactAfterDays !== undefined)
-      patchPrefs.telemetryCompactAfterDays = normalizeTelemetryCompactAfterDays(
-        patch.telemetryCompactAfterDays,
+    if (patch.telemetryWindowMinutes !== undefined)
+      patchPrefs.telemetryWindowMinutes = normalizeTelemetryWindowMinutes(
+        patch.telemetryWindowMinutes,
       );
     if (patch.imageClampMaxBytes !== undefined)
       patchPrefs.imageClampMaxBytes = normalizeImageClampMaxBytes(patch.imageClampMaxBytes);

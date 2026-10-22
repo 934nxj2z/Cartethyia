@@ -36,7 +36,7 @@ export interface RuntimeSettingsResponse {
   /** Per-tenant upstream request timeout in seconds; null means deployment default. */
   readonly upstreamTimeoutSeconds: number | null;
   /** Per-tenant telemetry compaction age in days; null means deployment default. */
-  readonly telemetryCompactAfterDays: number | null;
+  readonly telemetryWindowMinutes: number | null;
   /** Per-tenant inline attachment ceiling in bytes; null means deployment default. */
   readonly imageClampMaxBytes: number | null;
   readonly updatedAt: string;
@@ -181,8 +181,8 @@ export const runtimeUpdateBody = t.Object({
   upstreamTimeoutSeconds: t.Optional(
     t.Union([t.Null(), t.Number({ minimum: 5, maximum: 600 })]),
   ),
-  telemetryCompactAfterDays: t.Optional(
-    t.Union([t.Null(), t.Number({ minimum: 1, maximum: 365 })]),
+  telemetryWindowMinutes: t.Optional(
+    t.Union([t.Null(), t.Number({ minimum: 1, maximum: 1440 })]),
   ),
   imageClampMaxBytes: t.Optional(
     t.Union([t.Null(), t.Number({ minimum: 64 * 1024, maximum: 100 * 1024 * 1024 })]),
