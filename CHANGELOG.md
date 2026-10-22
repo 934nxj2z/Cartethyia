@@ -116,6 +116,21 @@ exactly what the limit exists to prevent.
 
 ### Changed
 
+- **Cursor, Trae and Qoder report a quota balance.** All three had no
+  collector, so the console showed nothing — and no balance is indistinguishable
+  from no quota left to anything reading the account.
+
+  - **Cursor** reads `{base}/auth/usage` and `cursor.com/api/usage-summary`.
+    The summary wins when it answers: `/auth/usage` is the pre-usage-based-plans
+    request counter and reports a permanently-zero bucket on exactly the plans
+    that have a dollar cap. The legacy surface is still read, because it is the
+    only one an api-key account can reach.
+  - **Trae** reads `get_session_usage` on the core host and `ide_user_ent_usage`
+    on the pay host, per realm. The two are independent: a dead pay host does
+    not erase a readable meter, because "no quota" is what the router parks on.
+  - **Qoder** reads `/api/v2/quota/usage` on the openapi host, pooling the plan
+    allowance, granted credits and — for team accounts — the shared org pool.
+
 - **A Trae quota exhaustion that arrives as HTTP 502 is classified as quota.**
   Trae answers an exhausted quota with status 502 and the body `Your requests
   have exceeded the quota.` The status was what misled the classifier: 502 read
