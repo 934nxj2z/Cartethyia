@@ -316,6 +316,12 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     hasAdapterUserAgent: true,
   },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1", credentialUrl: "https://b.ai" },
+  {
+    id: "larprouter",
+    displayName: "LarRouter",
+    baseUrl: "https://larprouter.com/v1",
+    credentialUrl: "https://larprouter.com",
+  },
   { id: "inferhub", displayName: "InferHub", baseUrl: "https://api.inferhub.dev/v1", defaultSkipProxy: true },
   { id: "aihubmix", displayName: "AiHubMix", baseUrl: "https://aihubmix.com/v1", credentialUrl: "https://aihubmix.com/token" },
   { id: "tokenharbor", displayName: "TokenHarbor", baseUrl: "https://tokenharbor.ai/v1", credentialUrl: "https://tokenharbor.ai" },

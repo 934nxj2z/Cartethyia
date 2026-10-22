@@ -17,6 +17,7 @@ export const DISCOVERY_BACKED_PROVIDER_IDS = [
   "siliconflow",
   "siliconflowcn",
   "novita",
+  "larprouter",
   "venice",
   "nanogpt",
   "baseten",
@@ -50,6 +51,7 @@ type OpenAIModelDiscoveryFactory = (
 
 const DISCOVERY_BACKED_PROVIDER_SPECS = {
   groq: VERSIONED_ROOT_API_KEY_SPECS.groq,
+  larprouter: GENERIC_API_KEY_SPECS.larprouter,
   together: GENERIC_API_KEY_SPECS.together,
   deepinfra: VERSIONED_ROOT_API_KEY_SPECS.deepinfra,
   siliconflow: GENERIC_API_KEY_SPECS.siliconflow,
@@ -101,6 +103,7 @@ export function createDiscoveryBackedProviderCapabilities(
     siliconflow: discoveryBackedCapabilities("siliconflow", DISCOVERY_BACKED_PROVIDER_SPECS.siliconflow, openAIModelDiscovery),
     siliconflowcn: discoveryBackedCapabilities("siliconflowcn", DISCOVERY_BACKED_PROVIDER_SPECS.siliconflowcn, openAIModelDiscovery),
     novita: discoveryBackedCapabilities("novita", DISCOVERY_BACKED_PROVIDER_SPECS.novita, openAIModelDiscovery),
+    larprouter: discoveryBackedCapabilities("larprouter", DISCOVERY_BACKED_PROVIDER_SPECS.larprouter, openAIModelDiscovery),
     venice: discoveryBackedCapabilities("venice", DISCOVERY_BACKED_PROVIDER_SPECS.venice, openAIModelDiscovery),
     nanogpt: discoveryBackedCapabilities("nanogpt", DISCOVERY_BACKED_PROVIDER_SPECS.nanogpt, openAIModelDiscovery),
     baseten: discoveryBackedCapabilities("baseten", DISCOVERY_BACKED_PROVIDER_SPECS.baseten, openAIModelDiscovery),
