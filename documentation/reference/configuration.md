@@ -55,22 +55,6 @@ Variables read outside the spec are therefore **not** listed below:
 | `CARTETHYIA_TELEMETRY_COMPACT_MAX_FILES` | integer | 48 | 1 – 10000 |
 | `CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES` | integer | 16777216 | 1048576 – 16777216 |
 
-`RETENTION_DAYS` is the one that governs storage: a day's event file and its
-index are deleted together once the day is older than this. It never touches
-the current day.
-
-`COMPACT_INTERVAL_MINUTES` is how often each day's index is brought up to date
-with events appended since the last pass. Reads also fold before they answer,
-so raising this does not make the numbers stale — only the on-disk index.
-
-`COMPACT_AFTER_DAYS` is read only to word the message shown when a request's
-detail is no longer stored.
-
-`WINDOW_MINUTES` and `COMPACT_MAX_FILES` are **accepted but inert.** They
-sized the one-file-per-window scheme and the per-pass fold budget; events now
-append to one file per day and folding is driven by a byte offset, so nothing
-reads them. They remain declared so existing deployments keep booting.
-
 ## Upstream timeouts and retry backoff
 
 | Variable | Kind | Default | Bounds |

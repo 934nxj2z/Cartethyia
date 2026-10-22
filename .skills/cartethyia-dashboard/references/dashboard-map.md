@@ -43,7 +43,7 @@ loop.
 | Path | Page | What it operates |
 | --- | --- | --- |
 | `/` | `OverviewPage` | Tenant health and the first-look summary |
-| `/usage` | `UsagePage` | Usage from the file log, grouped in the console. The first tile on the Routing Latency bar is **Resolve** (average arrival → just-before-upstream: credential, admission, pool slot, preparation), separate from the P50/P95/P99 response-latency series beside it. Each tile's hover tooltip names the window and the sample count that fed it. |
+| `/usage` | `UsagePage` | Usage totals, breakdowns and the traffic chart, read from the per-day index (`<day>.index.json`) rather than from the request files; only the request list and its detail drawer read the events, backwards from the file's tail. The first tile on the Routing Latency bar is **Resolve** (average arrival → just-before-upstream: credential, admission, pool slot, preparation), separate from the P50/P95/P99 response-latency series beside it. Each tile's hover tooltip names the window and the sample count that fed it. |
 | `/providers` | `ProvidersPage` | Provider catalog |
 | `/providers/:providerId` | `ProviderDetailPage` | Accounts, auth, routing (including Usage floor), models |
 | `/combos` | `CombosPage` | Aliases and combos |

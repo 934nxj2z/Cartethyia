@@ -148,26 +148,34 @@ export const CONFIG_SPEC = {
    */
   CARTETHYIA_DISABLED_TASKS: { kind: "list" },
 
-  CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
   /**
-   * Age at which hourly telemetry files are compacted into a per-day summary.
+   * How long a day's telemetry is kept, in days.
+   *
+   * The retention unit is the whole day: a day's event file and its index are
+   * deleted together, and the current day is never touched. Past this age an
+   * individual request no longer exists anywhere, so its detail is gone —
+   * totals, breakdowns and spend are unaffected, because the index keeps
+   * running sums rather than the rows.
    *
    * This is the knob that decides how long the request list, per-request
-   * filters, and the detail drawer stay complete. Below this age every request
-   * row is intact; above it only totals survive — still exact totals, but with
-   * no individual rows behind them.
+   * filters, and the detail drawer stay complete.
+   */
+  CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
+  /**
+   * Age at which a request's detail is described as no longer stored.
    *
-   * Lower is faster. The usage list scans every hourly file still on disk, so
-   * its cost tracks this window directly; 7 days keeps a full forensic window
-   * while bounding the scan to roughly a quarter of a 30-day one.
+   * Retention itself is `CARTETHYIA_TELEMETRY_RETENTION_DAYS`; this only words
+   * the message shown when a request that old is asked for. Kept because the
+   * message is operator-facing and was written against this knob.
    */
   CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS: { kind: "int", default: 7, min: 1, max: 365 },
   /**
-   * How often the compaction sweep runs, in minutes.
+   * How often each day's index is brought up to date, in minutes.
    *
-   * Compaction reads every file it folds — the same O(total volume) cost the
-   * query path pays, but once instead of per read. This is also the size of the
-   * source window below unless that one is set.
+   * Bringing an index up to date means folding the bytes appended since the
+   * last pass — not re-reading the day. Reads fold before they answer too, so
+   * raising this does not make the numbers stale; it only leaves the on-disk
+   * index further behind, and the next read pays for the remainder.
    */
   CARTETHYIA_TELEMETRY_COMPACT_INTERVAL_MINUTES: {
     kind: "int",
@@ -176,15 +184,11 @@ export const CONFIG_SPEC = {
     max: 1440,
   },
   /**
-   * Minutes of events held in one source file before it is folded into the
-   * day's summary.
+   * Inert. Accepted so existing deployments keep booting; nothing reads it.
    *
-   * This is the window the per-request view lives in: request list, filters,
-   * and the detail drawer read the source files, so raising it keeps detail
-   * around longer at the cost of more files to scan. Lowering it moves
-   * requests into the summary sooner, where only totals survive.
-   *
-   * Defaults to the sweep interval, so one window closes per pass.
+   * It sized the one-file-per-window scheme — events were written to a file
+   * per this many minutes, 96 a day at the default. Events now append to one
+   * file per UTC day, so there is no window left to size.
    */
   CARTETHYIA_TELEMETRY_WINDOW_MINUTES: {
     kind: "int",
@@ -192,7 +196,13 @@ export const CONFIG_SPEC = {
     min: 1,
     max: 1440,
   },
-  /** Maximum hourly files folded in one pass. The next pass continues. */
+  /**
+   * Inert. Accepted so existing deployments keep booting; nothing reads it.
+   *
+   * It capped how many window files one pass could fold. Folding is driven by
+   * a byte offset into the day file now and never deletes the file, so there
+   * is no per-pass batch to bound.
+   */
   CARTETHYIA_TELEMETRY_COMPACT_MAX_FILES: { kind: "int", default: 48, min: 1, max: 10_000 },
   CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: {
     kind: "int",
