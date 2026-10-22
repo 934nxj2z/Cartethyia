@@ -908,12 +908,12 @@ export function DashboardShell({
             </div>
 
             <div className="topbar-actions">
+              <HeaderExtras />
               <ThemeToggle />
               <NotificationsPopover
                 health={healthQuery.data}
                 onOpenUpdate={() => setUpdateOpen(true)}
               />
-              <HeaderExtras />
             </div>
           </header>
 

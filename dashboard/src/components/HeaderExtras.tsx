@@ -55,12 +55,11 @@ function LanguageMenu() {
         className="topbar-icon-button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Change language"
+        aria-label={`Change language — ${current.name}`}
         title="Change language (coming soon)"
         onClick={() => setOpen((value) => !value)}
       >
         <Languages size={14} aria-hidden="true" />
-        <span className="text-[11px] font-bold tracking-wide max-small:sr-only">{current.label}</span>
       </button>
       {open ? (
         <div
@@ -199,13 +198,13 @@ export function HeaderExtras() {
           topbar, where a second word would crowd the title. */}
       <button
         type="button"
-        className="topbar-icon-button max-small:px-2"
+        className="topbar-icon-button h-15 w-auto gap-1.5 px-3"
         aria-label="Support the project"
         title="Buy me a coffee"
         onClick={() => setDonateOpen(true)}
       >
+        <span className="text-[11px] font-bold tracking-wide">Donate</span>
         <HandHeart size={14} aria-hidden="true" />
-        <span className="text-[11px] font-bold tracking-wide max-small:sr-only">Donate</span>
       </button>
       <LanguageMenu />
       <DonationModal open={donateOpen} onClose={() => setDonateOpen(false)} />
