@@ -38,6 +38,7 @@ import { decodeJwtPayload } from "../../authentication/oauth-flow-store";
 import { buildTraeHeaders } from "./trae-headers";
 import {
   TRAE_ENT_USAGE_PATH,
+  TRAE_REGION_CORE_HOSTS,
   TRAE_REALMS,
   TRAE_SESSION_USAGE_PATH,
   type TraeRealm,
@@ -64,6 +65,8 @@ const DOLLAR_BUCKETS: readonly (readonly [string, string])[] = [
 interface TraeQuotaAuth {
   readonly realm: TraeRealm;
   readonly uid: string;
+  /** Provisioned region (`sg`, `us`), which selects the core host. */
+  readonly region: string;
 }
 
 /**
@@ -84,7 +87,12 @@ function quotaAuth(context: QuotaCollectionContext | undefined): TraeQuotaAuth {
   // fingerprint empty for every account.
   const uidRaw = raw["uid"] ?? raw["userId"] ?? raw["user_id"];
   const uid = typeof uidRaw === "string" && uidRaw.trim() ? uidRaw.trim() : "";
-  return { realm, uid };
+  // `region` is provisioned, not chosen: an intl account is created into one
+  // and its token only authenticates against that region's core host. `us` and
+  // `cn` are served by the realm's default host, but `sg` is a different host
+  // entirely — sending it to the US core answers 401 code 1001.
+  const region = typeof raw["region"] === "string" ? raw["region"].trim().toLowerCase() : "";
+  return { realm, uid, region };
 }
 
 /**
@@ -249,12 +257,22 @@ function logTraeQuotaMiss(errors: readonly string[]): void {
  * whose pay host is unreachable still has a readable meter, and reporting
  * "no quota" for it would park an account that can still serve.
  */
+/**
+ * The core host for this account.
+ *
+ * A provisioned region overrides the realm default: an `sg` account sent to the
+ * US core is answered 401 code 1001, which looks exactly like a dead token.
+ */
+function coreHost(region: string, config: (typeof TRAE_REALMS)[TraeRealm]): string {
+  return (region !== "" ? TRAE_REGION_CORE_HOSTS[region] : undefined) ?? config.core;
+}
+
 export async function fetchTraeQuota(
   credential: string,
   fetcher: FetchLike,
   context?: QuotaCollectionContext,
 ): Promise<ProviderQuotaResult> {
-  const { realm, uid } = quotaAuth(context);
+  const { realm, uid, region } = quotaAuth(context);
   const resolvedUid = uid || uidFromToken(credential) || "";
   const errors: string[] = [];
 
@@ -321,7 +339,7 @@ export async function fetchTraeQuota(
     return null;
   };
 
-  const session = await tryRealms((config) => config.core + TRAE_SESSION_USAGE_PATH, "session usage", parseSessionUsage);
+  const session = await tryRealms((config) => coreHost(region, config) + TRAE_SESSION_USAGE_PATH, "session usage", parseSessionUsage);
   const entitlement = await tryRealms((config) => config.pay + TRAE_ENT_USAGE_PATH, "entitlement", parseEntitlement);
 
   const windows = [...(session?.windows ?? []), ...(entitlement?.windows ?? [])];
