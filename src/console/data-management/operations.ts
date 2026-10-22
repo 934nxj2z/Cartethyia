@@ -64,7 +64,9 @@ async function scan(
 
 const isCompacted = (name: string): boolean => name.endsWith(".compacted.jsonl");
 const isHourly = (name: string): boolean => name.endsWith(".jsonl") && !isCompacted(name);
-const isFrame = (name: string): boolean => name.endsWith(".jsonb");
+// Both extensions: old `.jsonb` files are still on disk and still counted.
+const isFrame = (name: string): boolean =>
+  name.endsWith(".jsonl") || name.endsWith(".jsonb");
 
 /** The UTC day a telemetry file name starts with, compared to a cutoff. */
 function dayBefore(name: string, cutoff: number): boolean {

@@ -62,6 +62,21 @@ export function payloadReferenceFromRow(row: {
   return isPayloadFileReference(candidate) ? candidate : undefined;
 }
 
+/** Extension for newly written frame files. Old `.jsonb` files are still read. */
+const FRAME_FILE_SUFFIX = ".jsonl";
+
+/**
+ * True for a frame file, whichever extension it carries.
+ *
+ * Files written before the format change end `.jsonb`. They still hold live
+ * frames whose rows point at them, so a prune that recognised only the new
+ * extension would abandon them — and since nothing else removes them, they
+ * would sit on disk indefinitely.
+ */
+function isFrameFileName(name: string): boolean {
+  return name.endsWith(FRAME_FILE_SUFFIX) || name.endsWith(".jsonb");
+}
+
 const FRAME_HEADER_BYTES = 4;
 const MAX_FRAME_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -96,7 +111,7 @@ function checksum(value: Buffer | readonly Buffer[]): string {
 }
 
 function fileName(now = new Date()): string {
-  return `${now.toISOString().slice(0, 13).replaceAll(":", "-")}-${process.pid}.jsonb`;
+  return `${now.toISOString().slice(0, 13).replaceAll(":", "-")}-${process.pid}${FRAME_FILE_SUFFIX}`;
 }
 
 /**
@@ -115,34 +130,52 @@ function compressFrame(parts: readonly Buffer[]): Buffer {
 async function appendFrame(frame: PayloadFrame, parts?: readonly Buffer[]): Promise<PayloadFileReference> {
   const directory = payloadDirectory();
   await mkdir(directory, { recursive: true });
-  parts ??= [Buffer.from(JSON.stringify(frame), "utf8")];
-  const encoded = compressFrame(parts);
-  if (encoded.byteLength > MAX_FRAME_BYTES) throw new Error("telemetry payload frame exceeds limit");
+  // Encoded as a line here rather than at the write, so the cap, the checksum,
+  // and the reference all describe the same bytes that land on disk — the
+  // prebuilt-parts path and the plain one cannot disagree about the shape.
+  const json = parts === undefined
+    ? Buffer.from(JSON.stringify(frame), "utf8")
+    : Buffer.concat(parts);
+  const compressed = compressFrame([json]);
+  if (compressed.byteLength > MAX_FRAME_BYTES) throw new Error("telemetry payload frame exceeds limit");
+  const encoded = toLine(compressed);
   const file = fileName();
   const path = join(directory, file);
   const currentSize = await stat(path).then((value) => value.size).catch(() => 0);
   const offset = currentSize;
-  if (offset + FRAME_HEADER_BYTES + encoded.byteLength > maxFileBytes()) {
-    const rotated = `${Date.now()}-${randomUUID()}.jsonb`;
-    return appendFrameToPath(frame, join(directory, rotated), basename(rotated), undefined, encoded);
+  if (offset + encoded.byteLength > maxFileBytes()) {
+    const rotated = `${Date.now()}-${randomUUID()}${FRAME_FILE_SUFFIX}`;
+    return appendFrameToPath(join(directory, rotated), encoded, basename(rotated));
   }
-  return appendFrameToPath(frame, path, file, offset, encoded);
+  return appendFrameToPath(path, encoded, file, offset);
+}
+
+/**
+ * One frame as a stored line: base64 of the gzipped JSON, newline-terminated.
+ *
+ * The 4-byte binary length header is gone. A header made every frame opaque —
+ * you could not `cat` the file or read a frame without first decoding a
+ * big-endian length and then gunzipping exactly that many bytes. A newline is
+ * the delimiter instead, so the file is a text file of base64 lines and a
+ * frame's extent is found by reading to the next `\n`.
+ *
+ * base64 rather than raw gzip bytes because gzip contains newlines, which
+ * would make the delimiter ambiguous. The row still names `jsonl-file`, so no
+ * schema change and no migration: readers tell old from new off the bytes.
+ */
+function toLine(compressed: Buffer): Buffer {
+  return Buffer.from(`${compressed.toString("base64")}\n`, "utf8");
 }
 
 async function appendFrameToPath(
-  frame: PayloadFrame,
   path: string,
+  encoded: Buffer,
   knownFile = basename(path),
   knownOffset?: number,
-  knownEncoded?: Buffer,
 ): Promise<PayloadFileReference> {
-  const encoded = knownEncoded ?? compressFrame([Buffer.from(JSON.stringify(frame), "utf8")]);
   const offset = knownOffset ?? await stat(path).then((value) => value.size).catch(() => 0);
-  const header = Buffer.alloc(FRAME_HEADER_BYTES);
-  header.writeUInt32BE(encoded.byteLength, 0);
   const handle = await open(path, "a");
   try {
-    await handle.write(header);
     await handle.write(encoded);
   } finally {
     await handle.close();
@@ -151,7 +184,7 @@ async function appendFrameToPath(
     storage: "jsonl-file",
     file: knownFile,
     offset,
-    length: FRAME_HEADER_BYTES + encoded.byteLength,
+    length: encoded.byteLength,
     checksum: checksum(encoded),
     version: 1,
   };
@@ -240,14 +273,7 @@ export async function readPayloadFrame(reference: PayloadFileReference): Promise
     await handle.close();
   }
   const frame = data;
-  const length = frame.readUInt32BE(0);
-  if (length <= 0 || length + FRAME_HEADER_BYTES !== frame.byteLength) return undefined;
-  const stored = frame.subarray(FRAME_HEADER_BYTES);
-  if (checksum(stored) !== reference.checksum) return undefined;
-  // The row says which encoding it wrote. A compressed row that does not
-  // decompress is a damaged frame, reported as absent like any other
-  // unreadable frame, never thrown into the request that asked for it.
-  const json = reference.storage === "jsonl-file" ? gunzipFrame(stored) : stored;
+  const json = frameJsonFromSlice(frame, reference.storage);
   if (json === undefined) return undefined;
   const parsed = JSON.parse(json.toString("utf8")) as PayloadFrame;
   return parsed.version === 1 ? parsed.payload : undefined;
@@ -263,6 +289,37 @@ function gunzipFrame(stored: Buffer): Buffer | undefined {
 }
 
 /**
+ * The JSON of one frame read out of a file, in either on-disk shape.
+ *
+ * Old frames carry a 4-byte big-endian length header, so their first byte is
+ * `0x00` for any frame under 16 MB. New frames are a base64 line, which never
+ * begins with a null byte. That one byte separates the two without a version
+ * field, a schema change, or a migration — the same trick `frameJson` already
+ * uses to tell gzip from plain JSON by its magic.
+ *
+ * Old frames are still read because they exist on disk right now and their
+ * rows point at them; they expire on their own within the retention window, so
+ * tolerating both is temporary by construction.
+ */
+function frameJsonFromSlice(
+  slice: Buffer,
+  storage: PayloadFileReference["storage"],
+): Buffer | undefined {
+  const hasBinaryHeader = slice.byteLength >= FRAME_HEADER_BYTES && slice[0] === 0x00;
+  if (hasBinaryHeader) {
+    const length = slice.readUInt32BE(0);
+    if (length <= 0 || length + FRAME_HEADER_BYTES !== slice.byteLength) return undefined;
+    const stored = slice.subarray(FRAME_HEADER_BYTES);
+    return storage === "jsonl-file" ? gunzipFrame(stored) : stored;
+  }
+  // New shape: a base64 line. The trailing newline is not part of the payload.
+  const text = slice.toString("utf8").trim();
+  if (text.length === 0) return undefined;
+  const gzipped = Buffer.from(text, "base64");
+  return gunzipFrame(gzipped);
+}
+
+/**
  * What a whole file's parseable frames say about reclaiming it.
  *
  * `live` — at least one frame is still inside its retention window.
@@ -272,33 +329,37 @@ function gunzipFrame(stored: Buffer): Buffer | undefined {
  */
 type FrameLiveness = "live" | "none" | "unknown";
 
-/**
- * The JSON of one stored frame, whichever encoding wrote it.
- *
- * A frame names no encoding of its own — the row does — and this pass reads
- * files, not rows. gzip bytes start with the 0x1f 0x8b magic and plain JSON
- * starts with `{`, so the encoding is read off the bytes. Anything else is
- * corrupt and falls through to the caller's parse, which reports the file
- * unreadable rather than empty.
- */
-function frameJson(stored: Buffer): Buffer {
-  if (stored.byteLength >= 2 && stored[0] === 0x1f && stored[1] === 0x8b) {
-    return gunzipSync(stored);
-  }
-  return stored;
-}
-
-
 function frameLiveness(data: Buffer, before: Date): FrameLiveness {
   let offset = 0;
-  while (offset + FRAME_HEADER_BYTES <= data.byteLength) {
-    const length = data.readUInt32BE(offset);
-    const end = offset + FRAME_HEADER_BYTES + length;
-    // A length that runs past the file is a half-written tail, not a frame.
-    if (length <= 0 || end > data.byteLength) return "unknown";
+  // One byte, not FRAME_HEADER_BYTES: a line frame is bounded by its newline
+  // and needs no minimum length of its own. Keying the loop to the old header
+  // size would stop a new-shape file a few bytes early and report it
+  // unreadable, which leaves it on disk forever.
+  while (offset < data.byteLength) {
+    // New frames end at the next newline; old ones carry a length header. The
+    // first byte tells them apart, so a file holding a mix still walks.
+    const newline = data.indexOf(0x0a, offset);
+    const hasBinaryHeader = data[offset] === 0x00;
+
+    let end: number;
+    let slice: Buffer;
+    if (hasBinaryHeader) {
+      const length = data.readUInt32BE(offset);
+      end = offset + FRAME_HEADER_BYTES + length;
+      // A length that runs past the file is a half-written tail, not a frame.
+      if (length <= 0 || end > data.byteLength) return "unknown";
+      slice = data.subarray(offset, end);
+    } else {
+      if (newline <= 0) return "unknown";
+      end = newline + 1;
+      slice = data.subarray(offset, end);
+    }
+
+    const json = frameJsonFromSlice(slice, "jsonl-file");
+    if (json === undefined) return "unknown";
     let frame: PayloadFrame;
     try {
-      frame = JSON.parse(frameJson(data.subarray(offset + FRAME_HEADER_BYTES, end)).toString("utf8")) as PayloadFrame;
+      frame = JSON.parse(json.toString("utf8")) as PayloadFrame;
     } catch {
       return "unknown";
     }
@@ -340,7 +401,7 @@ export async function prunePayloadFrames(
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
   let deleted = 0;
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".jsonb")) continue;
+    if (!entry.isFile() || !isFrameFileName(entry.name)) continue;
     const path = join(directory, entry.name);
     try {
       if (await fileReclaimable(path, before, unparseableWrittenBefore)) {
@@ -367,7 +428,10 @@ async function fileReclaimable(
   unparseableWrittenBefore: Date,
 ): Promise<boolean> {
   const data = await readFile(path);
-  if (data.byteLength < FRAME_HEADER_BYTES) return true;
+  // Nothing written yet, so nothing to lose. The old test was "shorter than a
+  // binary header", which the line format has no need of; a real frame — old
+  // or new — is far longer than that anyway.
+  if (data.byteLength === 0) return true;
   const liveness = frameLiveness(data, before);
   if (liveness === "live") return false;
   if (liveness === "none") return true;

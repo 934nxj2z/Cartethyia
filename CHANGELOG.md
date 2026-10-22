@@ -181,6 +181,22 @@ exactly what the limit exists to prevent.
 - **Privacy settings are stacked rather than side by side.** Reading a field
   two-up meant zig-zagging across for the label and back for the control.
 
+### Changed — payload frame storage
+
+- **Captured payload frames are stored as text lines instead of binary
+  records.** A frame used to be a 4-byte binary length header followed by gzip
+  bytes, which made it opaque: reading one meant decoding a big-endian length
+  and gunzipping exactly that many bytes, and the file could not be inspected
+  at all. A frame is now base64 of the same gzip bytes, newline-terminated, so
+  the file is a text file whose records are delimited by `\n`. It is still
+  compressed, so disk use is unchanged apart from base64's ~33% overhead.
+
+  Frames already on disk keep the old shape and are still read: their rows
+  point at them, and they expire on their own within the retention window, so
+  both shapes are tolerated rather than migrated. New files use `.jsonl`; the
+  prune pass recognises both extensions, because abandoning the old ones would
+  leave them on disk indefinitely.
+
 - **A Qoder model that declares `is_vl: false` is now excluded from image
   routes.** The router's capability profile granted image support to every row
   on a canonical-codec provider regardless of what the catalog declared, so
