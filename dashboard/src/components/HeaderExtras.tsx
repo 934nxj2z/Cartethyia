@@ -198,7 +198,7 @@ export function HeaderExtras() {
           topbar, where a second word would crowd the title. */}
       <button
         type="button"
-        className="topbar-icon-button h-15 w-auto gap-1.5 px-3"
+        className="topbar-donate-button"
         aria-label="Support the project"
         title="Buy me a coffee"
         onClick={() => setDonateOpen(true)}
