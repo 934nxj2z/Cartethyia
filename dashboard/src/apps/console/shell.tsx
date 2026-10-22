@@ -693,6 +693,34 @@ export function DashboardShell({
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const handleUpdateNow = async (): Promise<void> => {
+    setUpdating(true);
+    try {
+      await consoleRequest<void>("/updates/apply", { method: "POST" });
+    } catch {
+      setUpdating(false);
+      return;
+    }
+    // block refresh
+    const beforeUnload = (e: BeforeUnloadEvent): void => { e.preventDefault(); };
+    window.addEventListener("beforeunload", beforeUnload);
+    // poll until version changes
+    const target = latestTag;
+    const poll = window.setInterval(async () => {
+      try {
+        const res = await fetch("/console/api/updates/release");
+        const data = (await res.json()) as { tag_name?: string };
+        if (target !== undefined && data.tag_name !== target) {
+          window.clearInterval(poll);
+          window.removeEventListener("beforeunload", beforeUnload);
+          window.location.reload();
+        }
+      } catch {
+        // server restarting; keep polling
+      }
+    }, 3000);
+  };
   const healthQuery = useSafeSystemHealth();
   const releaseQuery = useLatestRelease();
   // The running version is the gateway's, not the bundled dashboard's: the
@@ -915,6 +943,8 @@ export function DashboardShell({
         {...(latestTag === undefined
           ? {}
           : { onDismissVersion: () => dismissUpdate(latestTag) })}
+        onUpdateNow={handleUpdateNow}
+        updating={updating}
       />
     </>
   );

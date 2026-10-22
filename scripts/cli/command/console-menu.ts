@@ -14,7 +14,7 @@ import { launchBackgroundWithStatus, openUrl } from "../ui/background";
 import { chooseFromMenu, confirmByTyping, confirmStep } from "../ui/prompt";
 import { renderWordmark } from "../ui/wordmark";
 import { exportBackup, resetConsoleAccount } from "./admin";
-import { updateCommand } from "./update";
+import { runDetachedUpdate } from "./update";
 
 /**
  * The default `carte` experience: start the gateway, then offer an arrow-key
@@ -176,17 +176,13 @@ export async function startMenu(): Promise<void> {
         // from that directory, so an in-process install can never succeed.
         // Print the command and exit, the way 9router does.
         await shutDown();
+        runDetachedUpdate();
         console.log("");
         console.log(`Update available: ${currentVersion} \u2192 ${latestVersion}`);
+        console.log("Detached update started; this process will exit now.");
+        console.log("Re-run `carte` after it finishes.");
         console.log("");
-        console.log("Run this now that Cartethyia has stopped:");
-        console.log("");
-        console.log(`   ${updateCommand()}`);
-        console.log("");
-        console.log("This terminal will stay open for 180s so you can copy the command, then exit.");
         running = false;
-        await new Promise<void>((resolve) => setTimeout(resolve, 180_000));
-        console.log("Session ended. Run the command above to update.");
         process.exit(0);
       },
       async () => {
