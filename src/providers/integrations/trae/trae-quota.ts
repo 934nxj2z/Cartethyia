@@ -266,7 +266,13 @@ export async function fetchTraeQuota(
       // than a meter — which read as "no quota" for every account.
       method: "POST",
       headers: {
+        // The commercial surface authenticates with `Cloud-IDE-JWT` on both
+        // realms.
         ...buildTraeHeaders({ realm, token: credential, uid: resolvedUid }),
+        // Applied after the builder, which switches intl to `Bearer` for raw
+        // chat: a Bearer here is answered 401 code 1001, so the account shows
+        // no windows while its token is perfectly valid.
+        authorization: `Cloud-IDE-JWT ${credential}`,
         "content-type": "application/json",
       },
       body: "{}",
