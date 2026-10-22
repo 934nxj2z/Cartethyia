@@ -12,8 +12,12 @@
  *       account resolves nothing and is refused, so one caller's answer can
  *       never be written onto another caller's conversation;
  *   (c) a call id that is no longer pending (answered twice, or a terminated
- *       Run) is refused rather than silently starting a fresh Run — the model
- *       is still waiting on that call;
+ *       Run) is refused rather than silently continuing onto a Run the model
+ *       may no longer be attached to — unless the request replays the complete
+ *       conversation (the tool call is present in the history) and the id is
+ *       live nowhere in the process, which is the restart/eviction recovery
+ *       shape; then the fresh-turn path rebases the whole transcript into a
+ *       new Run;
  *   (d) one request carrying results for two different Runs is refused whole;
  *   (e) the borrowed account/pool lease is released exactly once, on the Run's
  *       single terminal path, however many requests touched it;
@@ -538,7 +542,7 @@ describe("Cursor cross-request Run continuation", () => {
     expect(unscoped.streams.length).toBe(0);
   });
 
-  test("a replayed tool result is refused once the call is answered", async () => {
+  test("a replayed tool result after the call is answered rebases into a fresh Run", async () => {
     const adapter = createCursorAdapter();
     const { callId, stream } = await openRunAwaitingToolCall(adapter);
 
@@ -551,13 +555,19 @@ describe("Cursor cross-request Run continuation", () => {
     expect(answered.error).toBeUndefined();
     expect(cursorRunSessions.size).toBe(0);
 
-    // The same result sent again: the call is no longer pending, and starting a
-    // fresh Run would answer a tool call the model already got an answer for.
+    // The same result sent again resolves nothing: a call id live nowhere in
+    // the process and a result whose tool call is present in the replayed
+    // conversation is exactly the restart-replay recovery shape, so the
+    // adapter rebases the complete history into a fresh Run instead of
+    // refusing the resend it just asked the client for.
     const replay = harnessWith([turnEndedFrame()], scopeOf());
-    const refused = await collect(adapter, continuationRequest(callId), replay);
-    expect(refused.error).toBeDefined();
-    expect(String((refused.error as Error).message)).toContain("no longer pending");
-    expect(replay.streams.length).toBe(0);
+    const rebased = await collect(adapter, continuationRequest(callId), replay);
+    expect(rebased.error).toBeUndefined();
+    expect(replay.streams.length).toBe(1);
+    // The replayed exchange travels as rebased history: the request submitted
+    // a fresh Run turn (not a resume).
+    expect(replay.streams[0]?.runRequestCount()).toBe(1);
+    expect(cursorRunSessions.size).toBe(0);
   });
 
   test("results for two different Runs in one request are refused whole", async () => {
@@ -665,15 +675,17 @@ describe("Cursor Run idle expiry", () => {
       expect(stream.closes.length).toBe(1);
       expect(counter.releases).toBe(1);
 
-      // After expiry the orphaned tool result fails explicitly rather than
-      // resuming a Run that no longer exists.
+      // After expiry the stale result rebases into a fresh Run: the evicted
+      // Run exists nowhere in the process, and the replay carries the tool
+      // call in its recorded history.
       stream.push(turnEndedFrame());
-      const refused = await collect(
+      const rebased = await collect(
         adapter,
         continuationRequest(callId),
         continuationHarness(scopeOf(), stream),
       );
-      expect(refused.error).toBeDefined();
+      expect(rebased.error).toBeUndefined();
+      expect(cursorRunSessions.size).toBe(0);
     });
   });
 

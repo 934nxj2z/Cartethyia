@@ -188,6 +188,17 @@ export class CursorRunSessionManager {
     return { session, call };
   }
 
+  /**
+   * Whether the call id is held by a live Run in this process, under any
+   * scope. A foreign caller carrying a live call id must stay refused; the
+   * scopeless check distinguishes that case from a post-restart replay whose
+   * call exists nowhere anymore.
+   */
+  hasAnyCall(callId: string): boolean {
+    const runId = this.callOwners.get(callId);
+    return runId !== undefined && this.runs.get(runId) !== undefined;
+  }
+
   /** Clears one pending call after its result has been written to the Run. */
   clearPendingCall(runId: string, callId: string): void {
     const entry = this.runs.get(runId);

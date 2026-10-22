@@ -512,9 +512,22 @@ class CursorAdapter implements ProviderAdapter {
     }
     const resolvedAll = pending.map((item) => cursorRunSessions.resolveCall(item.callId, scope));
     // Results previous legs already answered resolve nothing: the replayed
-    // conversation carries them as history, not as an unanswered call. Only a
-    // replay that still cannot be matched at all — here or anywhere the routing
-    // layer affinity also failed — means no live Run is owed this result.
+    // conversation carries them as history, not as an unanswered call. When
+    // *no* call resolves AND the call id live nowhere in this process — a
+    // gateway restart between legs, an evicted idle Run, then — the request is
+    // by definition a complete replay (every answered call is present in the
+    // conversation), and the fresh-turn path rebases it into a new Run.
+    // A call id that is live under another scope keeps the strict refusal:
+    // adopting that conversation would surface another tenant's Run under
+    // this caller.
+    if (
+      resolvedAll.every((entry) => entry === undefined) &&
+      isCompleteToolHistoryReplay(request, pending) &&
+      pending.every((item) => !cursorRunSessions.hasAnyCall(item.callId))
+    ) {
+      yield* this.#startRun(request, candidate, context);
+      return;
+    }
     const resolved = resolvedAll.filter((entry) => entry !== undefined);
     const runId = resolved[0]?.session.runId;
     if (runId === undefined) {
@@ -1262,6 +1275,27 @@ function readPendingToolResult(
     }
   }
   return results.length > 0 ? results : undefined;
+}
+
+/**
+ * Marks a request as a complete conversation replay rather than a tail
+ * continuation: every `call_cursor_*` tool result it carries is answered by a
+ * `toolCall` block in the same conversation. That is the shape a client gets
+ * when it resends its recorded transcript — a gateway restart between legs or
+ * an evicted Run — and the only shape safe to rebase into a fresh Run, where
+ * the recorded exchange travels as history.
+ */
+function isCompleteToolHistoryReplay(
+  request: CanonicalRequest,
+  pending: readonly PendingToolResult[],
+): boolean {
+  const calledIds = new Set<string>();
+  for (const message of request.messages) {
+    for (const part of message.content) {
+      if (part.kind === "toolCall") calledIds.add(part.call_id);
+    }
+  }
+  return pending.every((item) => calledIds.has(item.callId));
 }
 
 /** Reconstructs one tool result's text and images for the adapter's tests. */
