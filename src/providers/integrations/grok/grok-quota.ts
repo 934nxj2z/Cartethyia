@@ -10,6 +10,8 @@ import {
   readGrokRateLimitHeaders,
 } from "./grok-ratelimit";
 import type { GrokRateLimitProbe } from "./grok-ratelimit";
+import { storedGrokRateLimit } from "./grok-ratelimit-store";
+import type { QuotaCollectionContext } from "../../quota/quota-support";
 
 const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const BILLING_SOURCE = "cli-chat-proxy.grok.com/v1/billing";
@@ -206,6 +208,7 @@ async function probeRateLimit(
 export async function fetchGrokQuota(
   credential: string,
   fetcher: FetchLike,
+  context?: QuotaCollectionContext,
 ): Promise<ProviderQuotaResult> {
   const accessToken = credential.trim();
   if (!accessToken) throw new Error("grok quota requires an OAuth access token");
@@ -243,11 +246,19 @@ export async function fetchGrokQuota(
   // into "unknown". Authoritative last: it only exists once upstream has
   // refused, and it is the number that decides the account, so it sits beneath
   // the indicator it overrides.
-  const probe = await probeRateLimit(accessToken, fetcher);
+  // A reading captured from real traffic costs nothing, so it is preferred
+  // whenever one is fresh. The probe is the fallback for the first read after a
+  // start — never the routine path, or every console refresh would spend a
+  // request.
+  const stored = context?.accountId === undefined
+    ? null
+    : storedGrokRateLimit(context.accountId);
+  const probe = stored ? null : await probeRateLimit(accessToken, fetcher);
   const ordered: ProviderQuotaWindow[] = [];
-  if (probe.header) ordered.push(probe.header);
+  if (stored) ordered.push(stored);
+  else if (probe?.header) ordered.push(probe.header);
   ordered.push(...windows);
-  if (probe.authoritative) ordered.push(probe.authoritative);
+  if (probe?.authoritative) ordered.push(probe.authoritative);
   // Deliberately not `probe.note` in `error`: a refusal here is the probe's own
   // doing and says the account is out of free usage, which is *account state*,
   // not a read failure. Reporting it as an error would make a healthy read look

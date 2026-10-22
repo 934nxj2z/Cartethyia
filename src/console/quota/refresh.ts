@@ -357,6 +357,9 @@ async function runQuotaRefresh(
     try {
       const authState = record(target.authState);
       quota = await fetchProviderQuota(deps.providerRegistry, target.providerId, marked, fetcher, {
+        // Carried so a collector can reuse a reading captured from real
+        // traffic rather than spending a request to rediscover it.
+        ...(target.accountId === undefined ? {} : { accountId: target.accountId }),
         ...(authState === undefined ? {} : { auth_state: authState }),
         ...(target.credentialKind === null || target.credentialKind === undefined
           ? {}

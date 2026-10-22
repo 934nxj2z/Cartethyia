@@ -34,6 +34,7 @@ import { ProxyRequestStateStore } from "../request/state";
 import { ProxyRequestPreparer } from "../request/preparer";
 import { completeAttempt, estimatedUsage } from "./attempt-finalize";
 import { runAttemptLoop } from "./attempt-loop";
+import { captureProviderRateLimit } from "./ratelimit-capture";
 
 export interface GenerationHandlerDeps {
   readonly db: CartethyiaDatabase;
@@ -125,6 +126,11 @@ async function passThrough(
   },
 ): Promise<Response> {
   const usage = estimatedUsage(0, 0);
+  // The CLI bucket comes back on every upstream response, so this is the free
+  // place to learn it: the quota surface then reads the stored value instead of
+  // spending a request of its own. Both the manual account test and automatic
+  // routing land here, so a captured reading follows real traffic.
+  captureProviderRateLimit(args.candidate.provider_id, args.candidate.provider_account_id, upstream.headers);
   await completeAttempt(state, {
     status: "completed",
     providerId: args.candidate.provider_id,

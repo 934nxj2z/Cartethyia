@@ -24,6 +24,7 @@ import {
   parseGrokFreeUsageVerdict,
   readGrokRateLimitHeaders,
 } from "../../src/providers/integrations/grok/grok-ratelimit";
+import { clearGrokRateLimitSnapshots, rememberGrokRateLimit, storedGrokRateLimit } from "../../src/providers/integrations/grok/grok-ratelimit-store";
 
 /** A fetcher that answers billing generically and the probe from a factory. */
 function grokFetcher(probe: () => Response): typeof fetch {
@@ -185,5 +186,55 @@ describe("fetchGrokQuota orders the indicator above the verdict", () => {
     const kinds = result.windows.map((window) => window.kind);
     expect(kinds).not.toContain(GROK_HEADER_WINDOW_KIND);
     expect(result.error).toBeNull();
+  });
+});
+
+describe("a reading captured from real traffic replaces the probe", () => {
+  test("a fresh stored reading costs no request", async () => {
+    // Dispatch already paid for this reading. Spending another request to
+    // rediscover it would make every console refresh cost a call.
+    clearGrokRateLimitSnapshots();
+    let probes = 0;
+    const fetcher = grokFetcher(() => {
+      probes += 1;
+      return new Response(JSON.stringify({ ok: 1 }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-ratelimit-limit-tokens": "1000000",
+          "x-ratelimit-remaining-tokens": "1",
+        },
+      });
+    });
+
+    await fetchGrokQuota("token", fetcher, { accountId: "acc-1" });
+    expect(probes).toBe(1);
+
+    rememberGrokRateLimit(
+      "acc-1",
+      readGrokRateLimitHeaders({
+        "x-ratelimit-limit-tokens": "1000000",
+        "x-ratelimit-remaining-tokens": "996169",
+      }),
+    );
+    probes = 0;
+    const second = await fetchGrokQuota("token", fetcher, { accountId: "acc-1" });
+
+    expect(probes).toBe(0);
+    // The stored figure, not the probe's `1`, is what is shown.
+    expect(second.windows[0]?.used).toBe(3831);
+    clearGrokRateLimitSnapshots();
+  });
+
+  test("a stored reading never leaks to another account", () => {
+    // Two Grok accounts carry different buckets; a reading filed under the
+    // wrong one would report another account's balance.
+    clearGrokRateLimitSnapshots();
+    rememberGrokRateLimit(
+      "acc-1",
+      readGrokRateLimitHeaders({ "x-ratelimit-limit-tokens": "1000000", "x-ratelimit-remaining-tokens": "10" }),
+    );
+    expect(storedGrokRateLimit("acc-2")).toBeNull();
+    clearGrokRateLimitSnapshots();
   });
 });
