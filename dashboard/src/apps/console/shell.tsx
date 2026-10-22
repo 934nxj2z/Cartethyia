@@ -305,6 +305,26 @@ function NotificationsPopover({
     };
   }, [open]);
 
+  // One line per real dependency, not per mood: which backing services exist
+  // comes straight from the health payload. Lite mode has no external Postgres
+  // or Redis at all, so a healthy lite instance must not claim they connect.
+  const databaseLine = !health
+    ? undefined
+    : health.database_in_process
+      ? health.database_healthy
+        ? "SQLite in-process, connected."
+        : "SQLite in-process is not answering."
+      : health.database_healthy
+        ? "Postgres connected."
+        : "Postgres unreachable.";
+  const redisLine = !health
+    ? undefined
+    : !health.redis_configured
+      ? "Redis not configured."
+      : health.redis_healthy
+        ? "Redis connected."
+        : "Redis unreachable.";
+  const dependenciesLine = [databaseLine, redisLine].filter(Boolean).join(" · ");
   const healthTitle = !health
     ? "System health unavailable"
     : health.status === "healthy"
@@ -315,10 +335,8 @@ function NotificationsPopover({
   const healthDescription = !health
     ? "Live gateway metrics are not available."
     : health.status === "healthy"
-      ? "Postgres & Redis admission connected."
-      : health.status === "degraded"
-        ? "Check connection logs."
-        : "Gateway is reporting an unhealthy status.";
+      ? dependenciesLine || "Gateway reported healthy."
+      : [dependenciesLine, "Check connection logs."].filter(Boolean).join(" — ");
   const memoryDetail = health
     ? [
         Number.isFinite(health.memory_percent)

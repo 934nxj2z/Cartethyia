@@ -295,6 +295,10 @@ export async function fetchTraeQuota(
         // no windows while its token is perfectly valid.
         authorization: `Cloud-IDE-JWT ${credential}`,
         "content-type": "application/json",
+        // The builder pins `us` for every intl account. An `sg` account sent
+        // with a US country code is refused with 401 code 1001 — the country
+        // code is part of the identity this surface checks, not a hint.
+        "store-country-code": region || "us",
       },
       body: "{}",
     });
