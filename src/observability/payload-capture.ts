@@ -140,7 +140,14 @@ export interface StoredPayload {
   signals: PayloadSignals;
 }
 
-function payloadRetentionMs(): number {
+/**
+ * How long a captured payload frame lives.
+ *
+ * Exported so surfaces that report on disk usage quote the same window the
+ * capture path enforces, rather than a second copy of the default that would
+ * drift the first time this one changes.
+ */
+export function payloadRetentionMs(): number {
   const raw = Number(process.env.CARTETHYIA_TELEMETRY_PAYLOAD_RETENTION_MS ?? 15 * 60_000);
   if (!Number.isFinite(raw) || raw < 1_000 || raw > 7 * 24 * 60 * 60_000) return 15 * 60_000;
   return Math.floor(raw);
