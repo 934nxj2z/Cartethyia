@@ -256,10 +256,13 @@ export async function fetchTraeQuota(
 ): Promise<ProviderQuotaResult> {
   const { realm, uid } = quotaAuth(context);
   const resolvedUid = uid || uidFromToken(credential) || "";
-  const config = TRAE_REALMS[realm];
   const errors: string[] = [];
 
-  const call = async (url: string, surface: string): Promise<unknown> => {
+  const call = async (
+    realm: TraeRealm,
+    url: string,
+    surface: string,
+  ): Promise<unknown> => {
     const response = await fetcher(url, {
       // POST with an empty JSON body, not GET: this is the commercial surface
       // the desktop client calls, and it answers a GET with an error rather
@@ -294,20 +297,32 @@ export async function fetchTraeQuota(
     return await response.json();
   };
 
-  const session = await call(`${config.core}${TRAE_SESSION_USAGE_PATH}`, "session usage").then(
-    (payload) => parseSessionUsage(payload),
-    (error: unknown) => {
-      errors.push(`session usage: ${cleanError(error)}`);
-      return null;
-    },
-  );
-  const entitlement = await call(`${config.pay}${TRAE_ENT_USAGE_PATH}`, "entitlement").then(
-    (payload) => parseEntitlement(payload),
-    (error: unknown) => {
-      errors.push(`entitlement: ${cleanError(error)}`);
-      return null;
-    },
-  );
+  /**
+   * Tries the realm we believe, then the other one.
+   *
+   * A Trae token is realm-bound and the auth state does not record which — the
+   * provider id does, and a collector cannot see it. The wrong host answers 401
+   * code 1001, which is indistinguishable from a dead token unless the other
+   * realm is tried: one of them accepts, and that is the answer.
+   */
+  const tryRealms = async (
+    path: (config: (typeof TRAE_REALMS)[TraeRealm]) => string,
+    surface: string,
+    parse: (payload: unknown) => { readonly windows: readonly ProviderQuotaWindow[]; readonly plan: string | null },
+  ): Promise<{ readonly windows: readonly ProviderQuotaWindow[]; readonly plan: string | null } | null> => {
+    for (const candidate of realm === "cn" ? (["cn", "intl"] as const) : (["intl", "cn"] as const)) {
+      try {
+        const payload = await call(candidate, path(TRAE_REALMS[candidate]), surface);
+        return parse(payload);
+      } catch (error) {
+        errors.push(`${candidate} ${surface}: ${cleanError(error)}`);
+      }
+    }
+    return null;
+  };
+
+  const session = await tryRealms((config) => config.core + TRAE_SESSION_USAGE_PATH, "session usage", parseSessionUsage);
+  const entitlement = await tryRealms((config) => config.pay + TRAE_ENT_USAGE_PATH, "entitlement", parseEntitlement);
 
   const windows = [...(session?.windows ?? []), ...(entitlement?.windows ?? [])];
   if (!session && !entitlement) {
