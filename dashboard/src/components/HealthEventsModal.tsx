@@ -1,4 +1,4 @@
-import { Activity, RotateCcw } from "lucide-react";
+import { Activity, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { CredentialKind, CredentialMode } from "../data/contracts";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -8,7 +8,7 @@ import { Dialog } from "./ui/dialog";
 import { DataTable } from "./ui/layout";
 import { Inline } from "./ui/inline";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
-import { useAccountHealthEvents, useRecoverAccount, useUpdateProviderAccount } from "../hooks/providers";
+import { useAccountHealthEvents, usePurgeAccountHealthEvents, useRecoverAccount, useUpdateProviderAccount } from "../hooks/providers";
 import { toast } from "../lib/toast";
 /**
  * The account health & error log dialog shared by the Quota page and provider detail.
@@ -76,7 +76,9 @@ export function HealthEventsModal({
     summary.staticToken === true;
   const [staticMode, setStaticMode] = useState(summary.staticToken === true);
   const [staticConfirm, setStaticConfirm] = useState<boolean | null>(null);
+  const [purgeConfirm, setPurgeConfirm] = useState(false);
   useEffect(() => setStaticMode(summary.staticToken === true), [summary.staticToken]);
+  const purge = usePurgeAccountHealthEvents();
 
   return (
     <Dialog open={true} onClose={onClose} title={`Health & Error Log — ${title}`} size="lg">
@@ -132,11 +134,23 @@ export function HealthEventsModal({
           </div>
         ) : null}
         <div className="min-w-0">
-          <h4
-            className="text-caption font-semibold text-text-secondary mb-4"
-          >
-            Transition Events & Audit ({events.length})
-          </h4>
+          <div className="flex items-center justify-between gap-5 mb-4">
+            <h4
+              className="text-caption font-semibold text-text-secondary"
+            >
+              Transition Events & Audit ({events.length})
+            </h4>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Trash2 size={12} />}
+              disabled={events.length === 0 || purge.isPending}
+              onClick={() => setPurgeConfirm(true)}
+              title="Deletes this account's recorded transitions and audit entries."
+            >
+              Purge log
+            </Button>
+          </div>
           {/* `compact` throughout: these render in a dialog body rather than a
               route, so they must not reserve the route-level centering floor. */}
           {query.isPending ? (
@@ -201,6 +215,20 @@ export function HealthEventsModal({
           title={staticModeCopy(staticConfirm === true, title).title}
           message={staticModeCopy(staticConfirm === true, title).message}
           confirmLabel={staticModeCopy(staticConfirm === true, title).confirmLabel}
+          cancelLabel="Cancel"
+        />
+        <ConfirmDialog
+          open={purgeConfirm}
+          onClose={() => setPurgeConfirm(false)}
+          onConfirm={() => {
+            purge.mutate(
+              { providerId, accountId, title },
+              { onSuccess: () => setPurgeConfirm(false) },
+            );
+          }}
+          title={`Purge the health & error log for ${title}?`}
+          message="Deletes every transition and audit entry recorded for this account. Its status, credentials, and counters are untouched. This cannot be undone."
+          confirmLabel="Purge log"
           cancelLabel="Cancel"
         />
         <Inline justify="flex-end" gap="0px">

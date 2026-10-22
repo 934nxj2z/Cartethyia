@@ -153,6 +153,8 @@ export type {
   DiskUsageResponse,
   ReclaimAction,
   ReclaimResponse,
+  PurgeTarget,
+  PurgeResponse,
   FlushResponse,
 } from "../../../src/console/data-management/contracts";
 

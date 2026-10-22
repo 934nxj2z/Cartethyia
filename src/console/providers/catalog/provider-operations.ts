@@ -23,6 +23,7 @@ import { getProviderClientVersion, getRouteIdentityVersions } from "../../../pro
 import type { OAuthLoginField } from "../../../providers/authentication/oauth-flow-store";
 import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, type CompatibilityProfile } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
+import { healthEventBuffer } from "../../../persistence/health-event-flush";
 import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES, type BuddyGrowthTaskLedgerEntry } from "./contracts";
 import { enqueueCheckin } from "../../../workers/daily-checkin";
 import {
@@ -568,6 +569,25 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
       ): Promise<readonly AccountHealthEventRecord[]> {
         const a = requireTenantAnyScope(access, PROVIDER_READ_SCOPES);
         return config.store.listAccountHealthEvents(a.tenantId, providerId, accountId);
+      },
+    async purgeAccountHealthEvents(
+        access: AccessDecision | undefined,
+        providerId: string,
+        accountId: string,
+      ): Promise<{ deleted: number }> {
+        const a = requireTenantAnyScope(access, PROVIDER_WRITE_SCOPES);
+        // Barrier before the delete: buffered rows for this account must not
+        // land after the purge counted them gone, or the modal refetch shows
+        // ghost history the operator just purged.
+        await healthEventBuffer()?.drain(accountId);
+        const deleted = await config.store.purgeAccountHealthEvents(a.tenantId, providerId, accountId);
+        await config.auditSink?.record({
+          access: a,
+          action: "provider_account.health_events_purged",
+          target: accountId,
+          detail: { providerId, deleted },
+        });
+        return { deleted };
       },
     async listBuddyGrowthTasks(
       access: AccessDecision | undefined,

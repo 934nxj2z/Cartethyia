@@ -24,7 +24,7 @@ process.env.CARTETHYIA_TELEMETRY_PAYLOAD_DIR = PAYLOAD_DIR;
 const { createDataManagementOperations } = await import(
   "../../src/console/data-management/operations"
 );
-const { ReclaimNotAllowedError } = await import(
+const { ReclaimNotAllowedError, PurgeNotWiredError } = await import(
   "../../src/console/data-management/contracts"
 );
 const { writePayloadFrame } = await import("../../src/observability/payload-store");
@@ -146,5 +146,44 @@ describe("reclaim", () => {
     const result = await OPS.reclaim("payload_frames");
     expect(result.deletedFiles).toBe(0);
     expect(await readdir(PAYLOAD_DIR)).toHaveLength(1);
+  });
+});
+
+describe("the health & error log purge", () => {
+  test("usage reports the row count, and purging clears the whole trail", async () => {
+    const rows: string[] = [];
+    const store = {
+      count: async () => rows.length,
+      purgeAll: async () => {
+        const deleted = rows.length;
+        rows.length = 0;
+        return deleted;
+      },
+    };
+    rows.push("one", "two", "three");
+    const ops = createDataManagementOperations({
+      telemetryDir: TELEMETRY_DIR,
+      retentionDays: 30,
+      payloadRetentionMs: 15 * 60_000,
+      allowHourlyReclaim: false,
+      healthEvents: store,
+    });
+    const usage = await ops.usage();
+    expect(usage.healthEventCount).toBe(3);
+    expect(await ops.purge("health_events")).toBe(3);
+    const after = await ops.usage();
+    expect(after.healthEventCount).toBe(0);
+  });
+
+  test("a composition without the health-event store refuses the purge", async () => {
+    // The same reduced install that hides the control must not delete rows
+    // through the raw route — the budget of the button is the budget of the
+    // endpoint.
+    await expect(OPS.purge("health_events")).rejects.toBeInstanceOf(PurgeNotWiredError);
+  });
+
+  test("usage omits the count rather than reporting zero when unwired", async () => {
+    const usage = await OPS.usage();
+    expect(usage.healthEventCount).toBeUndefined();
   });
 });

@@ -3,6 +3,7 @@ import type { ApiErrorShape } from "../data/api";
 import type {
   DiskUsageResponse,
   FlushResponse,
+  PurgeResponse,
   ReclaimAction,
   ReclaimResponse,
 } from "../data/contracts";
@@ -52,5 +53,27 @@ export function useFlushBuffers() {
   return useMutation<FlushResponse, ApiErrorShape, void>({
     mutationFn: () =>
       consoleRequest<FlushResponse>("/data-management/flush", { method: "POST" }),
+  });
+}
+
+/**
+ * Deletes every stored health & error row.
+ *
+ * Confirm-then-run on the caller's side, like reclaim: the trail is the only
+ * record of why an account transitioned, and it cannot be restored. The count
+ * on the response is what the toast reports.
+ */
+export function usePurgeHealthEvents() {
+  const queryClient = useQueryClient();
+  return useMutation<PurgeResponse, ApiErrorShape, void>({
+    mutationFn: () =>
+      consoleRequest<PurgeResponse>("/data-management/purge", {
+        method: "POST",
+        body: JSON.stringify({ target: "health_events" }),
+      }),
+    onSuccess: async () => {
+      // The purge row's count must not keep showing the old total.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.settings.diskUsage });
+    },
   });
 }

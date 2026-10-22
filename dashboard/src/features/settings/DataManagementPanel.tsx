@@ -1,4 +1,4 @@
-import { HardDrive, Trash2, Zap } from "lucide-react";
+import { Activity, CalendarDays, FileClock, FileJson, HardDrive, HardDriveDownload, Trash2, Zap, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "../../components/ui/button";
 import { ErrorState, LoadingState } from "../../components/ui/state";
@@ -7,7 +7,7 @@ import { Banner } from "../../components/patterns/banner";
 import { formatBytes, formatNumber } from "../../lib/format/numbers";
 import { toast } from "../../lib/toast";
 import { getErrorMessage } from "../../data/api";
-import { useDiskUsage, useFlushBuffers, useReclaimDisk } from "../../hooks/data-management";
+import { useDiskUsage, useFlushBuffers, usePurgeHealthEvents, useReclaimDisk } from "../../hooks/data-management";
 import type { DiskUsageBucket, ReclaimAction } from "../../data/contracts";
 
 /**
@@ -27,7 +27,9 @@ export function DataManagementPanel(): ReactNode {
   const usage = useDiskUsage();
   const reclaim = useReclaimDisk();
   const flush = useFlushBuffers();
+  const purge = usePurgeHealthEvents();
   const [confirming, setConfirming] = useState<ReclaimAction | null>(null);
+  const [confirmingPurge, setConfirmingPurge] = useState(false);
 
   if (usage.isPending) return <LoadingState label="Measuring disk usage…" />;
   if (usage.isError || !usage.data) {
@@ -58,6 +60,8 @@ export function DataManagementPanel(): ReactNode {
       onError: (error) => toast.error(getErrorMessage(error, "Reclaim failed.")),
     });
   };
+
+  const healthEventCount = data.healthEventCount;
 
   return (
     <Stack gap="14px">
@@ -102,13 +106,78 @@ export function DataManagementPanel(): ReactNode {
         })}
       </div>
 
+      <div
+        data-bucket="health_events"
+        className="flex items-center justify-between gap-6 rounded-control border border-inner-border px-6 py-5"
+      >
+        <span className="min-w-0 flex items-center gap-4">
+          <span className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-1 text-text-secondary">
+            <Activity size={15} aria-hidden="true" />
+          </span>
+          <span className="min-w-0">
+            <strong className="block text-body">Health &amp; Error Log</strong>
+            <small className="text-caption text-text-tertiary">
+              {healthEventCount === undefined
+                ? "Purging is not offered in this deployment's console composition."
+                : `${formatNumber(healthEventCount)} recorded transition${healthEventCount === 1 ? "" : "s"} across accounts and pools. Purge clears only this audit trail — account statuses and cooldowns stay as they are, and this cannot be undone.`}
+            </small>
+          </span>
+        </span>
+        {healthEventCount !== undefined ? (
+          confirmingPurge ? (
+            <span className="shrink-0 flex items-center gap-3">
+              <Button variant="secondary" size="sm" onClick={() => setConfirmingPurge(false)} disabled={purge.isPending}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<Trash2 size={14} />}
+                disabled={purge.isPending}
+                onClick={() =>
+                  purge.mutate(undefined, {
+                    onSuccess: (result) => {
+                      setConfirmingPurge(false);
+                      toast.success(
+                        result.deleted === 0
+                          ? "Health & error log was already empty."
+                          : `Purged ${formatNumber(result.deleted)} health event${result.deleted === 1 ? "" : "s"}.`,
+                      );
+                    },
+                    onError: (error) => toast.error(getErrorMessage(error, "Purge failed.")),
+                  })
+                }
+              >
+                Delete
+              </Button>
+            </span>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0"
+              icon={<Trash2 size={14} />}
+              disabled={purge.isPending || healthEventCount === 0}
+              onClick={() => setConfirmingPurge(true)}
+            >
+              Purge
+            </Button>
+          )
+        ) : null}
+      </div>
+
       <div className="flex items-center justify-between gap-6 rounded-control border border-inner-border px-6 py-5">
-        <span className="min-w-0">
-          <strong className="block text-body">Flush pending writes</strong>
-          <small className="text-caption text-text-tertiary">
-            Write queued telemetry, usage, and health events now instead of waiting for
-            the interval. Nothing is deleted.
-          </small>
+        <span className="min-w-0 flex items-center gap-4">
+          <span className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-1 text-text-secondary">
+            <HardDriveDownload size={15} aria-hidden="true" />
+          </span>
+          <span className="min-w-0">
+            <strong className="block text-body">Flush pending writes</strong>
+            <small className="text-caption text-text-tertiary">
+              Write queued telemetry, usage, and health events now instead of waiting for
+              the interval. Nothing is deleted.
+            </small>
+          </span>
         </span>
         <Button
           variant="secondary"
@@ -147,6 +216,13 @@ function reclaimActionFor(bucket: DiskUsageBucket): ReclaimAction | null {
   return null;
 }
 
+/** One glyph per section, so the five parts of the panel read as a family. */
+function bucketIconFor(bucket: DiskUsageBucket): LucideIcon {
+  if (bucket.id === "payload_frames") return FileJson;
+  if (bucket.id === "telemetry_compacted") return CalendarDays;
+  return FileClock;
+}
+
 /**
  * One bucket, as a card.
  *
@@ -173,6 +249,7 @@ function BucketCard({
   const reclaimable = bucket.reclaimableBytes ?? 0;
   const files = bucket.reclaimableFiles ?? 0;
   const nothingToReclaim = action !== null && reclaimable === 0;
+  const Icon = bucketIconFor(bucket);
 
   return (
     // `data-bucket` names the card, so a test asks for the card itself instead
@@ -181,12 +258,19 @@ function BucketCard({
       data-bucket={bucket.id}
       className="flex flex-col rounded-control border border-inner-border px-6 py-5 min-w-0"
     >
-      <span className="text-caption text-text-tertiary">{bucket.label}</span>
-      <span className="mt-1 text-lead font-semibold text-text-primary">
-        {formatBytes(bucket.bytes)}
-      </span>
-      <span className="text-caption text-text-tertiary">
-        {formatNumber(bucket.files)} file{bucket.files === 1 ? "" : "s"} · {bucket.note}
+      <span className="flex items-start gap-4">
+        <span className="grid size-9 shrink-0 place-items-center rounded-control bg-surface-1 text-text-secondary">
+          <Icon size={15} aria-hidden="true" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-caption text-text-tertiary">{bucket.label}</span>
+          <span className="mt-1 block text-lead font-semibold text-text-primary">
+            {formatBytes(bucket.bytes)}
+          </span>
+          <span className="block text-caption text-text-tertiary">
+            {formatNumber(bucket.files)} file{bucket.files === 1 ? "" : "s"} · {bucket.note}
+          </span>
+        </span>
       </span>
 
       {/*

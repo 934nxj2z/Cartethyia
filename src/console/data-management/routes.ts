@@ -3,7 +3,7 @@ import { t } from "elysia";
 import { errorResponse, requireAnyScope } from "../shared/errors";
 import type { AccessDecision } from "../../security/access-control";
 import { createDataManagementOperations, type DataManagementConfig } from "./operations";
-import type { ReclaimAction, ReclaimResponse } from "./contracts";
+import type { PurgeTarget, ReclaimAction, ReclaimResponse } from "./contracts";
 
 const WRITE_SCOPES = ["dashboard:write"] as const;
 
@@ -13,6 +13,10 @@ const reclaimBody = t.Object({
     t.Literal("telemetry_retention"),
     t.Literal("telemetry_hourly"),
   ]),
+});
+
+const purgeBody = t.Object({
+  target: t.Literal("health_events"),
 });
 
 /**
@@ -79,6 +83,22 @@ export function createDataManagementRoutes(
         return { flushed: true };
       } catch (error) {
         return errorResponse(error, set, "Flush failed");
+      }
+    })
+    .post("/purge", { body: purgeBody }, async ({ request, body, set }) => {
+      try {
+        const access = requireAnyScope(config.accessResolver(request), WRITE_SCOPES);
+        const deleted: number = await operations.purge(body.target as PurgeTarget);
+        await config.auditSink?.record({
+          access,
+          action: `data_management.purge.${body.target}`,
+          target: access.tenantId ?? null,
+          detail: { deleted },
+        });
+        set.status = 200;
+        return { target: body.target, deleted } satisfies { target: PurgeTarget; deleted: number };
+      } catch (error) {
+        return errorResponse(error, set, "Purge failed");
       }
     }) as unknown as Elysia;
 }

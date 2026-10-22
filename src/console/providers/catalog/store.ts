@@ -13,7 +13,7 @@ import { buddyTaskLedger, models, providerAccounts, providerOauthStates, provide
 import { queryTelemetryEvents } from "../../../observability/event-log";
 import { isGatewayError } from "../../../observability/telemetry-status";
 import type { WireFamily } from "../../../protocol/canonical-model";
-import { listAccountHealthEvents, recoverAccount, type AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
+import { listAccountHealthEvents, recoverAccount, deleteAccountHealthEvents, type AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
 import { invalidateCredentialCache } from "../../../providers/operations/provider-credential-service";
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
@@ -1466,6 +1466,27 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       .limit(1);
     if (owned.length === 0) return [];
     return listAccountHealthEvents(this.db, accountId);
+  }
+
+  /** Deletes one account's stored health & error rows, for the modal's purge. */
+  async purgeAccountHealthEvents(
+    tenantId: string,
+    providerId: string,
+    accountId: string,
+  ): Promise<number> {
+    const owned = await this.db
+      .select({ id: providerAccounts.id })
+      .from(providerAccounts)
+      .where(
+        and(
+          eq(providerAccounts.id, accountId),
+          eq(providerAccounts.providerId, providerId),
+          globalOrOwnedBy(providerAccounts.tenantId, tenantId),
+        ),
+      )
+      .limit(1);
+    if (owned.length === 0) return 0;
+    return deleteAccountHealthEvents(this.db, accountId);
   }
   async listBuddyGrowthTasks(
     tenantId: string,

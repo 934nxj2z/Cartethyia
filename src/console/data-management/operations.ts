@@ -4,26 +4,30 @@ import { payloadDirectory, prunePayloadFrames } from "../../observability/payloa
 import type {
   DiskUsageBucket,
   DiskUsageResponse,
+  PurgeTarget,
   ReclaimAction,
   ReclaimResponse,
 } from "./contracts";
-import { ReclaimNotAllowedError } from "./contracts";
+import { PurgeNotWiredError, ReclaimNotAllowedError } from "./contracts";
 
 /**
- * Reads and reclaims the on-disk telemetry and payload directories.
+ * Reads and reclaims the on-disk telemetry and payload directories, and
+ * purges the health & error log — the console's one row-level deletion.
  *
- * Everything here touches files, never database rows. Reclaiming is safe
- * because the data is already past the point the gateway would read it:
- * payload frames expire minutes after they are written, and telemetry past
- * the retention window sits outside every query's scan bound. Deleting rows
- * is a different decision with a different blast radius and is deliberately
- * not offered.
+ * Reclaiming files is safe because the data is already past the point the
+ * gateway would read it: payload frames expire minutes after they are written,
+ * and telemetry past the retention window sits outside every query's scan
+ * bound. The health & error log purge is the deliberate exception: the rows are
+ * an operator's diagnostic trail that no request-path code reads, so clearing
+ * them costs nothing but the history itself.
  *
  * The telemetry directory is injected rather than read from its module
  * constant so the scanner can be pointed at a fixture. The payload directory
  * is not: reclaim goes through `prunePayloadFrames`, which resolves the
  * directory itself, and a second path would let the two drift so the scanner
- * measured one place while the prune emptied another.
+ * measured one place while the prune emptied another. The health-event store
+ * hook is injected for the same reason: this module should know its numbers,
+ * not how storage reaches them.
  */
 
 export interface DataManagementConfig {
@@ -36,6 +40,17 @@ export interface DataManagementConfig {
    * copy of its requests, so removing one loses real history.
    */
   readonly allowHourlyReclaim: boolean;
+  /**
+   * The health & error log store, backing the console's only row-level purge.
+   * Absent (a reduced console composition) means the purge is not offered
+   * rather than failing to boot.
+   */
+  readonly healthEvents?:
+    | {
+        count(): Promise<number>;
+        purgeAll(): Promise<number>;
+      }
+    | undefined;
 }
 
 interface Scan {
@@ -81,12 +96,13 @@ export function createDataManagementOperations(config: DataManagementConfig) {
     const retentionCutoff = Date.now() - config.retentionDays * 24 * 60 * 60_000;
     const payloadCutoff = Date.now() - config.payloadRetentionMs;
 
-    const [hourly, compacted, staleCompacted, frames, staleFrames] = await Promise.all([
+    const [hourly, compacted, staleCompacted, frames, staleFrames, healthEventCount] = await Promise.all([
       scan(config.telemetryDir, isHourly),
       scan(config.telemetryDir, isCompacted),
       scan(config.telemetryDir, (name) => isCompacted(name) && dayBefore(name, retentionCutoff)),
       scan(payloadDir(), isFrame),
       scan(payloadDir(), isFrame, payloadCutoff),
+      config.healthEvents?.count(),
     ]);
 
     const buckets: DiskUsageBucket[] = [
@@ -126,6 +142,7 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       totalBytes: buckets.reduce((sum, bucket) => sum + bucket.bytes, 0),
       retentionDays: config.retentionDays,
       payloadRetentionMs: config.payloadRetentionMs,
+      ...(healthEventCount === undefined ? {} : { healthEventCount }),
     };
   }
 
@@ -169,7 +186,18 @@ export function createDataManagementOperations(config: DataManagementConfig) {
     return unlinkWhere(action, config.telemetryDir, isHourly);
   }
 
-  return { usage, reclaim };
+  /** The one row-level deletion the console offers. */
+  async function purge(target: PurgeTarget): Promise<number> {
+    switch (target) {
+      case "health_events": {
+        const store = config.healthEvents;
+        if (store === undefined) throw new PurgeNotWiredError();
+        return await store.purgeAll();
+      }
+    }
+  }
+
+  return { usage, reclaim, purge };
 }
 
 async function unlinkWhere(

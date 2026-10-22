@@ -67,6 +67,12 @@ export class HealthEventFlushBuffer {
   private timer: ReturnType<typeof setInterval> | undefined;
   private flushing = false;
   private dropped = 0;
+  /**
+   * Settles once while an INSERT is in flight, so a purge that drops the
+   * queue can wait that write out instead of letting it land behind its own
+   * `DELETE` and resurrect the rows it just removed.
+   */
+  private inflightDone: Promise<void> | undefined;
 
   constructor(
     private readonly db: CartethyiaDatabase,
@@ -97,10 +103,38 @@ export class HealthEventFlushBuffer {
     return this.dropped;
   }
 
+  /** Drops queued rows — everything, or one account's — without writing them. */
+  clear(accountId?: string): void {
+    if (accountId === undefined) {
+      this.pending.length = 0;
+      return;
+    }
+    for (let i = this.pending.length - 1; i >= 0; i -= 1) {
+      if (this.pending[i]?.accountId === accountId) this.pending.splice(i, 1);
+    }
+  }
+
+  /**
+   * Drops queued rows and then blocks until a write already in flight lands.
+   *
+   * The barrier is what makes a purge sound: deleting only the rows visible at
+   * one instant is final, while an insert in flight for the same instant would
+   * re-add rows after the `DELETE` finished. Rows enqueued *after* the drop
+   * are new events, not resurrected ones, so they are left alone.
+   */
+  async drain(accountId?: string): Promise<void> {
+    this.clear(accountId);
+    await this.inflightDone;
+  }
+
   /** Writes everything accumulated so far. Safe to call concurrently. */
   async flush(): Promise<void> {
     if (this.flushing || this.pending.length === 0) return;
     this.flushing = true;
+    let settle!: () => void;
+    this.inflightDone = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
     // Drained before the await: rows enqueued while the insert runs stay for
     // the next pass rather than being lost if this one throws.
     const batch = this.pending.splice(0, this.pending.length);
@@ -123,6 +157,8 @@ export class HealthEventFlushBuffer {
       // are dropped; the durable status change was written synchronously.
     } finally {
       this.flushing = false;
+      this.inflightDone = undefined;
+      settle();
     }
   }
 

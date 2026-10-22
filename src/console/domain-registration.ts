@@ -24,6 +24,8 @@ import { DrizzleModelRoutingStore } from "./routing/model/store";
 import { DrizzleNetworkPoolStore } from "./routing/pools/store";
 import { createRuntimeSettingsRoutes } from "./settings/routes";
 import { createDataManagementRoutes } from "./data-management/routes";
+import { healthEventBuffer } from "../persistence/health-event-flush";
+import { countAllHealthEvents, deleteAllHealthEvents } from "../providers/operations/account-health-service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createObservabilityRoutes } from "./observability/routes";
 import { DrizzleObservabilityStore } from "./observability/store";
@@ -291,6 +293,18 @@ export function registerConsoleDomains(
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
       flusher: ctx.flushBuffers,
+      // The console's one row-level purge: the health & error log is a
+      // diagnostic trail no request-path code reads. Dropping the buffered
+      // writes before the DELETE is what makes it sound — otherwise a batch
+      // in flight would land behind the purge and resurrect history that was
+      // just counted as deleted.
+      healthEvents: {
+        count: () => countAllHealthEvents(ctx.db),
+        purgeAll: async () => {
+          await healthEventBuffer()?.drain();
+          return await deleteAllHealthEvents(ctx.db);
+        },
+      },
     }),
   );
   console.use(
