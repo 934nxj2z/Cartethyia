@@ -52,6 +52,7 @@ import {
 import { NetworkPoolSelector } from "../network/pool/selector";
 import { ScheduledTaskRegistry } from "../workers/scheduler";
 import { quotaRefreshSweep } from "../workers/quota-refresh-sweep";
+import { markProviderApiKeyCredential } from "../console/quota/account-quota-shared";
 import { dailyCheckinEgressForPass } from "../workers/daily-checkin";
 import {
   buddyAdoptTask,
@@ -474,6 +475,14 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         providerRegistry: registry,
         resolveCredential: quotaResolveCredential,
         snapshotInvalidator: snapshotService,
+        // Without this the sweep handed each collector the raw stored secret.
+        // For `cline` that meant an `sk_...` key reaching the OAuth branch,
+        // which prepends `workos:` and is refused with "please make sure
+        // you're using the latest version of Cline and re-authenticate" — so
+        // every sweep cooled a working account with `quota_fetch_failed`
+        // while the same account refreshed fine from the console, which
+        // binds the same marker through `createQuotaRefreshDeps`.
+        markApiKeyCredential: markProviderApiKeyCredential,
         // Below the 60 s interval: a budget longer than the tick guarantees
         // skip/burst under load instead of steady progress.
         passBudgetMs: 45_000,

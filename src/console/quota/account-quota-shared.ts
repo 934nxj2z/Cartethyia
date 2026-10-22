@@ -22,6 +22,20 @@ export const ACCOUNT_STATUSES = ["active", "cooldown", "disabled"] as const;
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 
 /**
+ * Wraps a stored api_key credential in the envelope its collector expects.
+ *
+ * Exported because every refresh path needs it, and the ones that omit it
+ * fail in a way that looks like the credential is dead: an unmarked `cline`
+ * `sk_...` key takes the OAuth branch, gets `workos:` prepended, and is
+ * refused with a message naming a version problem. The scheduled sweep once
+ * omitted it, so a working account was cooled with `quota_fetch_failed` every
+ * minute while refreshing fine from the console.
+ */
+export function markProviderApiKeyCredential(providerId: string, credential: string): string {
+  return providerId === "cline" ? markClineApiKeyCredential(credential) : credential;
+}
+
+/**
  * Builds the refresh dependency bundle from the route deps, binding the
  * provider-specific credential normalisation (`cline` API keys) once so every
  * caller refreshes through the same wiring.
@@ -33,7 +47,6 @@ export function createQuotaRefreshDeps(deps: AccountQuotaRoutesDeps): QuotaRefre
     providerRegistry: deps.providerRegistry,
     resolveCredential: deps.resolveCredential,
     ...(deps.snapshotInvalidator ? { snapshotInvalidator: deps.snapshotInvalidator } : {}),
-    markApiKeyCredential: (providerId, credential) =>
-      providerId === "cline" ? markClineApiKeyCredential(credential) : credential,
+    markApiKeyCredential: markProviderApiKeyCredential,
   };
 }
