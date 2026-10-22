@@ -116,6 +116,23 @@ exactly what the limit exists to prevent.
 
 ### Changed
 
+- **Grok reports both of its quota numbers, and they disagree.** The CLI plane
+  returns a token bucket on every response (`x-ratelimit-limit-tokens:
+  1000000`), but that figure is eventually consistent — it can still read full
+  right after a request — and it is not the one that binds. The real free
+  allowance is 600k per rolling 24 hours, and upstream states it only in the
+  body of a 429: `tokens (actual/limit): 603024/600000`.
+
+  The header is now read as the everyday indicator and listed first; the
+  authoritative figure from a refusal is appended beneath it. Neither replaces
+  the other, because a merged number would look precise and be neither. Reading
+  the bucket costs one cheap request (~360-480 tokens), since no quota endpoint
+  exists — `grok.com/rest/*` exposes none and `/v1/models` carries no headers.
+
+  A refusal is reported as a balance, not a read failure: an account that is
+  out of free usage was measured perfectly well, and calling that an error
+  would show a broken read on a healthy account.
+
 - **Cursor, Trae and Qoder report a quota balance.** All three had no
   collector, so the console showed nothing — and no balance is indistinguishable
   from no quota left to anything reading the account.
