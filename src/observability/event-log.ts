@@ -34,19 +34,6 @@ export function windowFileName(at: Date, windowMinutes: number): string {
   return `${bucketStart(at, windowMinutes).toISOString().slice(0, 16).replace(":", "-")}.jsonl`;
 }
 
-/**
- * The name of the file currently being appended to, at the writer's own
- * granularity.
- *
- * The writer buckets by the hour (`hourStamp`), whatever the configured
- * telemetry window is, so this is the only name that correctly identifies the
- * open file. `windowFileName` floors to `windowMinutes` and therefore names a
- * file the writer never creates.
- */
-export function openWindowFileName(at: Date): string {
-  return `${hourStamp(at)}.jsonl`;
-}
-
 /** The start of the window containing `at`, floored to `windowMinutes`. */
 export function bucketStart(at: Date, windowMinutes: number): Date {
   const ms = Math.max(1, Math.floor(windowMinutes)) * 60_000;

@@ -27,8 +27,8 @@
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  openWindowFileName,
   TELEMETRY_EVENT_DIR,
+  windowFileName,
   type TelemetryEventRecord,
 } from "./event-log";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
@@ -310,27 +310,18 @@ export interface CompactionResult {
  * neither place.
  */
 export async function compactTelemetryFiles(options: {
-  /**
-   * Minutes per source window.
-   *
-   * Kept for the caller's reporting; the open file is identified by name at the
-   * writer's granularity, not by flooring to this value.
-   */
+  /** Minutes per source window; a window is folded once it has closed. */
   readonly windowMinutes?: number;
   readonly maxFiles?: number;
   readonly now?: Date;
   readonly retentionDays?: number;
 }): Promise<CompactionResult> {
   const now = options.now ?? new Date();
+  const windowMinutes = options.windowMinutes ?? 60;
   // Only windows that have closed. The open one is still being appended to, so
-  // folding and deleting it would drop every event written afterwards.
-  //
-  // The writer buckets by the hour regardless of `windowMinutes`, so the open
-  // file has to be named at the writer's granularity. Flooring to
-  // `windowMinutes` named a file the writer never creates, and every comparison
-  // against it was then true — the open file was folded and unlinked while the
-  // process was still writing to it.
-  const openWindow = openWindowFileName(now);
+  // folding and deleting it would drop every event written afterwards — the
+  // name is the window start, so this is a comparison on the name alone.
+  const openWindow = windowFileName(now, windowMinutes);
   const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
     .filter(isHourlyFile)
     .filter((file) => file < openWindow)
