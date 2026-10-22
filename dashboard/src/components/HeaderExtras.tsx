@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Coffee, Download, ExternalLink, HandHeart, Heart, Languages, QrCode, Sparkles, Star } from "lucide-react";
 import { Dialog } from "./ui/dialog";
 import { DialogActions } from "./ui/dialog-actions";
+import { SOURCE_LINKS } from "../lib/links";
 
 /**
  * The language switch and the donation button, in the console topbar.
@@ -13,7 +14,6 @@ import { DialogActions } from "./ui/dialog-actions";
  */
 
 const DONATION_URL = "https://saweria.co/risuncode";
-const REPOSITORY_URL = "https://github.com/risunCode/cartethyia";
 const QRIS_IMAGE = "/donation/qris-risun-marke.png";
 
 /** Locales the placeholder offers; only the first is actually applied. */
@@ -123,15 +123,6 @@ function DonationModal({
             Save QR
           </a>
           <a
-            href={REPOSITORY_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="flex items-center gap-1.5 rounded-inset border border-inner-border px-3 py-2 text-[13px] text-text-secondary hover:bg-hover-bg hover:text-text-primary"
-          >
-            <Star size={14} aria-hidden="true" />
-            Star the repo
-          </a>
-          <a
             href={DONATION_URL}
             target="_blank"
             rel="noreferrer noopener"
@@ -176,6 +167,34 @@ function DonationModal({
               <span>Funds the coffee that funds the next release.</span>
             </li>
           </ul>
+
+          <div className="mt-4 border-t border-inner-border pt-3">
+            <p className="text-[11px] font-bold uppercase tracking-label text-text-tertiary">
+              Other ways to support
+            </p>
+            <ul className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              {SOURCE_LINKS.map((link) => (
+                <li key={link.id}>
+                  <a
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="flex items-center gap-2 rounded-inset border border-inner-border px-3 py-2 text-[12px] text-text-secondary hover:bg-hover-bg hover:text-text-primary"
+                  >
+                    {link.id === "github-alt" ? (
+                      <Star size={12} className="shrink-0 text-accent-text" aria-hidden="true" />
+                    ) : (
+                      <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 truncate">{link.label}</span>
+                    <span className="ml-auto shrink-0 text-[10px] text-text-tertiary">
+                      {link.hint}
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
 
           <p className="mt-3 text-[11px] leading-relaxed text-text-tertiary">
             No obligation, no paywall, no nagging — the project stays free either way.
