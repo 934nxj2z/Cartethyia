@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Coffee, ExternalLink, Heart, Languages, QrCode, Sparkles, Star, X } from "lucide-react";
+import { Coffee, Download, ExternalLink, HandHeart, Heart, Languages, QrCode, Sparkles, Star } from "lucide-react";
+import { Dialog } from "./ui/dialog";
+import { DialogActions } from "./ui/dialog-actions";
 
 /**
  * The language switch and the donation button, in the console topbar.
@@ -13,6 +14,7 @@ import { Coffee, ExternalLink, Heart, Languages, QrCode, Sparkles, Star, X } fro
 
 const DONATION_URL = "https://saweria.co/risuncode";
 const REPOSITORY_URL = "https://github.com/risunCode/cartethyia";
+const QRIS_IMAGE = "/donation/qris-risun-marke.png";
 
 /** Locales the placeholder offers; only the first is actually applied. */
 const LOCALES = [
@@ -58,7 +60,7 @@ function LanguageMenu() {
         onClick={() => setOpen((value) => !value)}
       >
         <Languages size={14} aria-hidden="true" />
-        <span className="text-[11px] font-bold tracking-wide">{current.label}</span>
+        <span className="text-[11px] font-bold tracking-wide max-small:sr-only">{current.label}</span>
       </button>
       {open ? (
         <div
@@ -90,114 +92,99 @@ function LanguageMenu() {
 }
 
 /**
- * The donation dialog.
+ * The donation modal.
  *
- * A bottom sheet on a phone and a two-column card from `lg` up, with the QR on
- * the left and the copy on the right. The QR is the thing a supporter has to
- * scan, so it is capped rather than left to fill the panel — it filled the
- * whole dialog before and pushed the buttons off screen on a laptop.
+ * Built on the shared `Dialog` rather than a one-off overlay: it already owns
+ * the backdrop blur, the focus trap, the escape handling and the viewport
+ * bounding, and a second implementation of those is a second thing to keep in
+ * step.
  */
-function DonationModal({ onClose }: { readonly onClose: () => void }) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-modal flex items-end justify-center sm:items-center sm:p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Support the project"
+function DonationModal({
+  open,
+  onClose,
+}: {
+  readonly open: boolean;
+  readonly onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Buy me a coffee"
+      description="Support Cartethyia development via QRIS or Saweria."
+      size="lg"
+      footer={
+        <DialogActions>
+          <a
+            href={QRIS_IMAGE}
+            download="qris-risun-marke.png"
+            className="flex items-center gap-1.5 rounded-inset border border-inner-border px-3 py-2 text-[13px] text-text-secondary hover:bg-hover-bg hover:text-text-primary"
+          >
+            <Download size={14} aria-hidden="true" />
+            Save QR
+          </a>
+          <a
+            href={REPOSITORY_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="flex items-center gap-1.5 rounded-inset border border-inner-border px-3 py-2 text-[13px] text-text-secondary hover:bg-hover-bg hover:text-text-primary"
+          >
+            <Star size={14} aria-hidden="true" />
+            Star the repo
+          </a>
+          <a
+            href={DONATION_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="flex items-center gap-1.5 rounded-inset bg-accent-bg px-4 py-2 text-[13px] font-semibold text-accent-text hover:opacity-90"
+          >
+            <Coffee size={14} aria-hidden="true" />
+            Donate via Saweria
+            <ExternalLink size={12} aria-hidden="true" />
+          </a>
+        </DialogActions>
+      }
     >
-      <button
-        type="button"
-        aria-label="Close"
-        className="absolute inset-0 bg-overlay-bg"
-        onClick={onClose}
-      />
-      <div className="popout-enter glass relative flex max-h-[92vh] w-full flex-col overflow-y-auto rounded-t-dialog border border-inner-border bg-popover-bg shadow-popout sm:max-w-2xl sm:rounded-dialog">
-        <button
-          type="button"
-          aria-label="Close"
-          className="absolute right-3 top-3 z-10 rounded-inset p-1.5 text-text-tertiary hover:bg-hover-bg hover:text-text-primary"
-          onClick={onClose}
-        >
-          <X size={16} />
-        </button>
+      <div className="grid grid-cols-1 gap-5 sm:gap-6 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+        <div className="flex flex-col items-center gap-2">
+          <img
+            src={QRIS_IMAGE}
+            alt="QRIS payment code for RISUN"
+            className="aspect-square w-full max-w-[220px] rounded-inset border border-inner-border bg-white object-contain p-2"
+          />
+          <p className="flex items-center gap-1.5 text-[11px] text-text-tertiary">
+            <QrCode size={12} aria-hidden="true" />
+            Scan with any QRIS app
+          </p>
+        </div>
 
-        <div className="grid grid-cols-1 gap-5 p-5 sm:gap-6 sm:p-6 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)]">
-          <div className="flex flex-col items-center gap-2">
-            <img
-              src="/donation/qris-risun-marke.png"
-              alt="QRIS payment code for RISUN"
-              className="aspect-square w-full max-w-[240px] rounded-inset border border-inner-border bg-white object-contain p-2"
-            />
-            <p className="flex items-center gap-1.5 text-[11px] text-text-tertiary">
-              <QrCode size={12} aria-hidden="true" />
-              Scan with any QRIS app
-            </p>
-          </div>
+        <div className="min-w-0">
+          <p className="text-[13px] leading-relaxed text-text-secondary">
+            Cartethyia is built in the spare hours between everything else — late
+            nights, weekends, and a suspicious number of energy drinks. If it saved
+            you an afternoon of fighting with rate limits, or made your proxy pool
+            behave, a coffee genuinely helps keep the lights on and the commits
+            coming.
+          </p>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Coffee size={18} className="text-accent-text" aria-hidden="true" />
-              <h2 className="text-base font-bold text-text-primary">Buy me a coffee</h2>
-            </div>
+          <ul className="mt-3 flex flex-col gap-1.5 text-[12px] text-text-secondary">
+            <li className="flex items-start gap-2">
+              <Sparkles size={14} className="mt-0.5 shrink-0 text-accent-text" aria-hidden="true" />
+              <span>Keeps late-night debugging sessions fuelled.</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <Heart size={14} className="mt-0.5 shrink-0 text-accent-text" aria-hidden="true" />
+              <span>Funds the coffee that funds the next release.</span>
+            </li>
+          </ul>
 
-            <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
-              Cartethyia is built in the spare hours between everything else — late
-              nights, weekends, and a suspicious number of energy drinks. If it saved
-              you an afternoon of fighting with rate limits, or made your proxy pool
-              behave, a coffee genuinely helps keep the lights on and the commits
-              coming.
-            </p>
-
-            <ul className="mt-3 flex flex-col gap-1.5 text-[12px] text-text-secondary">
-              <li className="flex items-start gap-2">
-                <Sparkles size={14} className="mt-0.5 shrink-0 text-accent-text" aria-hidden="true" />
-                <span>Keeps late-night debugging sessions fuelled.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <Heart size={14} className="mt-0.5 shrink-0 text-accent-text" aria-hidden="true" />
-                <span>Funds the coffee that funds the next release.</span>
-              </li>
-            </ul>
-
-            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <a
-                href={DONATION_URL}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="flex items-center justify-center gap-2 rounded-inset bg-accent-bg px-4 py-2.5 text-[13px] font-semibold text-accent-text hover:opacity-90"
-              >
-                <Coffee size={14} aria-hidden="true" />
-                Saweria
-                <ExternalLink size={12} aria-hidden="true" />
-              </a>
-              <a
-                href={REPOSITORY_URL}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="flex items-center justify-center gap-2 rounded-inset border border-inner-border px-4 py-2.5 text-[13px] text-text-secondary hover:bg-hover-bg hover:text-text-primary"
-              >
-                <Star size={14} aria-hidden="true" />
-                Star the repo
-              </a>
-            </div>
-
-            <p className="mt-3 text-[11px] leading-relaxed text-text-tertiary">
-              No obligation, no paywall, no nagging — the project stays free either way.
-              Thank you for using it. 💙
-            </p>
-          </div>
+          <p className="mt-3 text-[11px] leading-relaxed text-text-tertiary">
+            No obligation, no paywall, no nagging — the project stays free either way.
+            Thank you for using it. 💙
+          </p>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }
 
@@ -207,17 +194,21 @@ export function HeaderExtras() {
 
   return (
     <>
-      <LanguageMenu />
+      {/* Donate leads: it is the only one of the two that is an action rather
+          than a setting. The label collapses to the icon alone on a narrow
+          topbar, where a second word would crowd the title. */}
       <button
         type="button"
-        className="topbar-icon-button"
+        className="topbar-icon-button max-small:px-2"
         aria-label="Support the project"
         title="Buy me a coffee"
         onClick={() => setDonateOpen(true)}
       >
-        <Coffee size={14} aria-hidden="true" />
+        <HandHeart size={14} aria-hidden="true" />
+        <span className="text-[11px] font-bold tracking-wide max-small:sr-only">Donate</span>
       </button>
-      {donateOpen ? <DonationModal onClose={() => setDonateOpen(false)} /> : null}
+      <LanguageMenu />
+      <DonationModal open={donateOpen} onClose={() => setDonateOpen(false)} />
     </>
   );
 }
