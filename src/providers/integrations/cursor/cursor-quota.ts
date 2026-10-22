@@ -227,10 +227,12 @@ export async function fetchCursorQuota(
   const userId = cursorAccountIdentity(credential) ?? authStateUserId(context);
   let summary: { readonly windows: readonly ProviderQuotaWindow[]; readonly plan: string | null } | null = null;
   if (userId && baseUrl === `https://${CURSOR_API_HOST}`) {
+    // This surface authenticates by session cookie, not bearer: it answers 401
+    // `not_authenticated` for every Authorization header, including a valid
+    // one. The cookie is the user id and the token joined by `::`.
     summary = await call(`https://${CURSOR_WEBSITE_HOST}/api/usage-summary`, {
       accept: "application/json",
-      authorization: `Bearer ${credential}`,
-      "x-cursor-user-id": userId,
+      cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${credential}`)}`,
     }).then(
       (payload) => parseUsageSummary(payload),
       (error: unknown) => {

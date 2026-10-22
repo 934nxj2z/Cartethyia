@@ -15,7 +15,7 @@ import { GatewayError, publicGatewayErrorBody } from "../protocol/gateway-error"
 import { shutdownError, shutdownNotice } from "../transport/shutdown-notice";
 import type { CanonicalAdapter } from "../transport/contracts";
 import type { ApiKeyAuthorizationSnapshot } from "../security/api-key-auth";
-import { unknownApiKeyError } from "../security/api-key-auth";
+import { modelsListApiKeyError } from "../security/api-key-auth";
 import { getDbHandle } from "../persistence/boot";
 import { isPgHandle } from "../persistence/db-pg";
 import { resolveRedisClient } from "../persistence/redis";
@@ -409,7 +409,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     const handleModelsList = async ({ request }: { request: Request }): Promise<Response> => {
       const state = requestStateStore.require(request);
       const auth = state.authorization;
-      if (!auth) throw unknownApiKeyError();
+      if (!auth) throw modelsListApiKeyError();
       const data = await queryAllowedModels(auth);
       return new Response(JSON.stringify({ object: "list", data }), {
         headers: {
@@ -432,7 +432,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     }): Promise<Response> => {
       const state = requestStateStore.require(request);
       const auth = state.authorization;
-      if (!auth) throw unknownApiKeyError();
+      if (!auth) throw modelsListApiKeyError();
       const raw = params?.["*"] ?? params?.id ?? "";
       const targetId = new URL(request.url).searchParams.get("id") ?? raw;
       const found = await publicModelStore.getPublicModelDetail(
