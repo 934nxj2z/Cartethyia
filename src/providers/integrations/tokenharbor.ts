@@ -35,7 +35,7 @@ export const TOKENHARBOR_FALLBACK_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "muse-spark-1.2", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true }),
   defineModel({ id: "muse-spark-1-3", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true }),
   defineModel({ id: "gpt-6-astra", providerId: "tokenharbor", ctx: 1_050_000, reasoning: true, vision: true }),
-  defineModel({ id: "deepseek-v4.1-flash", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true }),
+  defineModel({ id: "deepseek-v4.1-flash", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true }),
   defineModel({ id: "gemini-3.6-flash", providerId: "tokenharbor", ctx: 1_000_000, reasoning: true, vision: true }),
   defineModel({ id: "glm-5.2", providerId: "tokenharbor", ctx: 1_000_000, reasoning: true }),
   defineModel({ id: "gpt-5.6-luna", providerId: "tokenharbor", reasoning: true, vision: true }),
@@ -62,7 +62,7 @@ export const TOKENHARBOR_FALLBACK_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "mimo-v2.6-pro", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true }),
   defineModel({ id: "mimo-v2.5:free", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true, free: true }),
   defineModel({ id: "deepseek-v4-flash:free", providerId: "tokenharbor", reasoning: true, free: true }),
-  defineModel({ id: "deepseek-v4.1-flash:free", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, free: true }),
+  defineModel({ id: "deepseek-v4.1-flash:free", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true, free: true }),
   defineModel({ id: "qwen3.8-flash:free", providerId: "tokenharbor", reasoning: true, free: true }),
   defineModel({ id: "mimo-v2.6-flash:free", providerId: "tokenharbor", ctx: 1_048_576, reasoning: true, vision: true, free: true }),
 ];

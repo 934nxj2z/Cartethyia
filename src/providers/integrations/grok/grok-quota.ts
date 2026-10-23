@@ -2,12 +2,40 @@ import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../
 import { isoDate, number, percentWindow, record, text } from "../../quota/quota-contracts";
 import { buildGrokAuthUserAgent, getGrokVersion } from "../../operations/client-versions";
 import { decodeGrokCreditsFrame } from "./grok-quota-frame";
+import {
+  grokAuthoritativeWindow,
+  grokHeaderRequestsWindow,
+  grokHeaderWindow,
+  GROK_FREE_USAGE_EXHAUSTED,
+  parseGrokFreeUsageVerdict,
+  readGrokRateLimitHeaders,
+} from "./grok-ratelimit";
+import type { GrokRateLimitProbe } from "./grok-ratelimit";
+import { storedGrokRateLimit } from "./grok-ratelimit-store";
+import type { QuotaCollectionContext } from "../../quota/quota-support";
 
 const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const BILLING_SOURCE = "cli-chat-proxy.grok.com/v1/billing";
 const USER_URL = "https://cli-chat-proxy.grok.com/v1/user?include=subscription";
 const GRPC_CREDITS_URL = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig";
 const GRPC_EMPTY_FRAME = new Uint8Array([0, 0, 0, 0, 0]);
+
+/**
+ * The cheapest request that still returns the rate-limit headers.
+ *
+ * There is no dedicated quota endpoint — `grok.com/rest/*` does not expose one
+ * and `/v1/models` carries no rate-limit headers — so reading the bucket costs
+ * one real request. At ~360-480 tokens against a 1M allowance that is a few
+ * thousand readings per account, which is affordable; a larger cap would not
+ * be.
+ */
+const PROBE_URL = "https://cli-chat-proxy.grok.com/v1/responses";
+const PROBE_BODY = {
+  model: "grok-4.6",
+  stream: false,
+  max_output_tokens: 1,
+  input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+};
 
 /**
  * Auth headers shared by every xAI billing/userinfo call: bearer token plus
@@ -138,10 +166,56 @@ async function fetchUser(
   }
 }
 
+/**
+ * One cheap request, read for its rate-limit headers — and, when the account is
+ * being refused, for the authoritative allowance in the 429 body.
+ *
+ * A refusal is not a failure of the probe: it is the only moment upstream
+ * states the real free allowance, so the body is parsed before anything is
+ * discarded. A transport failure is the opposite — it says nothing about the
+ * account, so it yields no reading rather than a zero.
+ */
+async function probeRateLimit(
+  accessToken: string,
+  fetcher: FetchLike,
+): Promise<GrokRateLimitProbe> {
+  try {
+    const response = await fetcher(PROBE_URL, {
+      method: "POST",
+      headers: { ...xaiHeaders(accessToken), "content-type": "application/json" },
+      body: JSON.stringify(PROBE_BODY),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const reading = readGrokRateLimitHeaders(response.headers);
+    let authoritative = null;
+    let note: string | null = null;
+    if (response.status === 429) {
+      const body = await response.text();
+      const verdict = parseGrokFreeUsageVerdict(parsePayload(body), body);
+      authoritative = verdict ? grokAuthoritativeWindow(verdict) : null;
+      note = GROK_FREE_USAGE_EXHAUSTED;
+    } else if (!response.ok) {
+      // Drain so the connection is reusable, then report nothing: an unrelated
+      // failure must not read as an exhausted allowance.
+      await response.text();
+    }
+    return {
+      header: grokHeaderWindow(reading),
+      requests: grokHeaderRequestsWindow(reading),
+      authoritative,
+      refusal: response.status === 429,
+      note,
+    };
+  } catch {
+    return { header: null, requests: null, authoritative: null, refusal: false, note: null };
+  }
+}
+
 /** Fetches Grok Build subscription billing, including weekly and unified-monthly fallbacks. */
 export async function fetchGrokQuota(
   credential: string,
   fetcher: FetchLike,
+  context?: QuotaCollectionContext,
 ): Promise<ProviderQuotaResult> {
   const accessToken = credential.trim();
   if (!accessToken) throw new Error("grok quota requires an OAuth access token");
@@ -171,7 +245,35 @@ export async function fetchGrokQuota(
     text(payload.subscriptionTier) ??
     text(userRecord?.subscriptionTier) ??
     "SuperGrok";
-  return { source: "grok", plan, windows, error: null };
+  // The billing windows are the subscription's own accounting; the two CLI
+  // readings say something different — what this account can still *serve* —
+  // so they are prepended and appended around it rather than merged in.
+  //
+  // Header first: it is what a caller sees every day and it never goes stale
+  // into "unknown". Authoritative last: it only exists once upstream has
+  // refused, and it is the number that decides the account, so it sits beneath
+  // the indicator it overrides.
+  // A reading captured from real traffic costs nothing, so it is preferred
+  // whenever one is fresh. The probe is the fallback for the first read after a
+  // start — never the routine path, or every console refresh would spend a
+  // request.
+  const stored = context?.accountId === undefined
+    ? null
+    : storedGrokRateLimit(context.accountId);
+  const probe = stored ? null : await probeRateLimit(accessToken, fetcher);
+  const ordered: ProviderQuotaWindow[] = [];
+  if (stored) ordered.push(...stored);
+  else if (probe) {
+    if (probe.header) ordered.push(probe.header);
+    if (probe.requests) ordered.push(probe.requests);
+  }
+  ordered.push(...windows);
+  if (probe?.authoritative) ordered.push(probe.authoritative);
+  // Deliberately not `probe.note` in `error`: a refusal here is the probe's own
+  // doing and says the account is out of free usage, which is *account state*,
+  // not a read failure. Reporting it as an error would make a healthy read look
+  // broken; the authoritative window below is what carries the verdict.
+  return { source: "grok", plan, windows: ordered, error: null };
 }
 
 export { BILLING_SOURCE as GROK_BILLING_SOURCE };

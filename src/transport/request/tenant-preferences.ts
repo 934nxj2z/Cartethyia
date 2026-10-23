@@ -13,6 +13,66 @@ import type { PreparedProxyRequest } from "./preparer";
 import { normalizeThinkingConfig } from "../translation/thinking";
 import { compressRequest } from "./rtk/compress-request";
 import { preferencesReaderFor } from "../../persistence/tenant-preferences";
+import { resolveUpstreamTimeoutMs } from "../../config/timeouts";
+
+/**
+ * Re-arms the request deadline from the tenant's timeout override.
+ *
+ * The initial deadline is armed before authentication, when the tenant is not
+ * yet known, so a per-tenant timeout can only be applied here — once the
+ * snapshot says who is asking. `extendDeadline` keeps the timer, the state
+ * field, and the in-flight record in step, so the backstop sweep cannot
+ * force-release a request whose budget legitimately grew.
+ *
+ * Non-fatal: a settings read outage leaves the deployment default in place
+ * rather than failing a dispatchable request.
+ */
+export async function applyTenantDeadlineOverride(
+  tenantId: string,
+  db: CartethyiaDatabase,
+  extend: (ms: number) => void,
+): Promise<void> {
+  try {
+    const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
+    const seconds = prefs?.upstreamTimeoutSeconds;
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return;
+    const wanted = Math.floor(seconds * 1000);
+    // Only ever shorten or leave alone a deadline that has already begun: an
+    // override longer than the default cannot give back time the request has
+    // already spent, and arming a longer one would silently extend a budget
+    // the caller's own client has likely abandoned.
+    const remaining = Math.min(wanted, resolveUpstreamTimeoutMs());
+    extend(remaining);
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * The tenant's inline-attachment byte ceiling, or `undefined` for the default.
+ *
+ * Read through the shared revision-keyed preference reader, so the cost is a
+ * memory hit rather than a Postgres round trip — this is consulted while
+ * building a request body, on the dispatch path.
+ *
+ * Non-fatal: a settings read outage falls back to the deployment default,
+ * which is the safe direction (the default refuses less, but it never admits
+ * something no upstream will take).
+ */
+export async function resolveTenantImageClampMaxBytes(
+  db: CartethyiaDatabase,
+  tenantId: string | undefined,
+): Promise<number | undefined> {
+  if (tenantId === undefined) return undefined;
+  try {
+    const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
+    const bytes = prefs?.imageClampMaxBytes;
+    if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return undefined;
+    return Math.floor(bytes);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Applies request shaping owned by tenant preferences and deployment config:

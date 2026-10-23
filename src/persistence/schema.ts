@@ -1046,6 +1046,48 @@ export interface ConsoleSettingsPreferences {
    */
   telemetryPayloadDepth?: "minimum" | "moderate" | "maximum";
   privacyMode?: "masked" | "full";
+  /**
+   * Ignores an account-wide cooldown when building route candidates.
+   *
+   * Off by default, and deliberately dangerous: an account in cooldown was
+   * parked because the upstream refused it, and dialing it anyway reproduces
+   * that refusal on every attempt. Turning this on can exhaust the candidate
+   * list and fail a request that would otherwise have been routed.
+   *
+   * The override is read-only — the cooldown is still recorded, still shown in
+   * Health, and still recovered by the sweep. Nothing is written back, so the
+   * toggle can be turned off again without cleaning anything up.
+   *
+   * Per-(account, model) cooldowns are NOT overridden. Those are usually a
+   * named quota ("daily free limit reached, try again in 11h") where the
+   * upstream stated a real reset; ignoring it only buys repeated refusals.
+   */
+  forceDisableCooldown?: boolean;
+  /**
+   * Per-tenant upstream request timeout in seconds, overriding
+   * `CARTETHYIA_UPSTREAM_TIMEOUT_MS`. `null` or absent means use the
+   * deployment default.
+   */
+  upstreamTimeoutSeconds?: number | null;
+  /**
+   * Per-tenant telemetry compaction age in days, overriding
+   * `CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS`. `null` or absent means use the
+   * deployment default. Lower keeps less history but bounds the usage-list
+   * scan; see the compaction notes in `event-compaction.ts`.
+   */
+  telemetryWindowMinutes?: number | null;
+  /**
+   * Per-tenant ceiling for one inline attachment, in bytes, overriding the
+   * deployment default of 10 MB.
+   *
+   * Raising this asserts that this tenant's upstreams accept larger
+   * attachments. The clamp is a hard send gate precisely because an oversized
+   * block poisons every retry and every replayed turn — the upstream rejects
+   * the whole request rather than the one block — so an override larger than
+   * the provider actually accepts trades that protection away. Lowering it is
+   * the safer direction and the more common need.
+   */
+  imageClampMaxBytes?: number | null;
 }
 
 export const consoleSettings = pgTable("console_settings", {

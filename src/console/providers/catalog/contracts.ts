@@ -792,6 +792,12 @@ export interface ProviderCatalogStore {
     providerId: string,
     accountId: string,
   ): Promise<readonly AccountHealthEventRecord[]>;
+  /** Deletes this account's stored health & error rows; returns the count. */
+  purgeAccountHealthEvents(
+    tenantId: string,
+    providerId: string,
+    accountId: string,
+  ): Promise<number>;
   listBuddyGrowthTasks(
     tenantId: string,
     providerId: string,

@@ -20,6 +20,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../src/persistence/schema";
+import { defaultSkipProxy } from "../../src/console/providers/detail/store";
 import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../src/providers/provider-metadata";
 import { buildClaudeCliUserAgent } from "../../src/providers/operations/custom-cli-headers";
 import { resolveRouteUserAgent } from "../../src/transport/routing/route-catalog";
@@ -41,6 +42,30 @@ describe("proxy skip default", () => {
 
   test("an ordinary API-key provider is not silently exempted", () => {
     expect(DEFAULT_PROXY_SKIP_PROVIDER_IDS.has("groq")).toBe(false);
+  });
+});
+
+describe("providers that dial direct by default", () => {
+  // Each of these is credential-keyed, so a rotating egress address buys
+  // nothing and only adds a hop that can be refused or rate-limited per pool.
+  // Pinned individually rather than as a set comparison: a set assertion
+  // passes when a provider is dropped from the list by accident, which is the
+  // failure this is here to catch.
+  const DIRECT_EGRESS = ["antigravity", "trae", "kilo", "hermes", "github", "kiro"];
+
+  for (const id of DIRECT_EGRESS) {
+    test(`${id} skips the proxy by default`, () => {
+      expect(DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(id)).toBe(true);
+    });
+  }
+
+  test("the default is not a hard lock", () => {
+    // An explicit settings row still wins for every one of them, so an
+    // operator who wants these behind a pool can put them there.
+    for (const id of DIRECT_EGRESS) {
+      expect(defaultSkipProxy(id)).toBe(true);
+    }
+    expect(defaultSkipProxy("groq")).toBe(false);
   });
 });
 

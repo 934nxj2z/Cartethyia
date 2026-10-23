@@ -25,6 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Palette } from "lucide-react";
+import { HeaderExtras } from "../../components/HeaderExtras";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -305,6 +306,26 @@ function NotificationsPopover({
     };
   }, [open]);
 
+  // One line per real dependency, not per mood: which backing services exist
+  // comes straight from the health payload. Lite mode has no external Postgres
+  // or Redis at all, so a healthy lite instance must not claim they connect.
+  const databaseLine = !health
+    ? undefined
+    : health.database_in_process
+      ? health.database_healthy
+        ? "SQLite in-process, connected."
+        : "SQLite in-process is not answering."
+      : health.database_healthy
+        ? "Postgres connected."
+        : "Postgres unreachable.";
+  const redisLine = !health
+    ? undefined
+    : !health.redis_configured
+      ? "Redis not configured."
+      : health.redis_healthy
+        ? "Redis connected."
+        : "Redis unreachable.";
+  const dependenciesLine = [databaseLine, redisLine].filter(Boolean).join(" · ");
   const healthTitle = !health
     ? "System health unavailable"
     : health.status === "healthy"
@@ -315,10 +336,8 @@ function NotificationsPopover({
   const healthDescription = !health
     ? "Live gateway metrics are not available."
     : health.status === "healthy"
-      ? "Postgres & Redis admission connected."
-      : health.status === "degraded"
-        ? "Check connection logs."
-        : "Gateway is reporting an unhealthy status.";
+      ? dependenciesLine || "Gateway reported healthy."
+      : [dependenciesLine, "Check connection logs."].filter(Boolean).join(" — ");
   const memoryDetail = health
     ? [
         Number.isFinite(health.memory_percent)
@@ -675,6 +694,34 @@ export function DashboardShell({
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const handleUpdateNow = async (): Promise<void> => {
+    setUpdating(true);
+    try {
+      await consoleRequest<void>("/updates/apply", { method: "POST" });
+    } catch {
+      setUpdating(false);
+      return;
+    }
+    // block refresh
+    const beforeUnload = (e: BeforeUnloadEvent): void => { e.preventDefault(); };
+    window.addEventListener("beforeunload", beforeUnload);
+    // poll until version changes
+    const target = latestTag;
+    const poll = window.setInterval(async () => {
+      try {
+        const res = await fetch("/console/api/updates/release");
+        const data = (await res.json()) as { tag_name?: string };
+        if (target !== undefined && data.tag_name !== target) {
+          window.clearInterval(poll);
+          window.removeEventListener("beforeunload", beforeUnload);
+          window.location.reload();
+        }
+      } catch {
+        // server restarting; keep polling
+      }
+    }, 3000);
+  };
   const healthQuery = useSafeSystemHealth();
   const releaseQuery = useLatestRelease();
   // The running version is the gateway's, not the bundled dashboard's: the
@@ -861,6 +908,7 @@ export function DashboardShell({
             </div>
 
             <div className="topbar-actions">
+              <HeaderExtras />
               <ThemeToggle />
               <NotificationsPopover
                 health={healthQuery.data}
@@ -897,6 +945,8 @@ export function DashboardShell({
         {...(latestTag === undefined
           ? {}
           : { onDismissVersion: () => dismissUpdate(latestTag) })}
+        onUpdateNow={handleUpdateNow}
+        updating={updating}
       />
     </>
   );

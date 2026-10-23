@@ -56,6 +56,12 @@ export function buildUpstreamDispatchContext(input: {
   readonly continuationScope?: ProviderContinuationScope;
   /** Stable per-conversation cache affinity (preferred over random ids). */
   readonly conversationAffinity?: string;
+  /**
+   * Per-tenant inline-attachment ceiling in bytes, resolved once per request.
+   * Carried through dispatch because wire encoders clamp images but hold no
+   * database handle.
+   */
+  readonly imageClampMaxBytes?: number;
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly requestIdentity?: object;
 }): Record<string, unknown> {
@@ -94,6 +100,9 @@ export function buildUpstreamDispatchContext(input: {
     ...(input.leaseOwnership ? { lease_ownership: input.leaseOwnership } : {}),
     ...(input.continuationScope ? { continuation_scope: input.continuationScope } : {}),
     ...(input.conversationAffinity ? { conversation_affinity: input.conversationAffinity } : {}),
+    ...(input.imageClampMaxBytes === undefined
+      ? {}
+      : { image_clamp_max_bytes: input.imageClampMaxBytes }),
     ...(input.requestIdentity ? { request_identity: input.requestIdentity } : {}),
   } as Record<string, unknown>;
 }

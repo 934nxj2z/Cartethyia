@@ -1,10 +1,12 @@
 import type { ConsoleAccessResolver } from "../auth/access";
 // Telemetry domain: system health, usage, and telemetry-event read API.
 
+import { readdir } from "node:fs/promises";
 import { ConsoleDomainError, requireTenantScope } from "../shared/errors";
 import { conditionalResponse, type CachedResult } from "../shared/read-through-cache";
 import { parseQueryLimit } from "../shared/query";
 import type { AccessDecision } from "../../security/access-control";
+import { resolveTelemetryCompactAfterDays } from "../../config/telemetry";
 import { USAGE_DIMENSIONS, type UsageDimension } from "./usage-dimensions";
 
 /**
@@ -19,6 +21,31 @@ export function isSupportedUsagePeriod(period: string): boolean {
   const amount = Number(match[1]);
   const cap = match[2] === "h" ? 8760 : 365;
   return Number.isSafeInteger(amount) && amount >= 1 && amount <= cap;
+}
+
+/**
+ * Why a request detail cannot be shown.
+ *
+ * A compacted request is genuinely gone: past the compaction age its row was
+ * folded into a per-day summary, and the individual request no longer exists
+ * anywhere. That is by design, not data loss — but "Request not found" reads
+ * like the latter, and an operator who thinks history was lost will go looking
+ * for a bug that is not there.
+ *
+ * The age is checked against the summary files rather than assumed: a request
+ * from before retention is aged out, not compacted, and the two deserve
+ * different words.
+ */
+async function detailNotFoundMessage(requestId: string, noun = "Request"): Promise<string> {
+  const compacted = await readdir("./data/telemetry-events").catch(() => [] as string[]);
+  const hasSummaries = compacted.some((file) => file.endsWith(".index.json"));
+  if (!hasSummaries) return `${noun} ${requestId} not found`;
+  return (
+    `${noun} ${requestId} is no longer stored individually: requests older than ` +
+    `${resolveTelemetryCompactAfterDays()} day(s) are compacted into daily summaries. ` +
+    `Its totals still count in Usage — raise CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS ` +
+    `to keep individual requests longer.`
+  );
 }
 
 export { USAGE_PERIODS, type UsagePeriod } from "./usage-periods";
@@ -386,7 +413,13 @@ export function createObservabilityOperations(config: ObservabilityConfig) {
           includePayload,
           createdAt,
         );
-        if (!detail) throw new ConsoleDomainError("event_not_found", 404, `Event ${eventId} not found`);
+        if (!detail) {
+          throw new ConsoleDomainError(
+            "event_not_found",
+            404,
+            await detailNotFoundMessage(eventId, "Event"),
+          );
+        }
         return detail;
       },
     requirePeriod(period: string): string {
@@ -476,7 +509,13 @@ export function createObservabilityOperations(config: ObservabilityConfig) {
       ): Promise<UsageRequestDetail> {
         const tenantId = operations.requireTenant(access);
         const detail = await config.store.usageRequestDetail(tenantId, requestId);
-        if (!detail) throw new ConsoleDomainError("event_not_found", 404, `Request ${requestId} not found`);
+        if (!detail) {
+          throw new ConsoleDomainError(
+            "event_not_found",
+            404,
+            await detailNotFoundMessage(requestId),
+          );
+        }
         const payloads = detail.payloads ?? null;
         return { ...detail, payloads };
       },

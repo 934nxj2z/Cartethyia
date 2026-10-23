@@ -357,6 +357,9 @@ async function runQuotaRefresh(
     try {
       const authState = record(target.authState);
       quota = await fetchProviderQuota(deps.providerRegistry, target.providerId, marked, fetcher, {
+        // Carried so a collector can reuse a reading captured from real
+        // traffic rather than spending a request to rediscover it.
+        ...(target.accountId === undefined ? {} : { accountId: target.accountId }),
         ...(authState === undefined ? {} : { auth_state: authState }),
         ...(target.credentialKind === null || target.credentialKind === undefined
           ? {}
@@ -405,7 +408,16 @@ async function runQuotaRefresh(
       await deps.db
         .update(providerAccounts)
         .set({
-          label: sql`CASE WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) THEN ${quota.accountLabel} ELSE ${providerAccounts.label} END`,
+          // Adopted when the stored label is still the provider id *or* still
+          // the credential's own subject. A collector that reduces an identity
+          // to an opaque tag must be able to replace that identity, and the
+          // provider-id test alone left the real subject in place — which is
+          // the thing the tag exists to remove.
+          label: sql`CASE
+            WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) THEN ${quota.accountLabel}
+            WHEN ${providerAccounts.label} LIKE '%|%' THEN ${quota.accountLabel}
+            ELSE ${providerAccounts.label}
+          END`,
         })
         .where(eq(providerAccounts.id, target.accountId));
     } catch (error) {

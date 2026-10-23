@@ -145,6 +145,19 @@ export type {
   UpdateRuntimeSettingsRequest,
 } from "../../../src/console/settings/contracts";
 
+// Derived from the backend rather than mirrored: the bucket ids and the
+// reclaim action names are what the route validates against, so a hand-written
+// copy would drift the first time either side added one.
+export type {
+  DiskUsageBucket,
+  DiskUsageResponse,
+  ReclaimAction,
+  ReclaimResponse,
+  PurgeTarget,
+  PurgeResponse,
+  FlushResponse,
+} from "../../../src/console/data-management/contracts";
+
 export type { RedisBackend } from "../../../src/persistence/redis";
 
 export type HealthStatus = (typeof healthStatus.enumValues)[number];

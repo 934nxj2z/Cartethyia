@@ -52,8 +52,9 @@ function deriveAccountStableId(accountId: string, purpose: string): string {
  * Per-request WorkBuddy chat headers — the exact desktop-client contract.
  *
  * The international gateway gates chat on the desktop `User-Agent` (platform
- * brand `WorkBuddy AI`; the wrong brand trips 403 code 11140), plus the
- * `X-CodeBuddy-Request` risk gate and the account-scoped device headers.
+ * brand `WorkBuddy AI`, carried on the wire as the token `workbuddy-ai`;
+ * the wrong token trips 403 code 11140), plus the `X-CodeBuddy-Request` risk
+ * gate and the account-scoped device headers.
  * The background client-version monitor keeps this value fresh; dispatch only
  * reads the cached value and never waits on a version endpoint.
  *

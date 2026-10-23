@@ -293,8 +293,9 @@ dbDescribe("createShareStatsPort — error counting", () => {
   test("only gateway errors count, matching every read-side error count", async () => {
     // The definition has to agree with the console's own counts, or the
     // recipient and the tenant see different error rates for the same traffic.
-    // 404/499/503 are excluded: a refused probe, a client abort, and a
-    // capacity rejection are not provider failures.
+    // 404/499/503/504 are excluded: a refused probe, a client abort, a
+    // capacity rejection, and a timeout are not gateway defects. The timeout
+    // must still remain in the request total.
     const scope = await familyScope("share-errors");
     try {
       const key = crypto.randomUUID();
@@ -305,14 +306,15 @@ dbDescribe("createShareStatsPort — error counting", () => {
         row(scope.tenantId, key, { status: "cancelled", httpStatus: 499 }),
         row(scope.tenantId, key, { status: "failed", httpStatus: 404 }),
         row(scope.tenantId, key, { status: "failed", httpStatus: 503 }),
+        row(scope.tenantId, key, { status: "failed", httpStatus: 504 }),
       ]);
       const stats = await createShareStatsPort().getFamilyStats(
         scope.tenantId,
         [key],
         EMPTY_RECIPIENTS,
       );
-      expect(stats.totals.requests).toBe(6);
-      // The two real upstream failures only.
+      expect(stats.totals.requests).toBe(7);
+      // The two real upstream failures only; the 504 timeout remains tracked.
       expect(stats.totals.errors).toBe(2);
     } finally {
       await scope.cleanup();

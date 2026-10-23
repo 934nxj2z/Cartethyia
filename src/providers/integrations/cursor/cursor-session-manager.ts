@@ -28,14 +28,41 @@ export interface CursorContinuationScope {
   readonly providerAccountId: string;
 }
 
+/**
+ * The host exec frame a pending call forwards: Cursor asked its executor for a
+ * native host tool (shell, write, read) and the canonical client is executing
+ * it locally, so the result leg must answer the variant's typed result frame —
+ * not the generic `mcp_result` the MCP channel waits on.
+ */
+export interface CursorHostExecDetail {
+  readonly variant: "shell" | "write" | "read";
+  /** The shell command Cursor's executor re-reports in the result echo. */
+  readonly command?: string;
+  /** The shell working directory echo, when the args carried one. */
+  readonly workingDirectory?: string;
+  /** The target path echo for write/read frames. */
+  readonly path?: string;
+  /** Line count of the written content, computed from the call's args. */
+  readonly lines?: number;
+  /** Byte size of the written content, computed from the call's args. */
+  readonly fileSize?: number;
+}
+
 /** One pending external tool call awaiting the client's result. */
 export interface CursorPendingToolCall {
   /** Unguessable call id handed to the client. */
   readonly callId: string;
   /** Cursor's exec message id the result must echo. */
   readonly execId: number;
+  /**
+   * Cursor's exec UUID for the frame, when the build carries one.
+   * Newer edges pair exec replies on it as well as the numeric id.
+   */
+  readonly execIdString?: string;
   /** Bare function name the client declared. */
   readonly toolName: string;
+  /** The forwarded host exec, when this call is one. */
+  readonly host?: CursorHostExecDetail;
 }
 
 /** Everything one live Run session owns. */
@@ -181,6 +208,17 @@ export class CursorRunSessionManager {
     const call = session.calls.get(callId);
     if (call === undefined) return undefined;
     return { session, call };
+  }
+
+  /**
+   * Whether the call id is held by a live Run in this process, under any
+   * scope. A foreign caller carrying a live call id must stay refused; the
+   * scopeless check distinguishes that case from a post-restart replay whose
+   * call exists nowhere anymore.
+   */
+  hasAnyCall(callId: string): boolean {
+    const runId = this.callOwners.get(callId);
+    return runId !== undefined && this.runs.get(runId) !== undefined;
   }
 
   /** Clears one pending call after its result has been written to the Run. */

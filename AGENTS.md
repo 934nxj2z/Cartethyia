@@ -102,6 +102,26 @@ and `bun run test:backend` exit non-zero without it, and the runner refuses to
 fall back to the development `DATABASE_URL`. Only `bun run dashboard:test`
 runs without it.
 
+### Telemetry tests must not touch the real data dir
+
+`TELEMETRY_EVENT_DIR` resolves from the data dir **when `event-log` is first
+imported** (`src/observability/event-log.ts`). A test that sets
+`CARTETHYIA_DATA_DIR` after importing it, or that does not set it at all,
+writes into — and any cleanup then wipes — the machine's real telemetry:
+every request file and its index.
+
+Point telemetry tests at a temp dir, set **before** the module is imported:
+
+```ts
+const sandbox = await mkdtemp(join(tmpdir(), "carte-telemetry-test-"));
+process.env.CARTETHYIA_DATA_DIR = sandbox;
+const { ... } = await import("../../src/observability/event-day-index");
+```
+
+`test/observability/telemetry-window.test.ts` is the reference. This already
+happened once: a suite cleaned the live directory and the Usage page read zero
+until the files were restored from a backup.
+
 ## Repository map and boundaries
 
 - `src/` — production backend, public gateway, console API, persistence,

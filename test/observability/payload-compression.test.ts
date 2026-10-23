@@ -30,10 +30,19 @@ function payloadDir(): string {
   return dir;
 }
 
-/** The stored body of one frame, header excluded. */
+/**
+ * The compressed bytes of one frame, out of its stored line.
+ *
+ * A line is base64 of the gzipped frame plus a newline, so the body is decoded
+ * rather than sliced past a binary length header.
+ */
 async function storedBody(reference: PayloadFileReference): Promise<Buffer> {
   const data = await readFile(join(payloadDirectory(), reference.file));
-  return data.subarray(reference.offset + FRAME_HEADER_BYTES, reference.offset + reference.length);
+  const line = data
+    .subarray(reference.offset, reference.offset + reference.length)
+    .toString("utf8")
+    .trim();
+  return Buffer.from(line, "base64");
 }
 
 test("a written frame is gzipped, smaller than its JSON, and reads back whole", async () => {

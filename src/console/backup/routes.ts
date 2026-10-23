@@ -78,6 +78,24 @@ const BACKUP_SCOPES = ["dashboard:write"] as const;
 const importBody = t.Object({
   password: t.String(),
   backup: t.Unknown(),
+  /**
+   * Table names to restore. Absent or empty restores every table in the file,
+   * which is what the dashboard's checklist defaults to and what the API did
+   * before selection existed.
+   */
+  tables: t.Optional(t.Array(t.String())),
+});
+
+/**
+ * The inspect body: a file, no password.
+ *
+ * Inspection writes nothing and reads no secret — it only reports which tables
+ * the file carries and which of them the live schema has — so it needs no
+ * re-authentication. Requiring the console password here would mean typing it
+ * twice for one restore.
+ */
+const inspectBody = t.Object({
+  backup: t.Unknown(),
 });
 
 const exportQuery = t.Object({
@@ -164,7 +182,12 @@ export function createBackupRoutes(config: BackupRoutesConfig): Elysia {
         // from nowhere else. A request body may not name the tenant it writes
         // into: that would let any holder of the scope import into, and
         // overwrite, a tenant they are not.
-        const result = await config.backupFor(request).restore(body.password, body.backup, access.tenantId);
+        const result = await config.backupFor(request).restore(
+          body.password,
+          body.backup,
+          access.tenantId,
+          body.tables === undefined ? undefined : { tables: body.tables },
+        );
         // Routing-visible write: the restore has committed, so the cached
         // snapshot must be rebuilt before the next `/v1/*` dispatch.
         await config.snapshotInvalidator?.invalidate();
@@ -213,6 +236,34 @@ export function createBackupRoutes(config: BackupRoutesConfig): Elysia {
         return { deleted: result.deleted };
       } catch (error) {
         return errorResponse(error, set, "Delete all failed");
+      }
+    })
+    .post("/inspect", { body: inspectBody }, async ({ request, body, set }) => {
+      try {
+        const access = requireAnyScope(config.accessResolver(request), BACKUP_SCOPES);
+        if (access.tenantId === null) {
+          throw new ConsoleDomainError("tenant_required", 403, "Tenant isolation required");
+        }
+        // Same byte bound as the import, for the same reason: the file is
+        // parsed here too, and an unbounded one would be buffered before any
+        // validation could refuse it.
+        const declared = Number(request.headers.get("content-length") ?? "0");
+        const actualBytes = JSON.stringify(body ?? null).length;
+        if (
+          (Number.isFinite(declared) && declared > MAX_BACKUP_BYTES) ||
+          actualBytes > MAX_BACKUP_BYTES
+        ) {
+          set.status = 413;
+          return {
+            error: `backup exceeds the ${MAX_BACKUP_BYTES} byte limit`,
+            code: "request_too_large",
+          };
+        }
+        // Reads nothing and writes nothing: the checklist the restore wizard
+        // shows, so an operator can pick sections before typing a password.
+        return config.backupFor(request).inspect(body.backup);
+      } catch (error) {
+        return errorResponse(error, set, "Backup inspection failed");
       }
     }) as unknown as Elysia;
 }

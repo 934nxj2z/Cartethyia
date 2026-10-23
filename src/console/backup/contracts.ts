@@ -20,6 +20,7 @@
  * as sensitive as the database.
  */
 import { getTableColumns, getTableName, type Column, type Table } from "drizzle-orm";
+import { resolveMaxBodyBytes } from "../../config/runtime";
 import {
   apiKeys,
   cliToolMappings,
@@ -45,8 +46,20 @@ import {
 export const BACKUP_APP = "cartethyia";
 export const BACKUP_VERSION = 1;
 
-/** Upper bound for restore payloads; the listener enforces the same ceiling. */
-export const MAX_BACKUP_BYTES = 8 * 1024 * 1024 * 1024;
+/**
+ * Upper bound for restore payloads.
+ *
+ * Deliberately not larger than the listener's own body cap. It used to claim
+ * 8 GiB while the server admitted 4 MiB, so the number described a limit that
+ * could never be reached: a file above the listener's cap is cut off before
+ * this check runs, and a large upload fails as a reset connection rather than
+ * the 413 this constant promises. The bound now states what the install
+ * actually admits, so the message an operator sees matches what happened.
+ *
+ * Raise `CARTETHYIA_SERVER_MAX_BODY_BYTES` to accept larger backups; this
+ * constant follows it rather than the two drifting apart again.
+ */
+export const MAX_BACKUP_BYTES = resolveMaxBodyBytes();
 
 /** Defense-in-depth row cap per table, after the byte bound. */
 export const MAX_ROWS_PER_TABLE = 500_000;

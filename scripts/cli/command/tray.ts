@@ -115,6 +115,10 @@ export async function startTray(): Promise<void> {
     const latest = await readLatestPublishedVersion();
     await close();
     printUpdateInstructions(currentVersion, latest);
+    // The tray has no terminal of its own, so these instructions are only
+    // visible when it was started from one. Hold that terminal open long
+    // enough to copy the command, then exit.
+    await new Promise<void>((resolve) => setTimeout(resolve, 180_000));
     process.exit(0);
   };
 

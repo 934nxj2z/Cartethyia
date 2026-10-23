@@ -49,6 +49,11 @@ export async function fetchOpenAICompatibleModels(
       const parsedContext =
         positiveNumber(entry.context_length) ??
         positiveNumber((entry as Record<string, unknown>).input_token_limit) ??
+        // `context_window` is the spelling an OpenAI-shaped catalog uses for
+        // its own field. Unread, every model on such an upstream fell to the
+        // 200_000 default below and was advertised at the same wrong window no
+        // matter what the upstream reported — a 1M model shown as 200k.
+        positiveNumber((entry as Record<string, unknown>).context_window) ??
         positiveNumber(entry.contextWindow) ??
         positiveNumber(entry.max_input_tokens) ??
         modalityContextLimit(entry);

@@ -314,10 +314,7 @@ export const PROVIDER_CAPABILITIES = {
     loadAuthentication: oauthCapability(() => import("./integrations/cursor/cursor-auth"), "cursorOAuthClient", {
       withRefresher: true,
     }),
-    // No quota collector: no Cursor quota endpoint is established by the donor
-    // or the API evidence, and inventing one would publish a balance this
-    // gateway cannot measure.
-    //
+    loadQuotaCollector: quotaCapability(() => import("./integrations/cursor/cursor-quota"), "fetchCursorQuota"),
     // The roster is per-account and per-plan, and Cursor declares each model's
     // capabilities, so discovery is the catalog rather than a static list.
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
@@ -483,6 +480,7 @@ export const PROVIDER_CAPABILITIES = {
     // device flow, so the issued token is used exactly as issued until the
     // operator re-runs login — same shape as Kilo Code.
     loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderOAuthClient"),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/qoder/qoder-quota"), "fetchQoderQuota"),
     // Discovery signed by the account's own COSY identity: the model list is
     // per-account and per-realm, and a GET without the signed body is 403.
     loadModelDiscovery: qoderDiscovery("intl", "qoder"),
@@ -498,6 +496,7 @@ export const PROVIDER_CAPABILITIES = {
     // `QODER_REALMS.cn` — its own login/token/userinfo hosts, client id, and
     // native redirect.
     loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderCnOAuthClient"),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/qoder/qoder-quota"), "fetchQoderCnQuota"),
     loadModelDiscovery: qoderDiscovery("cn", "qodercn"),
   },
   trae: {
@@ -507,6 +506,7 @@ export const PROVIDER_CAPABILITIES = {
     // keeps it alive, so the refresher is registered rather than optional:
     // without it the account dies at first expiry.
     loadAuthentication: oauthCapability(() => import("./integrations/trae/trae-oauth"), "traeOAuthClient", { withRefresher: true }),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/trae/trae-quota"), "fetchTraeQuota"),
     // Live model list is intl-unsupported: upstream answers `403 no schema
     // found`, so discovery returning nothing is the truthful result and the
     // static roster above stays authoritative.
@@ -518,6 +518,7 @@ export const PROVIDER_CAPABILITIES = {
     // The CN client, not the intl one: the exchange runs on the CN account
     // host, and a refresh posted to the intl host is refused.
     loadAuthentication: oauthCapability(() => import("./integrations/trae/trae-oauth"), "traeCnOAuthClient", { withRefresher: true }),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/trae/trae-quota"), "fetchTraeCnQuota"),
     loadModelDiscovery: traeDiscovery("cn", "traecn"),
   },
   inferhub: {

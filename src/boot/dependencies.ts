@@ -52,6 +52,7 @@ import {
 import { NetworkPoolSelector } from "../network/pool/selector";
 import { ScheduledTaskRegistry } from "../workers/scheduler";
 import { quotaRefreshSweep } from "../workers/quota-refresh-sweep";
+import { markProviderApiKeyCredential } from "../console/quota/account-quota-shared";
 import { dailyCheckinEgressForPass } from "../workers/daily-checkin";
 import {
   buddyAdoptTask,
@@ -70,6 +71,8 @@ import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
 import { TelemetryPayloadCapture } from "../observability/payload-capture";
+import { foldDayIndex, listEventDays } from "../observability/event-day-index";
+import { resolveTelemetryCompactIntervalMs } from "../config/telemetry";
 import { sweepExpiredPoolCooldowns } from "../network/pool-health-machine";
 import { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import { RuntimeMetricsSampler } from "../observability/runtime-metrics";
@@ -304,6 +307,25 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     run: () => payloadCapture.cleanupExpired(),
   });
   scheduledTasks.register({
+    name: "telemetry-index-fold",
+    intervalMs: resolveTelemetryCompactIntervalMs(),
+    // Brings each day's index up to date with the bytes appended since the last
+    // pass, so a usage read is a small JSON read rather than a parse of the
+    // whole period. Folding is incremental and idempotent: a crash only leaves
+    // the watermark behind, and the next pass re-reads the tail.
+    run: async () => {
+      const days = await listEventDays();
+      let folded = 0;
+      for (const day of days) {
+        const result = await foldDayIndex(day).catch(() => ({ folded: 0 }));
+        folded += result.folded;
+      }
+      if (folded > 0) {
+        log.info(`[telemetry] indexed ${folded} event(s) across ${days.length} day(s)`);
+      }
+    },
+  });
+  scheduledTasks.register({
     name: "console-session-sweep",
     // Sessions live 48 h, so an hourly sweep deleted nothing 47 times out of
     // 48 — each pass a full scan of the session table for rows that cannot yet
@@ -453,6 +475,14 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         providerRegistry: registry,
         resolveCredential: quotaResolveCredential,
         snapshotInvalidator: snapshotService,
+        // Without this the sweep handed each collector the raw stored secret.
+        // For `cline` that meant an `sk_...` key reaching the OAuth branch,
+        // which prepends `workos:` and is refused with "please make sure
+        // you're using the latest version of Cline and re-authenticate" — so
+        // every sweep cooled a working account with `quota_fetch_failed`
+        // while the same account refreshed fine from the console, which
+        // binds the same marker through `createQuotaRefreshDeps`.
+        markApiKeyCredential: markProviderApiKeyCredential,
         // Below the 60 s interval: a budget longer than the tick guarantees
         // skip/burst under load instead of steady progress.
         passBudgetMs: 45_000,

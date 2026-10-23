@@ -3,6 +3,7 @@ import type { TransferProgress } from "../data/api";
 import type { ApiErrorShape } from "../data/api";
 import type { BackupExportResponse, BackupImportResponse } from "../data/contracts";
 import type { DeleteAllScope } from "../../../src/console/backup/store";
+import type { BackupInspection } from "../../../src/console/backup/service";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 /**
@@ -61,15 +62,47 @@ export function useDeleteAllBackup() {
 
 export function useRestoreBackup() {
   const queryClient = useQueryClient();
-  return useMutation<BackupImportResponse, ApiErrorShape, { password: string; backup: unknown; onProgress?: (progress: TransferProgress) => void }>({
-    mutationFn: ({ password, backup, onProgress }) =>
+  return useMutation<
+    BackupImportResponse,
+    ApiErrorShape,
+    {
+      password: string;
+      backup: unknown;
+      /** Table names to restore; absent restores the whole file. */
+      tables?: readonly string[];
+      onProgress?: (progress: TransferProgress) => void;
+    }
+  >({
+    mutationFn: ({ password, backup, tables, onProgress }) =>
       consoleUpload<BackupImportResponse>(
         "/backup/import",
-        JSON.stringify({ password, backup }),
+        JSON.stringify({
+          password,
+          backup,
+          ...(tables === undefined || tables.length === 0 ? {} : { tables: [...tables] }),
+        }),
         onProgress,
       ),
     onSuccess: async () => {
       await queryClient.invalidateQueries();
     },
+  });
+}
+
+/**
+ * Reads a backup file's cover without restoring any of it.
+ *
+ * This is what the restore wizard's checklist is built from: which tables the
+ * file carries, how many rows each, and which of them the live schema still
+ * has. It needs no console password, so the operator picks sections before
+ * re-authenticating rather than typing it twice.
+ */
+export function useInspectBackup() {
+  return useMutation<BackupInspection, ApiErrorShape, { backup: unknown }>({
+    mutationFn: ({ backup }) =>
+      consoleRequest<BackupInspection>("/backup/inspect", {
+        method: "POST",
+        body: JSON.stringify({ backup }),
+      }),
   });
 }

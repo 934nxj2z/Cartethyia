@@ -118,6 +118,15 @@ export interface ProxyRequestState {
     | { readonly ok: true; readonly mode: TelemetryPayloadMode; readonly depth: TelemetryPayloadDepth }
     | { readonly ok: false };
   /**
+   * This request's resolved inline-attachment ceiling, memoized for the same
+   * reason the capture preference is: it is a tenant setting, so it cannot
+   * change between attempts, and reading it per attempt would pay for it
+   * several times on a request that fails over.
+   *
+   * `undefined` means the deployment default.
+   */
+  imageClampMaxBytes?: number;
+  /**
    * Set by the dispatch handler synchronously before returning a streaming
    * response. `afterResponse` lifecycle hooks read it to skip finalization
    * (telemetry + cleanup), deferring both to stream completion/cancel —

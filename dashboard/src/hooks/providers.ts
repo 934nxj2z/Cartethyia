@@ -439,6 +439,44 @@ export function useRecoverAccount() {
 }
 
 /**
+ * Deletes one account's health & error log, from its own modal.
+ *
+ * The modal refetches on completion rather than waiting for the poll: rows the
+ * operator just told to leave must not survive one visible cycle. The settings
+ * disk-usage count invalidates too, so the management row stays honest about
+ * how many rows the global purge still holds.
+ */
+export function usePurgeAccountHealthEvents() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { deleted: number },
+    ApiErrorShape,
+    { providerId: string; accountId: string; title?: string }
+  >({
+    mutationFn: ({ providerId, accountId }) =>
+      consoleRequest<{ deleted: number }>(
+        `/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}/health-events`,
+        { method: "DELETE" },
+      ),
+    onSuccess: async (result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.providers.healthEvents(variables.providerId, variables.accountId),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.settings.diskUsage }),
+      ]);
+      toast.success(
+        result.deleted === 0 ? "Health log was already empty" : `Purged ${result.deleted} health events`,
+        variables.title,
+      );
+    },
+    onError: (error) => {
+      toast.error("Could not purge the health log.", getErrorMessage(error));
+    },
+  });
+}
+
+/**
  * Exports the selected accounts (with decrypted credentials) for one provider.
  * Returns the raw export body so the caller owns the download step; a mutation
  * (not a query) because the payload carries plaintext secrets and must never be

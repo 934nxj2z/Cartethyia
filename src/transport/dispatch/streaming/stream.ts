@@ -43,7 +43,13 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { captureProviderExchange, shouldCaptureProviderBodyForRequest } from "../attempt-finalize";
+import {
+  captureProviderExchange,
+  providerCaptureMaxBytes,
+  resolveCaptureDepthForRequest,
+  shouldCaptureProviderBodyForRequest,
+} from "../attempt-finalize";
+import { resolveTenantImageClampMaxBytes } from "../../request/tenant-preferences";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
 import type { AttemptLeaseOwnership } from "../leases";
 import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
@@ -165,13 +171,32 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     networkPoolId,
     prepared.authorization.snapshot.tenant_id,
   );
+  const captureBody = outboundFetch
+    ? await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state)
+    : false;
+  const captureDepth = await resolveCaptureDepthForRequest(
+    deps.db,
+    prepared.authorization.snapshot.tenant_id,
+    state,
+  );
   const wrappedOutboundFetch = outboundFetch
     ? captureProviderExchange(
         outboundFetch,
         providerCapture,
-        await shouldCaptureProviderBodyForRequest(deps.db, prepared.authorization.snapshot.tenant_id, state),
+        captureBody,
+        providerCaptureMaxBytes(captureDepth),
       )
     : undefined;
+  // Same memoized ceiling the non-streaming path resolves, read before the
+  // dispatch context is built so a stream gets the same limit as a normal
+  // request rather than silently falling back to the deployment default.
+  if (state.imageClampMaxBytes === undefined) {
+    const clampMaxBytes = await resolveTenantImageClampMaxBytes(
+      deps.db,
+      prepared.authorization.snapshot.tenant_id,
+    );
+    if (clampMaxBytes !== undefined) state.imageClampMaxBytes = clampMaxBytes;
+  }
   const dispatchContext = buildUpstreamDispatchContext({
     credential,
     deadline: state.deadlineMs,
@@ -179,6 +204,9 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     headers: inboundHeaders,
     requestId: state.requestId,
     requestIdentity: state,
+    ...(state.imageClampMaxBytes === undefined
+      ? {}
+      : { imageClampMaxBytes: state.imageClampMaxBytes }),
     ...(conversationAffinity ? { conversationAffinity } : {}),
     ...(candidate.user_agent === undefined ? {} : { userAgent: candidate.user_agent }),
     ...(wrappedOutboundFetch ? { outboundFetch: wrappedOutboundFetch } : {}),

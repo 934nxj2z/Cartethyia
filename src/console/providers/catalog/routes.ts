@@ -346,6 +346,13 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
         params.accountId,
       );
 })
+    .delete("/:providerId/accounts/:accountId/health-events", async ({ request, params }) => {
+      return await factory.purgeAccountHealthEvents(
+        config.accessResolver(request),
+        params.providerId,
+        params.accountId,
+      );
+    })
     .get("/:providerId/accounts/:accountId/growth-tasks", async ({ request, params }) => {
       const dayKey = buddyDayKey();
       return await factory.listBuddyGrowthTasks(

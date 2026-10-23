@@ -49,6 +49,13 @@ export interface ConsoleApiCompositionDeps {
   readonly poolSelector: NetworkPoolSelector;
   readonly telemetryBuffer: TelemetryBatchBuffer;
   /**
+   * Queued writers the console can drain on demand (telemetry, usage, health
+   * events). Optional for the same reason the other reduced composition
+   * surface is: absent means the flush control is not offered rather than the
+   * console failing to build.
+   */
+  readonly flushBuffers?: { flush(): Promise<void> };
+  /**
    * The request state store owns the live in-flight gauge, so the console reads
    * its snapshot/subscription from here rather than a free-standing module.
    */
@@ -189,6 +196,7 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
     admissionService: deps.admissionService,
     ...(deps.modelStrikes ? { modelStrikes: deps.modelStrikes } : {}),
     readRoutingAccountInflight: deps.readRoutingAccountInflight,
+    ...(deps.flushBuffers ? { flushBuffers: deps.flushBuffers } : {}),
     credentialService,
     // The backup surface re-authenticates the operator, so it needs the current
     // user's hash. Read from the session on the request that asks for it, never

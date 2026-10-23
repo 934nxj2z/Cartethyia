@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { consoleRequest } from "../../../data/api";
+import { consoleRequest, getErrorMessage } from "../../../data/api";
 import { accountErrorLabel, authInvalidatedLabel, showsErrorPill } from "../../../lib/format/labels";
 import { mapWithConcurrency } from "../../../lib/concurrency";
 import { useMysteriousAccounts } from "../../../lib/privacy-mode";
@@ -40,7 +40,9 @@ import { useQuotaOverview, useRefreshAccountQuota, type AccountTestResult, type 
 import { queryKeys } from "../../../data/query-keys";
 import {
   assignAccountNames,
+  chunkCredentials,
   jwtExpiresAt,
+  MAX_ACCOUNTS_PER_BATCH_REQUEST,
   parseCredentialBatch,
   type ParsedCredentialEntry,
 } from "../../../lib/credentials";
@@ -1248,34 +1250,61 @@ export function AddAccountModal({
 
     setBatchSubmitting(true);
     try {
-      // One request for the whole paste. The server creates every account in a
-      // single transaction and reports a per-item outcome, so this is one
-      // round-trip instead of N sequential ones — and the account list is
-      // invalidated once rather than after every account.
-      const result = await createBatch.mutateAsync({
-        providerId,
-        accounts: entries.map((entry, index) => ({
-          label: batchNames[index],
-          ...requestForEntry(entry),
-        })),
-      });
+      // One request per chunk, not one per account and not one for the whole
+      // paste: the server caps a batch at 100 accounts, so a multi-thousand
+      // paste sent whole is rejected outright. Each chunk still creates its
+      // accounts in a single server-side transaction, so this stays a bounded
+      // number of round-trips and one invalidation per chunk.
+      const requests = entries.map((entry, index) => ({
+        label: batchNames[index],
+        ...requestForEntry(entry),
+      }));
+      const chunks = chunkCredentials(requests);
+      const chunkSize = MAX_ACCOUNTS_PER_BATCH_REQUEST;
 
-      const failed = result.results.filter((item) => !item.ok);
-      const created = result.created;
+      let created = 0;
+      const failures: string[] = [];
+      let aborted = false;
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        try {
+          const result = await createBatch.mutateAsync({
+            providerId,
+            accounts: chunk,
+          });
+          created += result.created;
+          const offset = chunkIndex * chunkSize;
+          for (const item of result.results) {
+            if (item.ok) continue;
+            failures.push(
+              `${batchNames[offset + item.index] ?? offset + item.index}: ${item.error ?? "rejected"}`,
+            );
+          }
+        } catch (error) {
+          // One chunk failing must not silently drop the rest: report how far
+          // the import got so the operator knows what is already registered.
+          aborted = true;
+          failures.push(
+            `chunk ${chunkIndex + 1}/${chunks.length}: ${getErrorMessage(error, "request failed")}`,
+          );
+          break;
+        }
+      }
+
+      const skipped = failures.length;
       if (created > 0) {
         toast.success(
           `${created} account${created === 1 ? "" : "s"} added`,
-          failed.length > 0 ? `${failed.length} skipped` : undefined,
+          aborted
+            ? `stopped partway; ${skipped} failed`
+            : skipped > 0
+              ? `${skipped} skipped`
+              : undefined,
         );
       }
-      if (failed.length > 0) {
-        const detail = failed
-          .slice(0, 5)
-          .map((item) => `${batchNames[item.index] ?? item.index}: ${item.error ?? "rejected"}`)
-          .join("\n");
+      if (skipped > 0) {
         toast.error(
-          `${failed.length} account${failed.length === 1 ? "" : "s"} skipped`,
-          detail + (failed.length > 5 ? `\n…and ${failed.length - 5} more` : ""),
+          `${skipped} account${skipped === 1 ? "" : "s"} skipped`,
+          failures.slice(0, 5).join("\n") + (skipped > 5 ? `\n…and ${skipped - 5} more` : ""),
         );
       }
       if (created > 0) onClose();

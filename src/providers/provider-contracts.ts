@@ -146,6 +146,13 @@ export interface ProviderDispatchContext {
   readonly request_headers?: Readonly<Record<string, string>> | undefined;
   /** Stable per-conversation cache affinity passed through dispatch. */
   readonly conversation_affinity?: string | undefined;
+  /**
+   * Per-tenant ceiling for one inline attachment, in bytes. `undefined` means
+   * the deployment default. Read by wire encoders that clamp images, which
+   * otherwise have no access to tenant preferences — they are pure translation
+   * and hold no database handle.
+   */
+  readonly image_clamp_max_bytes?: number | undefined;
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly request_identity?: object | undefined;
   /**

@@ -314,13 +314,23 @@ export interface ResolvedApiKey {
  * surface it hit. Unknown, revoked and expired stay deliberately
  * indistinguishable — distinguishing them would let a caller confirm that a
  * guessed token once existed — so there is no variant carrying a reason.
- *
- * The rotate instruction is unconditional for the same reason. The key that
- * fails is usually the one seeded at first boot, which cannot be deleted and
- * only rotates, and an operator hitting this on a personal key loses nothing by
- * being told the same thing.
  */
+const INVALID_KEY_MESSAGE = "Invalid API key. Check the key you are sending, or create a new one in API Keys and send it as: Authorization: Bearer <key>.";
+
 export function unknownApiKeyError(): GatewayError {
+  return new GatewayError("authentication_failed", 401, INVALID_KEY_MESSAGE);
+}
+
+/**
+ * The 401 for the public model surface specifically.
+ *
+ * Model Studio is where the seeded default key is normally used, and that key
+ * cannot be deleted — it only rotates. Naming rotation there is actionable. The
+ * same sentence on a proxy request was misleading instead: a revoked or mistyped
+ * personal key was answered with an instruction that could not apply to it,
+ * sending the operator to rotate a key they were never using.
+ */
+export function modelsListApiKeyError(): GatewayError {
   return new GatewayError(
     "authentication_failed",
     401,

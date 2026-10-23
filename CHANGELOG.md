@@ -8,6 +8,425 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.4] - 2026-10-22
+
+### Added
+
+- **LarRouter is a bundled provider.** An OpenAI-compatible reseller at
+  `https://larprouter.com/v1`. It is discovery-backed, so its 13 models and
+  their context windows come from its own `/v1/models` rather than from a
+  catalog row that would drift.
+
+- **Proxy lists can be pasted in.** Resellers hand out proxies in three shapes
+  — a JSON array, bare URIs, and `host:port:user:password` rows — and none is
+  what `POST /network/pools` takes. `POST /console/api/network/pools/import`
+  accepts all three, so an operator pastes the file instead of converting it.
+  Unparseable lines are reported per line rather than failing the import.
+
+- **`carte autostart` registers the tray with the OS.** The tray only runs
+  while someone starts it, which is not much use for a gateway meant to be
+  always-on. Windows gets a Run value, macOS a launch agent, Linux a desktop
+  entry — each in the user's own location, so nothing needs elevation. It is
+  opt-in and reversible: `carte autostart off` removes it, and
+  `carte autostart status` reports which entry exists.
+
+- **More providers report quota.** Cursor, Trae and Qoder gained endpoint
+  quota reads, so their accounts show remaining allowance in the console
+  instead of only failing at dispatch. Trae reads the account's provisioned
+  region host and authenticates its commercial surface with `Cloud-IDE-JWT`;
+  Grok reports both its rate-limit window and its request bucket.
+
+- **A language switch and a donation button in the console topbar.** The
+  language control is a placeholder: the locales are listed and the current
+  one is marked, but no translation catalogue is wired up yet, so the console
+  stays in English. Choosing a locale is not offered as a working feature.
+
+### Fixed — the Cursor tool loop
+
+- **A replayed Cursor conversation no longer dies on "tool call no longer
+  pending".** The Cursor tool loop spans two client requests: the model calls a
+  tool, the gateway holds the Run open, the client sends the result. When the
+  gateway restarts between those legs — or the idle Run is reaped — the client
+  resends its complete recorded transcript, and that resend used to fail with
+  a 400 telling the client to resend what it had just sent.
+
+  A replay whose every tool result is answered by a tool call present in the
+  same conversation — and whose call ids exist nowhere in the process — is now
+  rebased into a fresh Run from the recorded history instead of refused. The
+  refusals that protect other tenants stay: a tail-only continuation, a
+  request with no continuation scope, and a call id that is still live under
+  another tenant's session, which would mean adopting someone else's Run.
+
+- **Cursor's host tools execute on the client instead of being refused.**
+  Cursor's edge asks its local executor for native tools — shell, file write,
+  file read. This gateway answered those frames with an explicit error, so the
+  model saw "Cursor host tools are not executed by this gateway", circled, and
+  fell back to the MCP-channel equivalent only on a later try.
+
+  A host exec the client itself declared is now forwarded as a tool call: the
+  client runs its own `_bash` / `_write` / `_read`, and the Run receives the
+  variant's typed result frame (`shell_result` / `write_result` /
+  `read_result`) plus `stream_close` — the frames Cursor's own executor sends,
+  not the generic `mcp_result` that leaves the server unmatched. Argument
+  names follow the schema the client's tool declared, so a tool that rejects
+  unknown properties still accepts the forwarded call. Exec variants without a
+  faithful result frame (grep, ls, subagent, …) and host calls to tools the
+  client never declared keep the explicit refusal.
+
+### Fixed — usage telemetry
+
+- **The Usage page no longer reports zero, and no longer loses its history.**
+  Request events were written to a file per 15-minute window — 96 a day — and
+  a periodic job folded those into a per-day summary and deleted the source
+  files. Which of them was still being written was guessed by comparing file
+  names, and that guess was wrong often enough to fold and unlink a file the
+  writer was still appending to. Its requests never reached the summary, so an
+  install could show no traffic at all while serving it.
+
+  Events now append to one file per UTC day, `<day>.events.jsonl`, which is
+  never rewritten or removed while the day is open. Beside it,
+  `<day>.index.json` carries the totals, the per-name breakdown, per-hour
+  slots for the chart, and a byte watermark of how much of the event file has
+  been counted. Progress is tracked by that offset, not by name, so there is
+  nothing left to guess.
+
+- **Usage, breakdown, and the traffic chart read the index instead of the
+  requests.** A read used to parse every file in the period and filter in
+  memory, so its cost grew with traffic. It is now a few small JSON reads.
+  The request list and the detail drawer still read the events, and do so
+  backwards from the end of the file, so a page of the newest rows no longer
+  parses the whole day.
+
+  Totals are accumulated, never averaged — a period that reported 2B input
+  tokens still reports 2B. Folding runs on read as well as on schedule, so a
+  request made moments ago appears immediately; folding twice is harmless
+  because it is a sum.
+
+- **Costs are summed as numbers.** Costs arrive as strings from `numeric`
+  columns and from restored rows, and adding one to a number concatenates
+  instead of summing — three requests produced `000.0009660.0010320.001008`,
+  which the console rendered as an empty cost. Both accumulation points now
+  coerce.
+
+- **Per-key daily and monthly token limits read the current totals again.**
+  They were reading the old per-day summary format, which nothing writes any
+  more, so a key that had already spent was admitted as if it had spent
+  nothing. They read the index now.
+
+- **Retention deletes whole days**, taking the event file and its index
+  together. Removing one without the other was a trap: an index with no events
+  reports totals for requests that are gone, and events with no index are
+  invisible to every usage read.
+
+### Fixed — Cline quota refresh
+
+- **A Cline account on an API key is no longer cooled every minute.** The
+  scheduled quota sweep built its refresh dependencies without the
+  provider-specific credential envelope, so the collector received the raw
+  stored secret. An `sk_...` key with no envelope takes the OAuth branch, gets
+  `workos:` prepended, and Cline refuses it with "please make sure you're using
+  the latest version of Cline and re-authenticate".
+
+  The account was therefore marked `quota_fetch_failed` and cooled on every
+  sweep while refreshing cleanly from the console — which runs the same code
+  with that one field set. Confirmed against a live key: the unmarked
+  credential fails with exactly that message, the marked one returns no error.
+
+  Both paths now share one marker function, so a third caller cannot omit it.
+
+## [2.5.3] - 2026-10-21
+
+### Fixed — performance
+
+- **The usage list slowed down as an install aged, regardless of user count.**
+  Hourly telemetry files were never deleted, so every read scanned every file
+  ever written: the cost tracked total volume, not the number of users. An
+  install serving 20 users got slower purely by serving them longer — 122 ms at
+  42 files, 2.3 s at 720.
+
+  Telemetry is now compacted. Past `CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS`
+  (default 7), hourly request files are folded into one per-day summary per API
+  key, and beyond `CARTETHYIA_TELEMETRY_RETENTION_DAYS` they are deleted. On a
+  30-day, 822 MB, 2.16M-request dataset: 30 files, 14 KB, and a 2.0 ms
+  aggregate read instead of 2,665 ms.
+
+  **Compaction is accumulation, not sampling.** A summary carries running sums,
+  so a period that reported 2B input tokens still reports 2B after its rows are
+  folded — verified exactly on the dataset above. Latency keeps an exact mean
+  and a bucketed (approximate) percentile.
+
+  **Request Detail is expected to stop working for compacted requests — this
+  is by design, not data loss.** Past the compaction age an individual request
+  no longer exists anywhere, so its detail returns 404. The message now says
+  so and names the knob to keep requests longer, rather than the bare "not
+  found" that reads like lost history. The four payload panels were already
+  short-lived independently of this: captured bodies expire 15 minutes after
+  capture, long before any compaction.
+
+  What is not preserved for a compacted window: the request list, per-request
+  filters (status, model, IP), and the detail drawer. Totals in Usage, per-key
+  spend, and quota accounting are unaffected.
+
+### Added — operational settings
+
+Three settings that were deployment-only env vars are now editable per tenant
+under **Settings → Operations**, without a restart.
+
+- **Force disable cooldown.** Routes to accounts that are cooling down,
+  including ones already parked. Off by default, and the page says why: a
+  cooled-down account was parked because the upstream refused it, so dialing it
+  anyway reproduces that refusal on every attempt — and if every candidate is
+  cooling, the request fails instead of waiting for a reset.
+
+  The override is **read-only**: the cooldown is still recorded, still shown in
+  Health, and still recovered by the sweep, so turning it back off needs no
+  cleanup. Per-(account, model) cooldowns are still enforced — those are
+  usually a named quota with a stated reset, where ignoring it only buys
+  repeated refusals. Shared accounts (no tenant of their own) are covered when
+  any tenant asks, since parking one stops everyone.
+
+- **Upstream timeout**, in seconds (5–600). Applied when the request is
+  dispatched, so it can only shorten a deadline that has already started.
+
+- **Max attachment size**, in MB (0.06–100), per image. An oversized inline
+  attachment is refused before send rather than after the upstream rejects it:
+  a block too large poisons every retry and every replayed turn, because the
+  upstream rejects the whole request rather than the one block. A refused block
+  becomes a visible placeholder, never a silent drop, so the model is not left
+  answering a question whose attachment vanished. Applies to the Messages and
+  Gemini wires.
+
+  Raising this asserts your upstreams accept more than the 10 MB default;
+  lowering it is the safer direction. It is per tenant precisely because it is
+  a promise about a provider, not a global resource bound — unlike the ingress
+  body limit below, which cannot be per tenant at all.
+
+- **Telemetry compaction age**, in days (1–365). Hourly files hold every tenant
+  together, so the largest age across all tenants wins: compacting later than
+  asked only costs disk, while compacting earlier would destroy rows someone
+  expected to keep.
+
+### Fixed
+
+- **Every Settings section is on the page at once.** Security, Privacy,
+  Operations, and Data render in one scroll instead of one at a time, so a
+  setting is found by looking rather than by knowing which heading concealed
+  it. The nested cards are gone too — the page rendered a card inside a card,
+  doubling borders and padding. Sections keep their ids, so a link to
+  `#operations` still lands in the right place.
+
+- **Upstream timeout, compaction age, and attachment size are dropdowns in a
+  grid** rather than free number fields. Each is a bounded value the backend
+  clamps anyway, so offering the reachable range says what is actually
+  available instead of accepting anything and correcting it out of sight. A
+  value already stored that is not among the offered choices is still listed,
+  because otherwise the control renders empty for a setting that is in force —
+  which reads as unset and invites changing something already correct.
+
+- **The backup size limit no longer claims 8 GiB the install cannot accept.**
+  It promised a ceiling far above the listener's own body cap, so the number
+  described a limit nothing could reach: an upload above the listener's cap was
+  cut off before that check ran, failing as a reset connection rather than the
+  413 the constant promised. The bound now follows
+  `CARTETHYIA_SERVER_MAX_BODY_BYTES`, so the message matches what happened and
+  raising that variable is what admits larger backups.
+
+### Not a setting: the request body limit
+
+`CARTETHYIA_SERVER_MAX_BODY_BYTES` (default 4 MB) stays a deployment variable,
+and that is deliberate. It is enforced at ingress — before authentication, when
+the tenant is not yet known — because it is what stops an oversized request
+before it is read into memory. A per-tenant override would require accepting
+and buffering the body first in order to learn whose limit applies, which is
+exactly what the limit exists to prevent.
+
+### Changed
+
+- **Grok reports both of its quota numbers, and they disagree.** The CLI plane
+  returns a token bucket on every response (`x-ratelimit-limit-tokens:
+  1000000`), but that figure is eventually consistent — it can still read full
+  right after a request — and it is not the one that binds. The real free
+  allowance is 600k per rolling 24 hours, and upstream states it only in the
+  body of a 429: `tokens (actual/limit): 603024/600000`.
+
+  The header is now read as the everyday indicator and listed first; the
+  authoritative figure from a refusal is appended beneath it. Neither replaces
+  the other, because a merged number would look precise and be neither. Reading
+  the bucket costs one cheap request (~360-480 tokens), since no quota endpoint
+  exists — `grok.com/rest/*` exposes none and `/v1/models` carries no headers.
+
+  A refusal is reported as a balance, not a read failure: an account that is
+  out of free usage was measured perfectly well, and calling that an error
+  would show a broken read on a healthy account.
+
+- **Cursor, Trae and Qoder report a quota balance.** All three had no
+  collector, so the console showed nothing — and no balance is indistinguishable
+  from no quota left to anything reading the account.
+
+  - **Cursor** reads `{base}/auth/usage` and `cursor.com/api/usage-summary`.
+    The summary wins when it answers: `/auth/usage` is the pre-usage-based-plans
+    request counter and reports a permanently-zero bucket on exactly the plans
+    that have a dollar cap. The legacy surface is still read, because it is the
+    only one an api-key account can reach.
+  - **Trae** reads `get_session_usage` on the core host and `ide_user_ent_usage`
+    on the pay host, per realm. The two are independent: a dead pay host does
+    not erase a readable meter, because "no quota" is what the router parks on.
+  - **Qoder** reads `/api/v2/quota/usage` on the openapi host, pooling the plan
+    allowance, granted credits and — for team accounts — the shared org pool.
+
+- **A Trae quota exhaustion that arrives as HTTP 502 is classified as quota.**
+  Trae answers an exhausted quota with status 502 and the body `Your requests
+  have exceeded the quota.` The status was what misled the classifier: 502 read
+  as a gateway failure, so it was recorded as `server_error` with a 30-second
+  cooldown that never touched the account. The account therefore stayed in
+  rotation and every other model on it kept being invoked inside a window the
+  provider had already closed. The body is the verdict, not the status, so this
+  is now read as `quota_exhausted` and flags account-wide.
+
+- **`nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` and
+  `longcat-2.5-preview-free` are no longer catalogued for OpenCode.** The live
+  Zen roster no longer lists them. A row the provider's own roster has dropped
+  can vanish from the wire without notice, which makes it a stale row — one
+  that fails at dispatch with a 404 rather than at catalog load. Removed from
+  the free and Zen catalogs alike; `big-pickle` and the rest of the shared Zen
+  listing remain.
+
+- **An unclassified upstream failure cools the account down for 15 minutes.**
+  It was 60 seconds, which returned the account to rotation and re-dialled an
+  upstream that had just answered something this gateway does not understand,
+  so one unknown error was retried every minute. It is still a cooldown with a
+  deadline, never `disabled`, so nothing here can strand an account.
+
+- **The upstream request timeout is 75s, down from 120s.** Clients cap lower
+  than the old default, and a provider that has not answered within 75s is
+  queued or stuck — failing over to another account beats spending the
+  caller's whole budget on one attempt.
+
+- **A timeout is no longer counted as a gateway error.** `504` is a deadline
+  that expired, not a malfunction: the request deadline, the stream-stall
+  watchdog, an HTTP/2 read-idle or WebSocket receive timer. Timeout
+  requests are still recorded, still rendered, and still filterable — they
+  are simply not counted against the gateway's error rate, which otherwise
+  tracks provider latency rather than gateway health.
+
+### Added
+
+- **Restore can be narrowed to selected tables.** Picking a backup file now
+  opens a dialog listing every table it carries, with row counts and a
+  checklist that defaults to all of them. **Restore now** proceeds to the
+  password prompt; **Cancel** abandons it. A table left unchecked is left
+  exactly as it is — selection is a filter, not a rewrite, so "restore one
+  table" no longer overwrites the rest with the file's older copy.
+
+- **A Data Management section reports what the gateway keeps on disk.**
+  Hourly request files, daily summaries, and payload frames are each measured
+  separately, with how much is reclaimable right now. **Reclaim** drops files
+  the gateway no longer reads, and **Flush** drains queued telemetry, usage,
+  and health writes immediately rather than waiting for the interval.
+
+  Every action touches files only, never database rows. Hourly files are
+  refused: they are the only copy of their requests until compaction folds
+  them up, so deleting one would lose real history. The card says so instead
+  of offering a button that would fail. Payload frames go whole or not at all,
+  because frames are appended to a file — one is dropped only once nothing in
+  it is still live.
+
+### Fixed
+
+- **Remote Routing stayed off after being switched on.** The API-key update
+  path validated `scopes` and passed them to the store, but the store's update
+  allowlist never included the column, so a grant like `routing:cli_mapping`
+  was accepted and silently dropped. The toggle appeared to save and the badge
+  stayed "no CLI scope".
+
+- **The Force-disable-cooldown toggle could not be switched.** Its button sat
+  inside a `<label htmlFor>` pointing at that same button, so one click
+  activated the control twice — the label forwarded the activation and the
+  click reached the button as well. Both calls read the same state and both
+  asked to flip it, so it flipped twice and landed back where it started.
+
+- **Settings text no longer fights itself.** A field's label, its value, and
+  its help text were all 12px, so one field was three equal blocks with no
+  order; the label and value are 13px now. Backup headings were 18px while the
+  card above them was 14px, so "Backup" read larger than the card it sat
+  inside. And `text-subtitle` was in use where no such size exists, so those
+  headings fell back to the browser default — the class name looked right,
+  which is why it went unnoticed.
+
+- **Privacy settings are stacked rather than side by side.** Reading a field
+  two-up meant zig-zagging across for the label and back for the control.
+
+### Changed — payload frame storage
+
+- **Captured payload frames are stored as text lines instead of binary
+  records.** A frame used to be a 4-byte binary length header followed by gzip
+  bytes, which made it opaque: reading one meant decoding a big-endian length
+  and gunzipping exactly that many bytes, and the file could not be inspected
+  at all. A frame is now base64 of the same gzip bytes, newline-terminated, so
+  the file is a text file whose records are delimited by `\n`. It is still
+  compressed, so disk use is unchanged apart from base64's ~33% overhead.
+
+  Frames already on disk keep the old shape and are still read: their rows
+  point at them, and they expire on their own within the retention window, so
+  both shapes are tolerated rather than migrated. New files use `.jsonl`; the
+  prune pass recognises both extensions, because abandoning the old ones would
+  leave them on disk indefinitely.
+
+- **A Qoder model that declares `is_vl: false` is now excluded from image
+  routes.** The router's capability profile granted image support to every row
+  on a canonical-codec provider regardless of what the catalog declared, so
+  the declared modality never mattered and an image was forwarded to an
+  upstream that rejects it. An explicit declaration now wins; the codec grant
+  is the fallback for rows carrying no modality metadata.
+
+- **Request Detail's Provider Request and Provider Response panels were often
+  empty.** Two causes. The client response was stored twice — once under its
+  own key and once under the legacy alias — and the alias was charged against
+  the shared byte budget ahead of both provider panels, so a large request
+  consumed the whole budget before they were reached. And the provider tee was
+  hard-capped at 256 KiB at every capture depth, so raising the depth to
+  Maximum still produced a quarter-megabyte translated request. The alias is
+  now accounted last, and the tee follows the depth (256 KiB / 2 MiB / 4 MiB).
+
+- **A queued upstream is no longer reported as a dead credential.** Qoder
+  answers `403 {"code":"10605", ... "isQueued":true, "queueCount":1395}` when
+  it is busy. The generic 403 arm claimed it as `auth_invalidated`, so a
+  healthy account was parked as "Re-login required" purely because the
+  provider had a queue, and an operator was sent to re-authenticate a
+  credential that was never rejected. It is now a model-scoped capacity
+  cooldown. Real credential rejections are still recognised.
+
+- **WorkBuddy's User-Agent used the product brand instead of the wire token.**
+  It sent `WorkBuddy AI/<v>` where an official client sends
+  `workbuddy-ai/<v>`. The international gateway answers the branded spelling
+  with 403 code `11140`, the same refusal a wrong-brand header gets.
+
+- **Cline `api_key` accounts read their quota properly.** They were reported as
+  "Quota endpoint is not available" with no upstream call, because the key was
+  sent as `Bearer workos:sk_...`. Cline answers that with "make sure you're
+  using the latest version of Cline and re-authenticate" — a message that names
+  a version problem, so it read as the upstream refusing the client rather than
+  a misformed header. Verified against a live key: `/users/me` returns 200 with
+  a bare `Bearer sk_...` and 401 once `workos:` is prepended.
+
+  These accounts now use the same quota surface as OAuth, with the key as its
+  own bearer token. Two cases that used to look identical are now told apart:
+  a live key on an account with no plan reports no quota and no error, while a
+  rejected key reports a real failure. Account tests — per account or all at
+  once — go through this same path.
+
+- **Trae `gpt-5.4` reports a 1M context window.** It was filed at 272k.
+
+- **`deepseek-v4.1-flash` and `hy4-preview` are image-capable.** Corrected
+  across the Trae, CodeBuddy/WorkBuddy, OpenCode and TokenHarbor catalogs.
+
+### Changed — routing defaults
+
+- **Antigravity, Trae, Kilo Code, GitHub Copilot and Kiro now dispatch direct
+  by default**, joining Hermes, Cline and InferHub. Each is credential-keyed,
+  so a rotating egress address buys nothing. Not a hard lock: an explicit
+  routing row still wins, so any of them can be put behind a pool.
+
 ## [2.5.2] - 2026-10-21
 
 ### Breaking changes — manual step after upgrading

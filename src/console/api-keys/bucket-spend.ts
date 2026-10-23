@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { apiKeys } from "../../persistence/schema";
-import { queryTelemetryEvents } from "../../observability/event-log";
+import { queryIndexedBuckets } from "../../observability/event-day-index";
 import { utcDayStart, utcMonthStart } from "../shared/day";
 
 /**
@@ -33,9 +33,20 @@ export async function familyBucketSpend(
     .where(eq(apiKeys.parentKeyId, keyId));
   const keyIds = [keyId, ...children.map((child) => child.id)];
   const spentSince = async (start: Date): Promise<number> => {
-    const events = await queryTelemetryEvents({ apiKeyIds: keyIds, since: start });
-    return events
-      .reduce((sum, event) => sum + (event.inputTokens ?? 0) + (event.outputTokens ?? 0), 0);
+    // Folded first, so the index covers every event written so far including the
+    // current day's — then read from the index alone.
+    //
+    // Deliberately not index *plus* events: they hold the same requests, and
+    // adding them doubled every bucket. Folding first is what makes the index
+    // sufficient on its own; the watermark is the point up to which it is
+    // complete.
+    const allowed = new Set(keyIds);
+    const indexed = await queryIndexedBuckets({ since: start, foldFirst: true }).catch(
+      () => [],
+    );
+    return indexed
+      .filter((bucket) => bucket.apiKeyId !== null && allowed.has(bucket.apiKeyId))
+      .reduce((sum, bucket) => sum + bucket.inputTokens + bucket.outputTokens, 0);
   };
   const [daily, monthly] = await Promise.all([
     spentSince(utcDayStart(now)),

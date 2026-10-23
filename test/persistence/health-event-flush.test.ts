@@ -102,6 +102,46 @@ describe("HealthEventFlushBuffer", () => {
     expect(s.written).toHaveLength(1);
     expect(s.written[0]).toHaveLength(1);
   });
+
+  test("drain drops the queue without writing, for a purge barrier", async () => {
+    const s = sink();
+    const buffer = new HealthEventFlushBuffer(s.db as never, 60_000);
+    buffer.enqueue(row("a1"));
+    buffer.enqueue(row("a2"));
+    await buffer.drain();
+    expect(s.written).toHaveLength(0);
+    await buffer.flush();
+    expect(s.written).toHaveLength(0);
+    await buffer.stop();
+  });
+
+  test("drain waits out an insert already in flight", async () => {
+    const s = sink();
+    const buffer = new HealthEventFlushBuffer(s.db as never, 60_000);
+    buffer.enqueue(row("a1"));
+    // Start the flush without awaiting it, then drop the queue: the barrier
+    // must hold until the in-flight INSERT lands, or the purge could delete
+    // rows this write re-adds after the fact.
+    const flush = buffer.flush();
+    const drained = buffer.drain();
+    await flush;
+    await drained;
+    expect(s.written).toHaveLength(1);
+    expect(s.written[0]).toHaveLength(1);
+    await buffer.stop();
+  });
+
+  test("drain can scope the drop to one account", async () => {
+    const s = sink();
+    const buffer = new HealthEventFlushBuffer(s.db as never, 60_000);
+    buffer.enqueue(row("a1"));
+    buffer.enqueue(row("b1"));
+    await buffer.drain("a1");
+    await buffer.flush();
+    expect(s.written).toHaveLength(1);
+    expect(s.written[0]?.map((entry) => entry.accountId)).toEqual(["b1"]);
+    await buffer.stop();
+  });
 });
 
 describe("the buffer is optional", () => {

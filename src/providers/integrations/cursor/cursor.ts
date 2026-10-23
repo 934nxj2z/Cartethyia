@@ -33,7 +33,12 @@ import type { ProviderContinuationScope } from "../../provider-contracts";
 import { CURSOR_PROVIDER_ID, RUN_IDLE_TTL_MS, isAllowedAgentHost } from "./cursor-shared";
 import {
   CURSOR_MCP_NAMESPACE as MCP_NAMESPACE,
+  buildAllowlistPrecheckResult,
   buildCancelAction,
+  buildExecStreamClose,
+  buildExecThrow,
+  buildHostExecResult,
+  buildInteractionResponse,
   buildKvGetBlobResult,
   buildKvSetBlobResult,
   buildMcpRejected,
@@ -51,7 +56,7 @@ import {
 } from "./cursor-request";
 import { cursorRunTerminationError, decodeServerMessages, openCursorRun } from "./cursor-http2";
 import { cursorRunSessions } from "./cursor-session-manager";
-import type { CursorContinuationScope, CursorRunSession } from "./cursor-session-manager";
+import type { CursorContinuationScope, CursorHostExecDetail, CursorRunSession } from "./cursor-session-manager";
 import { fetchCursorRunOrigin } from "./cursor-catalog";
 import { defaultParameterValues, fetchCursorModels } from "./cursor-catalog";
 import type { CursorModelInfo } from "./cursor-catalog";
@@ -284,6 +289,126 @@ function readExecutableMcpCall(
   return { toolName, arguments: decodeMcpArguments(mcpArgs) };
 }
 
+/** Host exec variants this gateway can forward to the client's own tools. */
+const HOST_TOOL_ALIASES: Record<CursorHostExecDetail["variant"], readonly string[]> = {
+  shell: ["bash", "shell", "sh"],
+  write: ["write", "file_write", "create_file"],
+  read: ["read", "read_file", "view", "cat"],
+};
+
+/** Canonical exec value → property names a client tool schema may declare. */
+const HOST_ARG_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  intent: ["i", "intent", "description"],
+  command: ["command", "cmd"],
+  workingDirectory: ["working_directory", "cwd", "workdir"],
+  path: ["path", "file_path", "filename"],
+  content: ["content", "text", "file_text", "contents"],
+};
+
+function fileBytesToText(value: unknown): string {
+  return value instanceof Uint8Array ? new TextDecoder().decode(value) : "";
+}
+
+function byteLengthOf(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Projects one host exec request onto a client-declared tool descriptor.
+ *
+ * The argument keys are taken from the schema the tool itself declared, so a
+ * strict schema (`additionalProperties: false`) never rejects the call; a
+ * property the schema demands but no exec value fills refuses the forward —
+ * calling the tool with a half-built record would strand the model on an
+ * error it can only work around by circling.
+ */
+function hostCallFor(
+  descriptors: readonly CursorToolDescriptor[],
+  variant: CursorHostExecDetail["variant"],
+  values: Readonly<Record<string, string | undefined>>,
+  detail: CursorHostExecDetail,
+): { toolName: string; arguments: string; detail: CursorHostExecDetail } | undefined {
+  const descriptor = descriptors.find((entry) =>
+    HOST_TOOL_ALIASES[variant].includes(entry.toolName.toLowerCase().replace(/^_+/, "")),
+  );
+  if (descriptor === undefined) return undefined;
+  const schema = recordOf(descriptor.inputSchema);
+  const properties = recordOf(schema?.["properties"]);
+  const required = Array.isArray(schema?.["required"])
+    ? (schema?.["required"] as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const subject =
+    values.command !== undefined
+      ? values.command
+      : `${variant} ${values.path ?? ""}`.trim();
+  const filled: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) continue;
+    const target = HOST_ARG_ALIASES[key]?.find((alias) => properties?.[alias] !== undefined)
+      ?? (properties === undefined ? key : undefined);
+    if (target !== undefined) filled[target] = value;
+  }
+  // The client surfaces carry a concise-intent property the exec frame has no
+  // counterpart for: derive it from the subject and project it like the rest.
+  const intentTarget = HOST_ARG_ALIASES["intent"]?.find((alias) => properties?.[alias] !== undefined);
+  const intent = subject.length > 80 ? `${subject.slice(0, 79)}…` : subject;
+  if (intentTarget !== undefined) filled[intentTarget] = intent;
+  else if (properties === undefined) filled.intent = intent;
+  if (required.some((name) => !(name in filled))) return undefined;
+  return { toolName: descriptor.toolName, arguments: JSON.stringify(filled), detail };
+}
+
+/**
+ * Reads one Cursor host exec request the canonical client executes locally.
+ *
+ * Cursor's edge asks its executor for a native host tool (shell, write, read);
+ * the canonical client declared the same surfaces as its own tools, so the
+ * gateway forwards the work instead of refusing it. Exec variants without a
+ * faithful typed result frame (grep, ls, subagent, …) return `undefined` and
+ * keep the throw-refusal path.
+ */
+function readHostExecCall(
+  execServer: Record<string, unknown>,
+  descriptors: readonly CursorToolDescriptor[],
+): { toolName: string; arguments: string; detail: CursorHostExecDetail } | undefined {
+  const shell = recordOf(execServer["shell_args"]) ?? recordOf(execServer["shell_stream_args"]);
+  if (shell !== undefined) {
+    const command = nonEmptyStringOf(shell["command"]);
+    if (command === undefined) return undefined;
+    const workingDirectory = nonEmptyStringOf(shell["working_directory"]);
+    return hostCallFor(
+      descriptors,
+      "shell",
+      { command, workingDirectory },
+      {
+        variant: "shell",
+        command,
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
+      },
+    );
+  }
+  const write = recordOf(execServer["write_args"]);
+  if (write !== undefined) {
+    const path = nonEmptyStringOf(write["path"]);
+    if (path === undefined) return undefined;
+    const content =
+      typeof write["file_text"] === "string" ? write["file_text"] : fileBytesToText(write["file_bytes"]);
+    return hostCallFor(descriptors, "write", { path, content }, {
+      variant: "write",
+      path,
+      lines: content.split("\n").length,
+      fileSize: byteLengthOf(content),
+    });
+  }
+  const read = recordOf(execServer["read_args"]);
+  if (read !== undefined) {
+    const path = nonEmptyStringOf(read["path"]);
+    if (path === undefined) return undefined;
+    return hostCallFor(descriptors, "read", { path }, { variant: "read", path });
+  }
+  return undefined;
+}
+
 /**
  * Decodes Cursor's `McpArgs.args` — a `map<string, google.protobuf.Value>`
  * carried as repeated map-entry messages — into a canonical arguments string.
@@ -333,6 +458,125 @@ interface RunHandle {
   readonly stream: ValidatedHttp2BidiStream;
   readonly write: (message: Uint8Array) => Promise<void>;
   close(reason?: string): void;
+}
+
+/** One decoded server frame, ready for pump consumption. */
+type RunFrame = Record<string, unknown>;
+
+/**
+ * The reader's end-of-stream marker: every enumeration over the frame queue
+ * resolves `done` here, so a pump nested across requests finalizes on the
+ * same signal the raw reader produced.
+ */
+interface RunStreamEnd {
+  readonly __streamEnd: Http2BidiEndReason;
+  readonly failure: GatewayError | undefined;
+}
+
+function isRunStreamEnd(item: unknown): item is RunStreamEnd {
+  return typeof item === "object" && item !== null && "__streamEnd" in item;
+}
+
+type RunFrameItem = RunFrame | RunStreamEnd;
+
+function isHeartbeatFrame(item: unknown): boolean {
+  if (item === null || typeof item !== "object" || isRunStreamEnd(item)) return false;
+  const update = (item as RunFrame)["interaction_update"];
+  if (update === null || typeof update !== "object") return false;
+  return "heartbeat" in (update as Record<string, unknown>);
+}
+
+/**
+ * One Run's shared frame queue.
+ *
+ * A single read loop decodes `AgentServerMessage` frames for the Run's whole
+ * lifetime, independent of any single request. A pump subscribes for the leg
+ * it serves; when that request ends, frames keep queueing (the reader and the
+ * client-heartbeat cadence both stay alive), and the Run's next leg drains
+ * them. Without this, a request that ends between the tool call and its
+ * answer disposed the body reader and the heartbeat timer, leaving the Cursor
+ * edge fed by nothing and the turn waiting on a result nobody could deliver.
+ */
+class RunFrameStream {
+  private items: RunFrameItem[] = [];
+  private waiters: Array<{
+    resolve: (result: IteratorResult<RunFrameItem>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  private closed = false;
+  private subscribers = 0;
+
+  /** Bounds the gap between legs: heartbeats are droppable, semantics are not. */
+  private static readonly MAX_IDLE_ITEMS = 2_048;
+
+  push(message: RunFrame): void {
+    if (this.closed) return;
+    if (this.subscribers === 0 && this.items.length > 0) {
+      // An idle Run only accumulates keepalives; drop them first so a bounded
+      // queue survives a long tool-result gap without losing real frames.
+      while (this.items.length >= RunFrameStream.MAX_IDLE_ITEMS && isHeartbeatFrame(this.items[0])) {
+        this.items.shift();
+      }
+    }
+    this.items.push(message);
+    this.#drain();
+  }
+
+  end(reason: Http2BidiEndReason, failure: GatewayError | undefined): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.items.push({ __streamEnd: reason, failure });
+    this.#drain();
+  }
+
+  subscribe(): AsyncIterableIterator<RunFrameItem> {
+    this.subscribers += 1;
+    const self = this;
+    const next = async (): Promise<IteratorResult<RunFrameItem>> => {
+      const front = self.items.shift();
+      if (front !== undefined) return { done: false, value: front };
+      if (self.closed) {
+        self.#release();
+        return { done: true, value: undefined };
+      }
+      return await new Promise<IteratorResult<RunFrameItem>>((resolve, reject) => {
+        self.waiters.push({ resolve, reject });
+      });
+    };
+    const releaseOnReturn = (): Promise<IteratorResult<RunFrameItem>> => {
+      self.#release();
+      self.#flushWaiters({ done: true, value: undefined });
+      return Promise.resolve({ done: true, value: undefined });
+    };
+    const iterator: AsyncIterableIterator<RunFrameItem> = {
+      next,
+      return: releaseOnReturn,
+      [Symbol.asyncIterator](): AsyncIterableIterator<RunFrameItem> {
+        return iterator;
+      },
+    };
+    return iterator;
+  }
+
+  #release(): void {
+    this.subscribers = Math.max(0, this.subscribers - 1);
+  }
+
+  /** Resolves parked consumers with queued items, in order. */
+  #drain(): void {
+    while (this.waiters.length > 0 && this.items.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.resolve({ done: false, value: this.items.shift() as RunFrameItem });
+    }
+    if (this.closed && this.items.length === 0) {
+      this.#flushWaiters({ done: true, value: undefined });
+    }
+  }
+
+  #flushWaiters(result: IteratorResult<RunFrameItem>): void {
+    for (const waiter of this.waiters) waiter.resolve(result);
+    this.waiters = [];
+  }
 }
 
 class CursorAdapter implements ProviderAdapter {
@@ -387,18 +631,33 @@ class CursorAdapter implements ProviderAdapter {
         "This tool result cannot be matched to a live Cursor Run; resend the complete conversation.",
       );
     }
-    const resolved = pending.map((item) => cursorRunSessions.resolveCall(item.callId, scope));
-    if (resolved.some((entry) => entry === undefined)) {
+    const resolvedAll = pending.map((item) => cursorRunSessions.resolveCall(item.callId, scope));
+    // Results previous legs already answered resolve nothing: the replayed
+    // conversation carries them as history, not as an unanswered call. When
+    // *no* call resolves AND the call id live nowhere in this process — a
+    // gateway restart between legs, an evicted idle Run, then — the request is
+    // by definition a complete replay (every answered call is present in the
+    // conversation), and the fresh-turn path rebases it into a new Run.
+    // A call id that is live under another scope keeps the strict refusal:
+    // adopting that conversation would surface another tenant's Run under
+    // this caller.
+    if (
+      resolvedAll.every((entry) => entry === undefined) &&
+      isCompleteToolHistoryReplay(request, pending) &&
+      pending.every((item) => !cursorRunSessions.hasAnyCall(item.callId))
+    ) {
+      yield* this.#startRun(request, candidate, context);
+      return;
+    }
+    const resolved = resolvedAll.filter((entry) => entry !== undefined);
+    const runId = resolved[0]?.session.runId;
+    if (runId === undefined) {
       throw new GatewayError(
         "invalid_request",
         400,
         "This tool result refers to a Cursor tool call that is no longer pending. Resend the complete conversation.",
         { callIds: pending.map((item) => item.callId) },
       );
-    }
-    const runId = resolved[0]?.session.runId;
-    if (runId === undefined) {
-      throw new GatewayError("invalid_request", 400, "Cursor Run is no longer live");
     }
     if (resolved.some((entry) => entry?.session.runId !== runId)) {
       throw new GatewayError(
@@ -426,14 +685,31 @@ class CursorAdapter implements ProviderAdapter {
       for (const item of pending) {
         const entry = cursorRunSessions.resolveCall(item.callId, scope);
         if (entry === undefined) continue;
-        await handle.write(
-          buildMcpResult({
+        // A forwarded host exec answers the variant's typed result frame (an
+        // mcp_result leaves the server unmatched on a frame it did rank);
+        // MCP-channel calls answer the generic mcp_result.
+        if (entry.call.host === undefined) {
+          await handle.write(
+            buildMcpResult({
+              execId: entry.call.execId,
+              ...(entry.call.execIdString === undefined ? {} : { execIdString: entry.call.execIdString }),
+              text: item.text,
+              isError: item.isError,
+              ...(item.images.length > 0 ? { images: item.images } : {}),
+            }),
+          );
+        } else {
+          for (const frame of buildHostExecResult({
             execId: entry.call.execId,
+            ...(entry.call.execIdString === undefined ? {} : { execIdString: entry.call.execIdString }),
+            variant: entry.call.host.variant,
             text: item.text,
             isError: item.isError,
-            ...(item.images.length > 0 ? { images: item.images } : {}),
-          }),
-        );
+            host: entry.call.host,
+          })) {
+            await handle.write(frame);
+          }
+        }
         cursorRunSessions.clearPendingCall(runId, item.callId);
       }
       yield* this.#pump({
@@ -449,10 +725,13 @@ class CursorAdapter implements ProviderAdapter {
     } finally {
       // The Run stays open only while it still owes an answer. A terminal close
       // is the session manager's single release path.
-      if (cursorRunSessions.get(runId) === undefined) this.#handles.delete(runId);
-      else if (!this.#awaitsToolResult && session.pending.size === 0) {
+      if (cursorRunSessions.get(runId) === undefined) {
+        this.#handles.delete(runId);
+        this.cleanupReader(runId);
+      } else if (session.pending.size === 0) {
         cursorRunSessions.terminate(runId);
         this.#handles.delete(runId);
+        this.cleanupReader(runId);
       }
     }
   }
@@ -481,11 +760,13 @@ class CursorAdapter implements ProviderAdapter {
     // Cursor declares per-model parameter tuples (effort / context / fast). A
     // fresh Run must carry the model's declared default tuple: with an empty
     // `parameters` the Run streams only heartbeats and never turns.
-    const parameterValues = defaultParameterValues(
-      await this.#rosterFor(credential, context).then((roster) =>
-        roster.find((model) => model.id === modelId),
-      ),
-    );
+    const roster = await this.#rosterFor(credential, context);
+    const rosterEntry =
+      roster.find((model) => model.id === modelId) ??
+      roster.find((model) => model.id === rawModelId) ??
+      roster.find((model) => model.id.toLowerCase() === "default") ??
+      roster.find((model) => model.id.toLowerCase() === "auto");
+    const parameterValues = defaultParameterValues(rosterEntry);
     const images = await collectImages(request, context);
     const descriptors = toolDescriptorsFor(request.tools);
     const systemPrompt = systemPromptFrom(request);
@@ -511,6 +792,9 @@ class CursorAdapter implements ProviderAdapter {
       },
     };
     this.#handles.set(runId, handle);
+    // Reader before the run request: frames can only arrive after it, but the
+    // reader must own them from the first byte, across every serving request.
+    this.#startReader(runId, handle);
     const session: CursorRunSession = {
       runId,
       conversationId,
@@ -563,23 +847,102 @@ class CursorAdapter implements ProviderAdapter {
       this.#handles.delete(runId);
       throw error;
     } finally {
-      if (cursorRunSessions.get(runId) === undefined) this.#handles.delete(runId);
+      if (cursorRunSessions.get(runId) === undefined) {
+        this.#handles.delete(runId);
+        this.cleanupReader(runId);
+      }
       // A Run whose tool call is registered and unanswered is *held*, not
-      // finished. The consumer may stop reading before the pump reaches its
-      // terminal (a stream the client already has enough of), and tearing the
-      // Run down there loses the call it just handed out — the next request's
-      // tool result then resolves nothing.
-      else if (!this.#awaitsToolResult && session.pending.size === 0) {
+      // finished. Its pump ended at the interim `tool_use` terminal, but the
+      // reader and the heartbeat cadence stay alive so the result leg can
+      // resolve the call; tearing the Run down at this boundary loses the call
+      // it just handed out, and the next request's tool result resolves nothing.
+      else if (session.pending.size === 0) {
         cursorRunSessions.terminate(runId);
         this.#handles.delete(runId);
+        this.cleanupReader(runId);
       }
     }
   }
 
   /** Live Run handles, keyed by run id. Process-local, like the sessions. */
   readonly #handles = new Map<string, RunHandle>();
-  /** Set by the pump when the last terminal it emitted still owes a tool result. */
-  #awaitsToolResult = false;
+  /** One shared frame reader per live Run, surviving its requests. */
+  readonly #readers = new Map<string, RunFrameStream>();
+
+  /**
+   * Opens the Run's single frame reader.
+   *
+   * Ownership lives here, not inside a request: every request that serves this
+   * Run subscribes to the same queue, so a request that ends between a tool
+   * call and its answer cannot cancel the reading of the next one's turn.
+   *
+   * A reader whose body iterator ended between legs (the edge closes, or a
+   * test harness drains the queue) can be restarted on the still-live handle;
+   * the Run's continuation then re-opens the read side instead of failing.
+   */
+  #startReader(runId: string, handle: RunHandle): RunFrameStream {
+    const frames = new RunFrameStream();
+    this.#readers.set(runId, frames);
+    // The client-heartbeat cadence belongs to the reader: the Cursor edge
+    // expects a keepalive while the Run stays open, including the window
+    // between a tool call and the request that carries its result.
+    let state = "open";
+    const beat = (): void => {
+      if (state !== "open") return;
+      void handle.write(buildHeartbeat()).catch(() => undefined);
+    };
+    const heartbeatTimer = setInterval(
+      beat,
+      CURSOR_HEARTBEAT_INTERVAL_OVERRIDE ?? CURSOR_HEARTBEAT_INTERVAL_MS,
+    );
+    heartbeatTimer.unref();
+    const finish = (): void => {
+      if (state === "open") state = "closed";
+      clearInterval(heartbeatTimer);
+    };
+    // Stream failures do not always surface as a throw from the body iterator;
+    // the terminal event is the authoritative signal (auth revoked, quota,
+    // RST_STREAM). `local-close` is our own abort: the session manager already
+    // decided the outcome, so the pump just sees a clean end.
+    const unsubscribeTerminal = handle.stream.onTerminal((reason) => {
+      if (reason.kind === "local-close") return;
+      const mapped = cursorRunTerminationError({ stream: handle.stream, reason });
+      frames.end(reason, mapped === undefined ? undefined : mapped);
+      unsubscribeTerminal();
+    });
+    void (async () => {
+      try {
+        for await (const message of decodeServerMessages(handle.stream.body)) {
+          frames.push(message);
+        }
+        // The body ended without a recorded terminal: treat it as a clean
+        // server close so every pump sees an end marker either way.
+        frames.end({ kind: "remote-clean-close" }, undefined);
+      } catch (error) {
+        const failure =
+          error instanceof GatewayError
+            ? error
+            : new GatewayError(
+                "platform_unavailable",
+                502,
+                `Cursor Run failed: ${error instanceof Error ? error.message : String(error)}`,
+                { providerId: CURSOR_PROVIDER_ID },
+                "upstream",
+              );
+        frames.end({ kind: "remote-error", error: error instanceof Error ? error : new Error(String(error)) }, failure);
+      } finally {
+        unsubscribeTerminal();
+        finish();
+        this.#readers.delete(runId);
+      }
+    })();
+    return frames;
+  }
+
+  private cleanupReader(runId: string): void {
+    this.#readers.get(runId)?.end({ kind: "local-close" }, undefined);
+    this.#readers.delete(runId);
+  }
 
   /**
    * Resolves the Run origin for one account.
@@ -658,29 +1021,15 @@ class CursorAdapter implements ProviderAdapter {
     let terminalUsage: UsageRecord | undefined;
     let stopReason: CanonicalStopReason = "stop";
     let failure: GatewayError | undefined;
-    const unsubscribe = handle.stream.onTerminal((reason: Http2BidiEndReason) => {
-      if (reason.kind === "local-close") return;
-      const mapped = cursorRunTerminationError({ stream: handle.stream, reason });
-      if (mapped !== undefined) failure = mapped;
-    });
-    // The Cursor edge answers a Run only after it sees a client heartbeat (the
-    // donor's continuation policy pins `heartbeatMs` to 5s). One heartbeat is
-    // sent eagerly on open here and then on the interval; clearing it when the
-    // body reader ends is safe because the reader's end already means the Run
-    // is over.
-    const beat = (): void =>
-      void handle.write(buildHeartbeat()).catch(() => undefined);
-    const onAbort = (): void => clearInterval(heartbeatTimer);
-    const heartbeatTimer = setInterval(
-      beat,
-      CURSOR_HEARTBEAT_INTERVAL_OVERRIDE ?? CURSOR_HEARTBEAT_INTERVAL_MS,
-    );
-    void beat();
-    context.abort_signal.addEventListener("abort", onAbort, { once: true });
-    if (context.abort_signal.aborted) onAbort();
-    heartbeatTimer.unref();
+    const frames = this.#readers.get(runId) ?? this.#startReader(runId, handle);
     try {
-      for await (const message of decodeServerMessages(handle.stream.body)) {
+      const messages = frames.subscribe();
+      for await (const item of messages) {
+        if (isRunStreamEnd(item)) {
+          failure = item.failure;
+          break;
+        }
+        const message = item;
         if (context.abort_signal.aborted) {
           failure = new GatewayError("transport_closed", 499, "request was cancelled");
           break;
@@ -694,11 +1043,17 @@ class CursorAdapter implements ProviderAdapter {
           if (scope === undefined) {
             // Without a scope, no later request could be authorized to answer
             // this call, so the Run must not be held open for one.
-            await handle.write(buildMcpRejected(handled.execId, "tool call is not answerable"));
+            await handle.write(buildMcpRejected(handled.execId, "tool call is not answerable", handled.execIdString));
             continue;
           }
-          if (!cursorRunSessions.registerPendingCall(runId, { callId, execId: handled.execId, toolName: handled.toolName })) {
-            await handle.write(buildMcpRejected(handled.execId, "tool call is not answerable"));
+          if (!cursorRunSessions.registerPendingCall(runId, {
+            callId,
+            execId: handled.execId,
+            ...(handled.execIdString === undefined ? {} : { execIdString: handled.execIdString }),
+            toolName: handled.toolName,
+            ...(handled.host === undefined ? {} : { host: handled.host }),
+          })) {
+            await handle.write(buildMcpRejected(handled.execId, "tool call is not answerable", handled.execIdString));
             continue;
           }
           sawToolCall = true;
@@ -709,11 +1064,34 @@ class CursorAdapter implements ProviderAdapter {
             name: handled.toolName,
             arguments_delta: handled.arguments,
           };
-          continue;
+          // Interim terminal the moment the call is registered and answered.
+          // The Run stays open for the result leg; this request must not wait
+          // for `turn_ended`, which only arrives after the client answers —
+          // holding it open here is exactly the deadlock that broke tool calling.
+          cursorRunSessions.touch(runId);
+          yield {
+            type: "terminal",
+            sequence_number: input.next(),
+            state: "complete",
+            stop_reason: "tool_use" as const,
+            usage_deferred: true,
+          };
+          return;
         }
 
         const kv = recordOf(message["kv_server_message"]);
         if (kv !== undefined && (await this.#handleKvMessage(kv, handle))) continue;
+
+        // A permission gate the edge raises outside the exec channel (hosted
+        // web search, Exa, first-call MCP auth, ...). Dropping the frame left
+        // the Run alive on heartbeats alone: the tool turn never started and
+        // every tools-declaring request stalled to the client until its own
+        // timeout. Answering a conservative typed response keeps the turn live.
+        const query = recordOf(message["interaction_query"]);
+        if (query !== undefined) {
+          await this.#handleInteractionQuery(query, handle);
+          continue;
+        }
 
         const interaction = recordOf(message["interaction_update"]);
         if (interaction === undefined) continue;
@@ -762,14 +1140,9 @@ class CursorAdapter implements ProviderAdapter {
               { providerId: CURSOR_PROVIDER_ID },
               "upstream",
             );
-    } finally {
-      unsubscribe();
-    clearInterval(heartbeatTimer);
-    context.abort_signal.removeEventListener("abort", onAbort);
     }
 
     if (failure !== undefined) {
-      this.#awaitsToolResult = false;
       cursorRunSessions.terminate(runId, failure.message);
       yield {
         type: "terminal",
@@ -784,22 +1157,18 @@ class CursorAdapter implements ProviderAdapter {
       return;
     }
     if (sawToolCall) {
-      // The interim terminal: the client must answer the tool call, and this Run
-      // stays open for it. `usage_deferred` tells the settle path not to charge
-      // estimated tokens for a turn whose real usage arrives with the Run's
-      // `turn_ended` on the continuation request.
-      this.#awaitsToolResult = true;
+      // Defensive: the interim terminal was already emitted with the call; the
+      // ends-fast path below must not terminate the held Run.
       cursorRunSessions.touch(runId);
       yield {
         type: "terminal",
         sequence_number: input.next(),
         state: "complete",
-        stop_reason: "tool_use",
+        stop_reason: "tool_use" as const,
         usage_deferred: true,
       };
       return;
     }
-    this.#awaitsToolResult = false;
     cursorRunSessions.terminate(runId);
     yield {
       type: "terminal",
@@ -815,21 +1184,52 @@ class CursorAdapter implements ProviderAdapter {
    *
    * The control paths are mandatory, not optional: `request_context_args`,
    * `mcp_state_exec_args`, and the KV channel all stall the Run forever if the
-   * client never answers. Only `mcp_args` — and only for a declared tool —
-   * becomes a tool call; every other variant is refused rather than executed.
+   * client never answers. `mcp_args` — only for a declared tool — and the host
+   * exec variants the client itself declared (`shell_args` → its shell tool,
+   * `write_args`, `read_args`) become tool calls: the client executes them
+   * locally. Every other variant is refused rather than executed here.
    */
   async #handleExecServerMessage(
     execServer: Record<string, unknown>,
     session: CursorRunSession,
     handle: RunHandle,
-  ): Promise<{ kind: "handled" } | { kind: "tool_call"; execId: number; toolName: string; arguments: string }> {
+  ): Promise<
+    | { kind: "handled" }
+    | {
+        kind: "tool_call";
+        execId: number;
+        execIdString: string | undefined;
+        toolName: string;
+        arguments: string;
+        host?: CursorHostExecDetail;
+      }
+  > {
     const execId = typeof execServer["id"] === "number" ? execServer["id"] : 0;
+    // Newer builds pair exec replies by this frame's UUID as well as the
+    // numeric id: a reply carrying only the numeric id is never matched and
+    // the Run strands on heartbeats waiting for a result that already left.
+    const execIdString = nonEmptyStringOf(execServer["exec_id"]);
     if (recordOf(execServer["request_context_args"]) !== undefined) {
-      await handle.write(buildRequestContextResult(execId, probeContextFor(session.descriptors)));
+      await handle.write(buildRequestContextResult(execId, probeContextFor(session.descriptors), execIdString));
       return { kind: "handled" };
     }
     if (recordOf(execServer["mcp_state_exec_args"]) !== undefined) {
-      await handle.write(buildMcpStateResult(execId, session.descriptors));
+      await handle.write(buildMcpStateResult(execId, session.descriptors, execIdString));
+      return { kind: "handled" };
+    }
+    // Allowlist prechecks precede the real call. They are approval probes, not
+    // invocations — this gateway advertises every executable surface through
+    // the MCP channel, so its own host surface is never allowlisted and the
+    // typed result frame (not an mcp_result) is what the server waits on.
+    const precheckKind = recordOf(execServer["shell_allowlist_precheck_args"]) !== undefined
+      ? "shell"
+      : recordOf(execServer["mcp_allowlist_precheck_args"]) !== undefined
+        ? "mcp"
+        : recordOf(execServer["web_fetch_allowlist_precheck_args"]) !== undefined
+          ? "web_fetch"
+          : undefined;
+    if (precheckKind !== undefined) {
+      await handle.write(buildAllowlistPrecheckResult(execId, precheckKind, execIdString));
       return { kind: "handled" };
     }
     const mcpArgs = recordOf(execServer["mcp_args"]);
@@ -837,17 +1237,121 @@ class CursorAdapter implements ProviderAdapter {
       const call = readExecutableMcpCall(mcpArgs, session.descriptors);
       if (call === undefined) {
         await handle.write(
-          buildMcpRejected(execId, "this tool is not one the request declared"),
+          buildMcpRejected(execId, "this tool is not one the request declared", execIdString),
         );
         return { kind: "handled" };
       }
-      return { kind: "tool_call", execId, toolName: call.toolName, arguments: call.arguments };
+      return {
+        kind: "tool_call",
+        execId,
+        execIdString,
+        toolName: call.toolName,
+        arguments: call.arguments,
+      };
+    }
+    // Host exec variants the canonical client declares as its own tools are
+    // forwarded as tool calls — the client executes them locally and the
+    // result leg answers the variant's typed result frame. This is Cursor's
+    // own architecture: its executor is the local CLI, and silencing a host
+    // tool the client could have run just makes the model circle before
+    // falling back to the MCP channel.
+    const host = readHostExecCall(execServer, session.descriptors);
+    if (host !== undefined) {
+      return {
+        kind: "tool_call",
+        execId,
+        execIdString,
+        toolName: host.toolName,
+        arguments: host.arguments,
+        host: host.detail,
+      };
     }
     // Every other exec variant is a Cursor host tool (shell, read, edit, glob,
-    // subagent, …). Refusing it is the security boundary: the gateway does not
-    // run filesystem or shell operations the client never asked for.
-    await handle.write(buildMcpRejected(execId, "Cursor host tools are not executed by this gateway"));
+    // subagent, …) or a frame this gateway has no handler for. Stranding the
+    // exec id stalled the turn forever, and answering it as an mcp_result left
+    // the server unmatched on a frame it did rank — the protocol's failure
+    // channel (throw + stream_close, exactly what Cursor's own executor sends
+    // for an unclaimed frame) surfaces the refusal to the model instead.
+    const refusal = "Cursor host tools are not executed by this gateway";
+    await handle.write(buildExecThrow(execId, refusal, execIdString));
+    await handle.write(buildExecStreamClose(execId, execIdString));
     return { kind: "handled" };
+  }
+
+  /**
+   * Answers one interaction query so the Run RPC can continue.
+   *
+   * Hosted web search, Exa, web fetch, and the first-call MCP auth gate block
+   * the turn until the client writes an `interaction_response`; dropping the
+   * frame left the stream alive on heartbeats that are not semantic progress.
+   * Network permission gates are approved (the gateway already serves the
+   * model through its own validated egress), interactive prompts are rejected
+   * in band, and VM setup is left unanswered rather than reporting a fake
+   * success.
+   */
+  async #handleInteractionQuery(query: Record<string, unknown>, handle: RunHandle): Promise<void> {
+    const queryId = typeof query["id"] === "number" ? query["id"] : 0;
+    const body = recordOf(query["query"]);
+    const queryVariant = body === undefined ? undefined : Object.keys(body)[0];
+    const rejectReason = "this gateway runs headless and cannot answer interactive prompts";
+    switch (queryVariant) {
+      case "web_search_request_query":
+        await handle.write(buildInteractionResponse(queryId, "web_search_request_response", {
+          approved: {},
+        }));
+        return;
+      case "web_fetch_request_query":
+        await handle.write(buildInteractionResponse(queryId, "web_fetch_request_response", {
+          approved: {},
+        }));
+        return;
+      case "ask_question_interaction_query":
+        await handle.write(buildInteractionResponse(queryId, "ask_question_interaction_response", {
+          result: { rejected: { reason: rejectReason } },
+        }));
+        return;
+      case "switch_mode_request_query":
+        await handle.write(buildInteractionResponse(queryId, "switch_mode_request_response", {
+          rejected: { reason: rejectReason },
+        }));
+        return;
+      case "create_plan_request_query":
+        await handle.write(buildInteractionResponse(queryId, "create_plan_request_response", {
+          result: { error: { error: rejectReason } },
+        }));
+        return;
+      case "pr_management_request_query":
+        await handle.write(buildInteractionResponse(queryId, "pr_management_result", {
+          rejected: { reason: rejectReason },
+        }));
+        return;
+      case "mcp_auth_request_query":
+        await handle.write(buildInteractionResponse(queryId, "mcp_auth_request_response", {
+          rejected: { reason: rejectReason },
+        }));
+        return;
+      case "generate_image_request_query":
+        await handle.write(buildInteractionResponse(queryId, "generate_image_request_response", {
+          rejected: { reason: rejectReason },
+        }));
+        return;
+      case "replace_env_args":
+        await handle.write(buildInteractionResponse(queryId, "replace_env_result", {
+          failure: { error_message: rejectReason },
+        }));
+        return;
+      case "connect_scm_request_query":
+        await handle.write(buildInteractionResponse(queryId, "connect_scm_request_response", {
+          rejected: { reason: rejectReason },
+        }));
+        return;
+      case "setup_vm_environment_args":
+        // Result oneof is success-only: do not invent a VM; silence is better
+        // than a false SetupVmEnvironmentSuccess.
+        return;
+      default:
+        return;
+    }
   }
 
   /** Answers one KV blob request; `false` when the message carried none. */
@@ -938,6 +1442,27 @@ function readPendingToolResult(
     }
   }
   return results.length > 0 ? results : undefined;
+}
+
+/**
+ * Marks a request as a complete conversation replay rather than a tail
+ * continuation: every `call_cursor_*` tool result it carries is answered by a
+ * `toolCall` block in the same conversation. That is the shape a client gets
+ * when it resends its recorded transcript — a gateway restart between legs or
+ * an evicted Run — and the only shape safe to rebase into a fresh Run, where
+ * the recorded exchange travels as history.
+ */
+function isCompleteToolHistoryReplay(
+  request: CanonicalRequest,
+  pending: readonly PendingToolResult[],
+): boolean {
+  const calledIds = new Set<string>();
+  for (const message of request.messages) {
+    for (const part of message.content) {
+      if (part.kind === "toolCall") calledIds.add(part.call_id);
+    }
+  }
+  return pending.every((item) => calledIds.has(item.callId));
 }
 
 /** Reconstructs one tool result's text and images for the adapter's tests. */

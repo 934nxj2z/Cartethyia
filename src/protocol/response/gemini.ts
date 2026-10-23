@@ -63,11 +63,25 @@ export function responseParts(parts: readonly Record<string, unknown>[]): {
 
 export function mapGeminiUsage(body: Record<string, unknown>): Record<string, unknown> {
   const usage = isRecord(body["usageMetadata"]) ? (body["usageMetadata"] as Record<string, unknown>) : {};
+  const prompt = nullableNumber(usage["promptTokenCount"]) ?? 0;
+  const candidates = nullableNumber(usage["candidatesTokenCount"]) ?? 0;
+  // Reasoning is billed output that Gemini reports in its own counter:
+  // `candidatesTokenCount` excludes `thoughtsTokenCount`, so dropping it here
+  // silently under-reported every thinking model's completion tokens. It is
+  // surfaced through `output_tokens_details` because that is the slot
+  // `normalizeUsage` reads for reasoning — keeping it separate from the
+  // candidate count it is added into, so downstream can still split them.
+  const thoughts = nullableNumber(usage["thoughtsTokenCount"]) ?? 0;
+  const output = candidates + thoughts;
+  const cached = nullableNumber(usage["cachedContentTokenCount"]) ?? 0;
   return {
-    input_tokens: nullableNumber(usage["promptTokenCount"]) ?? 0,
-    output_tokens: nullableNumber(usage["candidatesTokenCount"]) ?? 0,
-    total_tokens: nullableNumber(usage["totalTokenCount"]) ?? 0,
-    cached_tokens: nullableNumber(usage["cachedContentTokenCount"]) ?? 0,
+    input_tokens: prompt,
+    output_tokens: output,
+    total_tokens: nullableNumber(usage["totalTokenCount"]) ?? prompt + output,
+    cached_tokens: cached,
+    ...(thoughts > 0
+      ? { output_tokens_details: { reasoning_tokens: thoughts } }
+      : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 import { Elysia } from "elysia";
+import { spawn } from "node:child_process";
 import { consoleErrorHandler, requireTenantScope } from "../shared/errors";
 import { consoleSseResponse, createConsoleSseStream } from "../observability/sse";
 import type { ObservabilityStore } from "../observability/contracts";
@@ -86,6 +87,21 @@ export function createUpdateRoutes(config: {
   return new Elysia()
     .error(consoleErrorHandler("Update check failed"))
     .get("/updates/release", async () => await fetchRelease())
+    .post("/updates/apply", ({ request }) => {
+      requireTenantScope(config.accessResolver(request), "dashboard:write");
+      const isWin = process.platform === "win32";
+      const shell = isWin ? "cmd.exe" : "/bin/sh";
+      const install = "npm install -g cartethyia@latest --prefer-online";
+      const restart = isWin
+        ? "cartethyia start"
+        : "systemctl restart cartethyia 2>/dev/null || cartethyia start";
+      const script = `${install} && ${restart}`;
+      const args = isWin ? ["/c", script] : ["-c", script];
+      const child = spawn(shell, args, { detached: true, stdio: "ignore" });
+      child.unref();
+      setTimeout(() => process.exit(0), 1500);
+      return { started: true };
+    })
     .get("/notifications/stream", ({ request }) => {
       const tenantId = requireTenantScope(
         config.accessResolver(request),

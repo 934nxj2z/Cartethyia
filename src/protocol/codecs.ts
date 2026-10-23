@@ -485,13 +485,12 @@ export function endpointUrl(
   return url;
 }
 
-/** Session-scoped state (turn-state / models-etag / session identity). */
+/** Session-scoped state (turn-state / session identity). */
 export interface CodexSessionState {
   sessionId: string;
   threadId: string;
   windowId: string;
   turnState?: string;
-  modelsEtag?: string;
   turnStartedAtUnixMs?: number;
 }
 

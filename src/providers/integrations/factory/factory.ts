@@ -496,7 +496,14 @@ class FactoryDroidAdapter implements ProviderAdapter {
       response = await outboundFetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(buildGeminiPayload(request)),
+        body: JSON.stringify(
+          buildGeminiPayload(
+            request,
+            ...(context.image_clamp_max_bytes === undefined
+              ? []
+              : [{ maxBytesOverride: context.image_clamp_max_bytes }]),
+          ),
+        ),
         signal: lifecycle.signal,
       });
     } catch (error: unknown) {

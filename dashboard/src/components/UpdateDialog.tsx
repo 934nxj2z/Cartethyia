@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, Copy, ExternalLink, Package, TriangleAlert } from "lucide-react";
+import { Check, Copy, ExternalLink, Loader2, Package, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { CodeChip } from "./ui/code-chip";
 import { Dialog } from "./ui/dialog";
@@ -60,6 +60,10 @@ export interface UpdateDialogProps {
    * where there is nothing automatic to suppress.
    */
   readonly onDismissVersion?: (() => void) | undefined;
+  /** Triggered when the operator clicks "Update now". */
+  readonly onUpdateNow?: (() => void) | undefined;
+  /** Whether an update is currently in progress (blocks refresh). */
+  readonly updating?: boolean;
 }
 
 /** Copies text and reports the transient "copied" state to the button. */
@@ -89,6 +93,8 @@ export function UpdateDialog({
   latestVersion,
   releaseUrl,
   onDismissVersion,
+  onUpdateNow,
+  updating = false,
 }: UpdateDialogProps): ReactNode {
   const { copied, copy } = useCopy();
   const target = latestVersion ?? "the latest release";
@@ -98,7 +104,8 @@ export function UpdateDialog({
   };
 
   return (
-    <Dialog
+    <>
+      <Dialog
       open={open}
       onClose={onClose}
       title="Update available"
@@ -115,7 +122,13 @@ export function UpdateDialog({
               Don&rsquo;t show for v{target}
             </Button>
           )}
-          <Button onClick={() => copy(NPM_UPDATE_COMMAND)}>
+          {onUpdateNow !== undefined ? (
+            <Button onClick={onUpdateNow} disabled={updating}>
+              {updating ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
+              {updating ? "Updating…" : "Update now"}
+            </Button>
+          ) : null}
+          <Button onClick={() => copy(NPM_UPDATE_COMMAND)} disabled={updating}>
             {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
             {copied ? "Copied" : "Copy update command"}
           </Button>
@@ -191,5 +204,15 @@ export function UpdateDialog({
         </div>
       </div>
     </Dialog>
+    {updating ? (
+      <div className="fixed inset-0 z-[9999] grid place-items-center bg-black/70 backdrop-blur-sm">
+        <div className="flex flex-col items-center gap-4 text-white">
+          <Loader2 size={40} className="animate-spin" aria-hidden="true" />
+          <p className="text-lg font-semibold">Updating Cartethyia…</p>
+          <p className="text-sm opacity-80">Do not refresh or close this page.</p>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }

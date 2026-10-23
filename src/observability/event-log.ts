@@ -1,5 +1,7 @@
 import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveTelemetryRetentionDays } from "../config/telemetry";
+import { resolveDataDir } from "../persistence/db-mode";
 
 /**
  * Per-request telemetry lives in hourly JSONL files, not in Postgres. The
@@ -7,7 +9,36 @@ import { join } from "node:path";
  * `telemetry_events` reads through here, so the file is the single source for
  * recent requests and the table is no longer written.
  */
-export const TELEMETRY_EVENT_DIR = "./data/telemetry-events";
+/**
+ * Where hourly event files and their compacted summaries live.
+ *
+ * Resolved from the configured data directory, never relative to the working
+ * directory: the gateway can be started from anywhere, and a relative path
+ * makes the written history depend on where the operator happened to be —
+ * start it from another folder and every past request reads as zero, because
+ * the files were written somewhere else entirely.
+ */
+export const TELEMETRY_EVENT_DIR = join(resolveDataDir(), "telemetry-events");
+
+/**
+ * The source file an event lands in: one per closed `windowMinutes` bucket.
+ *
+ * The name is the bucket's own start (`YYYY-MM-DDTHH-MM`), so both the writer
+ * and the compactor derive it from a timestamp and cannot disagree. It is also
+ * what makes "is this window closed?" a name comparison rather than a read.
+ */
+export function windowFileName(at: Date, windowMinutes: number): string {
+  // `2026-10-22T05-15.jsonl`: ISO to the minute with the colon replaced, so the
+  // name sorts chronologically and needs no separate timestamp column.
+  return `${bucketStart(at, windowMinutes).toISOString().slice(0, 16).replace(":", "-")}.jsonl`;
+}
+
+/** The start of the window containing `at`, floored to `windowMinutes`. */
+export function bucketStart(at: Date, windowMinutes: number): Date {
+  const ms = Math.max(1, Math.floor(windowMinutes)) * 60_000;
+  return new Date(Math.floor(at.getTime() / ms) * ms);
+}
+
 
 export interface TelemetryEventRecord {
   readonly id: string;
@@ -100,8 +131,17 @@ function normalize(raw: Record<string, unknown>): TelemetryEventRecord | undefin
   };
 }
 
+/**
+ * The comparable hour of an event file's name.
+ *
+ * A name is either `2026-10-22T05-15.jsonl` (an older window file) or
+ * `2026-10-22.events.jsonl` (a day file). Both sort against `hourStamp`: only
+ * the leading date and hour are taken, so the day file's `.events` suffix cannot
+ * make it compare as later or earlier than the window files beside it.
+ */
 function eventFileHour(file: string): string {
-  return file.slice(0, 13);
+  const stamp = file.endsWith(".events.jsonl") ? `${file.slice(0, 10)}T00` : file.slice(0, 13);
+  return stamp;
 }
 
 function hourStamp(date: Date): string {
@@ -110,6 +150,71 @@ function hourStamp(date: Date): string {
 
 /** Chunk size for the streaming scan: one line can be long, a file cannot. */
 const READ_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * The newest matching events in one file, read backwards from the end.
+ *
+ * Reads fixed blocks from the tail until the page is full, so a day file of any
+ * size costs one block per page rather than a full parse. A partial line at the
+ * very end is dropped: the writer may still be appending to it.
+ */
+async function* readEventFileTail(
+  file: string,
+  tenantId: string | undefined,
+  want: number,
+  since: number | undefined,
+  until: number | undefined,
+): AsyncGenerator<TelemetryEventRecord> {
+  if (want <= 0) return;
+  const handle = await open(join(TELEMETRY_EVENT_DIR, file), "r").catch(() => undefined);
+  if (handle === undefined) return;
+  try {
+    const size = (await handle.stat().catch(() => undefined))?.size ?? 0;
+    if (size === 0) return;
+    const BLOCK = 64 * 1024;
+    let end = size;
+    let carry = "";
+    const found: TelemetryEventRecord[] = [];
+    while (end > 0 && found.length < want) {
+      const start = Math.max(0, end - BLOCK);
+      const length = end - start;
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      const text = buffer.toString("utf8") + carry;
+      const lines = text.split("\n");
+      carry = lines.shift() ?? "";
+      // Newest first: the block was read from the end, so its lines run
+      // backwards through the file.
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index] ?? "";
+        if (line.length === 0) continue;
+        if (tenantId !== undefined && !line.includes(tenantId)) continue;
+        let parsed: TelemetryEventRecord | undefined;
+        try {
+          const value: unknown = JSON.parse(line);
+          if (typeof value === "object" && value !== null) {
+            parsed = value as TelemetryEventRecord;
+          }
+        } catch {
+          continue;
+        }
+        if (parsed === undefined) continue;
+        if (parsed.tenantId !== tenantId) continue;
+        const at = Date.parse(parsed.createdAt);
+        if (Number.isFinite(at)) {
+          if (since !== undefined && at < since) continue;
+          if (until !== undefined && at > until) continue;
+        }
+        found.push(parsed);
+        if (found.length >= want) break;
+      }
+      end = start;
+    }
+    for (const event of found) yield event;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
 
 async function* readEventFiles(
   files: readonly string[],
@@ -213,8 +318,29 @@ function matches(event: TelemetryEventRecord, query: EventQuery, since: number |
 
 /** The events matching a query, already newest first. */
 export async function queryTelemetryEvents(query: EventQuery): Promise<TelemetryEventRecord[]> {
+  // Hourly request files only. A `.compacted.jsonl` also ends in `.jsonl`, and
+  // letting one through meant every summary row was parsed as if it were a
+  // request — a row with no `tenantId`/`createdAt` that then failed `matches`,
+  // but only after paying for the parse.
+  //
+  // The lower bound is the retention window, not just `since`: a caller that
+  // asks for all time still must not scan files that have already been aged
+  // out, and one that passes no `since` at all used to read every file ever
+  // written. Files older than retention are gone or compacted; either way they
+  // are not here.
+  const retentionFloor = hourStamp(
+    new Date(Date.now() - resolveTelemetryRetentionDays() * 24 * 60 * 60_000),
+  );
+  const sinceFloor =
+    query.since === undefined ? retentionFloor : hourStamp(query.since);
+  const floor = sinceFloor > retentionFloor ? sinceFloor : retentionFloor;
   const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
-    .filter((file) => file.endsWith(".jsonl") && (query.since === undefined || eventFileHour(file) >= hourStamp(query.since)))
+    .filter(
+      (file) =>
+        file.endsWith(".jsonl") &&
+        !file.endsWith(".compacted.jsonl") &&
+        eventFileHour(file) >= floor,
+    )
     .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   const since = query.since?.getTime();
   const until = query.until?.getTime();
@@ -235,6 +361,27 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   // A single-row lookup: stop at the first (newest) match instead of parsing
   // the whole retention window.
   const oneRow = query.requestId !== undefined || query.id !== undefined;
+  // With one file per day, a plain page of the newest rows would otherwise
+  // parse the whole day to return fifty lines. When nothing filters on
+  // content — no status, no key, no account — the newest rows are the last
+  // lines, so they are read backwards from the end and the scan stops once the
+  // page is full.
+  const tailOnly =
+    query.limit !== undefined &&
+    !oneRow &&
+    query.httpStatus === undefined &&
+    query.apiKeyIds === undefined &&
+    query.accountIds === undefined;
+  if (tailOnly) {
+    const newest: TelemetryEventRecord[] = [];
+    for (const file of files) {
+      for await (const event of readEventFileTail(file, query.tenantId, query.limit - newest.length, since, until)) {
+        newest.push(event);
+      }
+      if (newest.length >= query.limit) break;
+    }
+    return newest.slice(0, query.limit);
+  }
   for (const file of files) {
     const matched: TelemetryEventRecord[] = [];
     for await (const event of readEventFiles([file], allow)) {
@@ -269,6 +416,8 @@ export interface EventTotals {
 export function emptyTotals(): EventTotals {
   return { requests: 0, succeeded: 0, failed: 0, cancelled: 0, truncated: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, estimatedCost: 0, unpriced: 0, latencySum: 0, latencyCount: 0, tokensPerSecSum: 0, tokensPerSecCount: 0 };
 }
+
+/**
 
 /** Folds one event into a totals bucket. `failed` counts any non-completed terminal status. */
 export function accumulate(totals: EventTotals, event: TelemetryEventRecord): void {

@@ -16,7 +16,7 @@ import type { ProviderDispatchTarget } from "../../src/providers/provider-contra
 
 function probeRequest(): CanonicalRequest {
   return {
-    model: "longcat-2.5-preview-free",
+    model: "big-pickle",
     messages: [{ role: "user", content: [{ kind: "text", text: "Reply with exactly: PONG" }] }],
     stream: true,
     source_surface: "chat",
@@ -30,7 +30,7 @@ describe("OpenCode free probe — backfilled tools are agent-shaped", () => {
     const payload = await encodeWireRequest("chat", request);
     const candidate: ProviderDispatchTarget = {
       provider_id: "opencode",
-      model_id: "longcat-2.5-preview-free",
+      model_id: "big-pickle",
       wire_family: "chat",
       endpoint_path: "/inference/v1/chat/completions",
       capabilities: {},

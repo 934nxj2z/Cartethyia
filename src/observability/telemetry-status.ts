@@ -32,12 +32,18 @@
  * - **`503`** is capacity or availability: the gateway *correctly* refusing work
  *   it cannot do right now (`admission_unavailable`, `accounts_unavailable`,
  *   `shutting_down`, `restart_for_update`, `platform_unavailable`). Retryable,
- *   self-inflicted, and an
- *   operator-capacity signal rather than a defect. It is the one `5xx` that is
- *   not a gateway defect, so it is named explicitly.
- * - **`500`, `502`, `504`** — an internal error, a stream that ended before
- *   completion, a deadline that expired — are the gateway failing at its job.
- *   These count.
+ *   self-inflicted, and an operator-capacity signal rather than a defect.
+ * - **`504`** is a timeout, not a malfunction. It represents a deadline that
+ *   expired: the request deadline, the stream-stall
+ *   watchdog, an HTTP/2 read-idle or WebSocket receive timer, an upstream that
+ *   stopped sending mid-stream. The gateway *did* its job — it stopped waiting
+ *   — and the wait may have been the upstream or network. Counting a slow
+ *   provider as a gateway defect makes the error rate track provider
+ *   latency rather than gateway health, and a caller can inflate it for free
+ *   by requesting a window nobody can fill in time.
+ * - **`529`** is the upstream's own overload signal, not this gateway's.
+ * - **`500`, `502`** — an internal error, a stream that ended before
+ *   completion — are the gateway failing at its job. These count.
  *
  * Excluded requests are still recorded, still rendered in the Requests table,
  * still filterable, and still openable in the detail drawer. "Not an error"
@@ -59,12 +65,18 @@ export const GATEWAY_ERROR_STATUSES = ["failed", "truncated"] as const;
 export const GATEWAY_ERROR_HTTP_MIN = 500;
 
 /**
- * The `5xx` statuses that represent provider capacity/availability rather than
- * a gateway defect. Named explicitly so error-rate rollups exclude both cases.
+ * The `5xx` statuses that are *not* a gateway defect: capacity and
+ * availability (`503`, `529`) and deadlines (`504`). Named explicitly so
+ * error-rate rollups exclude all of them.
+ *
+ * `504` belongs here even though it is not capacity. The name covers the
+ * shared property — the gateway behaved correctly and the outcome belongs to
+ * somebody else — because listing it under "capacity" invites a later reader
+ * to prune a code that does not look like one.
  */
-export const CAPACITY_HTTP_STATUSES = [503, 529] as const;
+export const NON_DEFECT_HTTP_STATUSES = [503, 504, 529] as const;
 
-const CAPACITY_HTTP_STATUS_SET: ReadonlySet<number> = new Set(CAPACITY_HTTP_STATUSES);
+const NON_DEFECT_HTTP_STATUS_SET: ReadonlySet<number> = new Set(NON_DEFECT_HTTP_STATUSES);
 
 /**
  * Whether a terminal lifecycle status represents a gateway failure, before the
@@ -86,10 +98,10 @@ export function isGatewayErrorStatus(status: string | null | undefined): boolean
 
 /**
  * Whether an HTTP status is a gateway defect: a `5xx` that is not one of the
- * capacity/availability statuses.
+ * non-defect statuses (capacity, availability, or a deadline).
  */
 export function isGatewayErrorHttpStatus(httpStatus: number): boolean {
-  return httpStatus >= GATEWAY_ERROR_HTTP_MIN && !CAPACITY_HTTP_STATUS_SET.has(httpStatus);
+  return httpStatus >= GATEWAY_ERROR_HTTP_MIN && !NON_DEFECT_HTTP_STATUS_SET.has(httpStatus);
 }
 
 /**
@@ -116,7 +128,7 @@ export function isGatewayError(
  *
  * Derived from the same constants `isGatewayError` reads — the status list from
  * `GATEWAY_ERROR_STATUSES`, the floor from `GATEWAY_ERROR_HTTP_MIN`, the
- * exceptions from `CAPACITY_HTTP_STATUSES` — so the two forms cannot drift:
+ * exceptions from `NON_DEFECT_HTTP_STATUSES` — so the two forms cannot drift:
  * an unknown status must be classified the same way row-level and in SQL, or
  * the durable rollup disagrees with every read-side count.
  */
@@ -125,9 +137,9 @@ export function gatewayErrorSql(status: AnyColumn, httpStatus: AnyColumn): SQL {
     GATEWAY_ERROR_STATUSES.map((value) => sql`${value}`),
     sql`, `,
   );
-  const capacity = sql.join(
-    CAPACITY_HTTP_STATUSES.map((code) => sql`${code}`),
+  const nonDefect = sql.join(
+    NON_DEFECT_HTTP_STATUSES.map((code) => sql`${code}`),
     sql`, `,
   );
-  return sql`(${status} in (${included}) and (${httpStatus} is null or (${httpStatus} >= ${GATEWAY_ERROR_HTTP_MIN} and ${httpStatus} not in (${capacity}))))`;
+  return sql`(${status} in (${included}) and (${httpStatus} is null or (${httpStatus} >= ${GATEWAY_ERROR_HTTP_MIN} and ${httpStatus} not in (${nonDefect}))))`;
 }

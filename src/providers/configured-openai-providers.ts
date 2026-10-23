@@ -16,6 +16,7 @@ import type { ProviderId } from "./provider-contracts";
  * pairs this spec with `openAIModelDiscovery`.
  */
 export const GENERIC_API_KEY_PROVIDER_IDS = [
+  "larprouter",
   "mistral",
   "fireworks",
   "nvidia",
@@ -112,6 +113,7 @@ function genericApiKeySpec(providerId: GenericApiKeyProviderId): ApiKeyProviderS
 }
 
 export const GENERIC_API_KEY_SPECS = {
+  larprouter: genericApiKeySpec("larprouter"),
   mistral: genericApiKeySpec("mistral"),
   fireworks: genericApiKeySpec("fireworks"),
   nvidia: genericApiKeySpec("nvidia"),

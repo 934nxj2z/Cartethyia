@@ -106,11 +106,12 @@ describe("trae rosters", () => {
 
   test("context windows are per model, not uniform", () => {
     // Reading a single maximum across the roster would report 1M for the GPT
-    // rows, which cap at 272k, and would overstate Kimi-K2.5 / MiniMax-M2.7,
-    // which offer no selectable upgrade above 200k.
+    // rows, which — except `gpt-5.4` — cap at 272k, and would overstate
+    // Kimi-K2.5 / MiniMax-M2.7, which offer no selectable upgrade above 200k.
     const find = (id: string): number | undefined =>
       TRAE_INTL_MODELS.find((m) => m.modelId === id)?.contextLimit ?? undefined;
-    expect(find("gpt-5.4")).toBe(272_000);
+    expect(find("gpt-5.4")).toBe(1_000_000);
+    expect(find("gpt-5.2")).toBe(272_000);
     expect(find("deepseek-v4.1-flash")).toBe(1_000_000);
     expect(find("kimi-k2.5")).toBe(200_000);
   });

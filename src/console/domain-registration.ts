@@ -23,6 +23,9 @@ import { createNetworkPoolRoutes } from "./routing/pools/routes";
 import { DrizzleModelRoutingStore } from "./routing/model/store";
 import { DrizzleNetworkPoolStore } from "./routing/pools/store";
 import { createRuntimeSettingsRoutes } from "./settings/routes";
+import { createDataManagementRoutes } from "./data-management/routes";
+import { healthEventBuffer } from "../persistence/health-event-flush";
+import { countAllHealthEvents, deleteAllHealthEvents } from "../providers/operations/account-health-service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createObservabilityRoutes } from "./observability/routes";
 import { DrizzleObservabilityStore } from "./observability/store";
@@ -36,6 +39,9 @@ import { createUpdateRoutes } from "./updates/routes";
 import { createBackupRoutes } from "./backup/routes";
 import { BackupService } from "./backup/service";
 import type { ConsoleCredentialService } from "./auth/credentials";
+import { resolveTelemetryRetentionDays } from "../config/telemetry";
+import { payloadRetentionMs } from "../observability/payload-capture";
+import { TELEMETRY_EVENT_DIR } from "../observability/event-log";
 
 import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
 import { OAuthCallbackListener } from "./providers/oauth/callback-listener";
@@ -80,6 +86,14 @@ export interface ConsoleDomainContext {
   readonly routeSnapshotService: { invalidate(): Promise<number> };
   readonly poolSelector: NetworkPoolSelector;
   readonly telemetryBuffer: TelemetryBatchBuffer;
+  /**
+   * Queued writers the console can drain on demand. Optional because a flush
+   * is only meaningful when the process owns the buffers; a caller that does
+   * not pass them simply loses the button rather than failing to boot.
+   */
+  readonly flushBuffers?: {
+    flush(): Promise<void>;
+  };
   /** Owns the live in-flight gauge the console surfaces. */
   readonly stateStore?: LiveInFlightSource;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
@@ -268,6 +282,31 @@ export function registerConsoleDomains(
     relayFetch: createValidatedFetch({ policy: resolveSsrfPolicy() }),
   }));
   console.use(createRuntimeSettingsRoutes({ store: runtimeSettingsStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
+  console.use(
+    createDataManagementRoutes({
+      telemetryDir: TELEMETRY_EVENT_DIR,
+      retentionDays: resolveTelemetryRetentionDays(),
+      payloadRetentionMs: payloadRetentionMs(),
+      // Hourly files are the only copy of their requests until compaction
+      // folds them up, so the console does not delete them on request.
+      allowHourlyReclaim: false,
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+      flusher: ctx.flushBuffers,
+      // The console's one row-level purge: the health & error log is a
+      // diagnostic trail no request-path code reads. Dropping the buffered
+      // writes before the DELETE is what makes it sound — otherwise a batch
+      // in flight would land behind the purge and resurrect history that was
+      // just counted as deleted.
+      healthEvents: {
+        count: () => countAllHealthEvents(ctx.db),
+        purgeAll: async () => {
+          await healthEventBuffer()?.drain();
+          return await deleteAllHealthEvents(ctx.db);
+        },
+      },
+    }),
+  );
   console.use(
     createBackupRoutes({
       accessResolver: ctx.accessResolver,

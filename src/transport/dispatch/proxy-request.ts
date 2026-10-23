@@ -15,7 +15,11 @@ import { messagesAdapter } from "../surface/messages/adapter";
 import { completionAdapter } from "../surface/completion";
 import { forwardedRequestHeaders, proxySuccessHeaders, buildUpstreamDispatchContext, reportedModelFrom } from "./upstream";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { applyTenantPreferences } from "../request/tenant-preferences";
+import {
+  applyTenantPreferences,
+  applyTenantDeadlineOverride,
+  resolveTenantImageClampMaxBytes,
+} from "../request/tenant-preferences";
 import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
@@ -28,6 +32,8 @@ import {
   completionContext,
   estimatedUsage,
   parseCapturedBody,
+  providerCaptureMaxBytes,
+  resolveCaptureDepthForRequest,
   shouldCaptureProviderBodyForRequest,
   terminalFailure,
 } from "./attempt-finalize";
@@ -126,6 +132,22 @@ export async function handleProviderProxyRequest(
   if (!prepared)
     throw new GatewayError("admission_unavailable", 503, "The request was not prepared, so no route can be dialed. Resend the request.");
   const canonicalRequest = await applyTenantPreferences(prepared, deps.db);
+  // Per-tenant timeout, applied as soon as the tenant is known. The deadline
+  // was armed at admission with the deployment default; this re-arms it.
+  await applyTenantDeadlineOverride(
+    prepared.authorization.snapshot.tenant_id,
+    deps.db,
+    (ms) => state.extendDeadline(ms),
+  );
+  // Memoized on the request: the ceiling is a tenant setting, so it cannot
+  // change between failover attempts, and each wire encoder that clamps an
+  // image reads it from here instead of paying for a preference read per
+  // attempt.
+  const imageClampMaxBytes = await resolveTenantImageClampMaxBytes(
+    deps.db,
+    prepared.authorization.snapshot.tenant_id,
+  );
+  if (imageClampMaxBytes !== undefined) state.imageClampMaxBytes = imageClampMaxBytes;
   const candidates =
     prepared.eligibleRouteCandidates.length > 0 ? prepared.eligibleRouteCandidates : [prepared.candidate];
   const attemptCandidates = candidates;
@@ -224,6 +246,9 @@ export async function handleProviderProxyRequest(
         headers: inboundHeaders,
         requestId: state.requestId,
         requestIdentity: state,
+        ...(state.imageClampMaxBytes === undefined
+          ? {}
+          : { imageClampMaxBytes: state.imageClampMaxBytes }),
         ...(conversationAffinity ? { conversationAffinity } : {}),
         ...(candidate.user_agent === undefined ? {} : { userAgent: candidate.user_agent }),
         ...(deps.networkBindingFactory
@@ -238,6 +263,13 @@ export async function handleProviderProxyRequest(
                   deps.db,
                   prepared.authorization.snapshot.tenant_id,
                   state,
+                ),
+                providerCaptureMaxBytes(
+                  await resolveCaptureDepthForRequest(
+                    deps.db,
+                    prepared.authorization.snapshot.tenant_id,
+                    state,
+                  ),
                 ),
               ),
             }

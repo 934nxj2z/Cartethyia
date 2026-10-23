@@ -109,7 +109,11 @@ export function Select({
         // order, not by the caller's intent, and the control would silently take the
         // atom's size instead of the one asked for.
         className={cn(
-          "radix-select-trigger inline-flex items-center justify-between gap-4 w-full px-6 rounded-control border border-inner-border bg-surface-2 text-text-primary text-caption font-sans text-left cursor-pointer transition-[border-color,background-color] duration-150 ease-spring hover:border-border-strong focus-visible:outline-2 focus-visible:outline-focus-ring focus-visible:outline-offset-1 aria-disabled:opacity-70 aria-disabled:cursor-default aria-disabled:pointer-events-none [&_svg]:text-text-tertiary [&_svg]:transition-transform [&_svg]:duration-150 [&_svg]:ease-spring data-[state=open]:[&_svg]:rotate-180",
+          // `text-body` (13px) matches the label above it. At `text-caption`
+          // (12px) the selected value read as subordinate to its own label and
+          // the same size as the help text beneath — so a field's three parts
+          // had two sizes between them and no clear order.
+          "radix-select-trigger inline-flex items-center justify-between gap-4 w-full px-6 rounded-control border border-inner-border bg-surface-2 text-text-primary text-body font-sans text-left cursor-pointer transition-[border-color,background-color] duration-150 ease-spring hover:border-border-strong focus-visible:outline-2 focus-visible:outline-focus-ring focus-visible:outline-offset-1 aria-disabled:opacity-70 aria-disabled:cursor-default aria-disabled:pointer-events-none [&_svg]:text-text-tertiary [&_svg]:transition-transform [&_svg]:duration-150 [&_svg]:ease-spring data-[state=open]:[&_svg]:rotate-180",
           SIZE_HEIGHT_CLASS[size],
           className,
         )}

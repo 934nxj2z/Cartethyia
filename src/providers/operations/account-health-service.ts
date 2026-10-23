@@ -1,6 +1,6 @@
 import { healthEventBuffer } from "../../persistence/health-event-flush";
 // Account health: error classification, failure/success recording, recovery and cooldown sweeps.
-import { and, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { isRecord } from "../../protocol/codecs";
@@ -515,6 +515,15 @@ export function classifyAccountError(
       lower.includes("free-usage") ||
       lower.includes("free usage") ||
       lower.includes("exceeded your current quota") ||
+      // Trae answers an exhausted quota with **HTTP 502** and the body `Your
+      // requests have exceeded the quota.` The status is what misled the
+      // classifier: 502 read as a gateway failure, so this fell through to
+      // `server_error` — a 30s cooldown that does not mutate the account, so
+      // the account stayed in rotation and every other model on it kept being
+      // invoked inside a window the provider had already closed. The body is
+      // the verdict; the 502 is incidental. Matched on the phrase, not on the
+      // status, which is why this sits in `quotaSignal` ahead of the 5xx arm.
+      lower.includes("have exceeded the quota") ||
       lower.includes("balance exhausted") ||
       lower.includes("insufficient balance") ||
       lower.includes("out of credits") ||
@@ -637,11 +646,33 @@ export function classifyAccountError(
       lower.includes("no access to model") ||
       lower.includes("model_not_supported") ||
       lower.includes("not available in your region"));
+  /**
+   * The upstream accepted the request and put it in a queue behind other
+   * callers — it is busy, not rejecting the caller's credential.
+   *
+   * Qoder answers `403 {"code":"10605","message":"{\"isQueued\":true,
+   * \"modelKey\":\"dfmodel\",\"queueCount\":1395,...}"}`. The 403 is what made
+   * this misclassify: the generic `(401 || 403) && accountEvidence` arm claimed
+   * it as `auth_invalidated`, so a healthy account was parked as "Re-login
+   * required" purely because the provider was busy, and an operator was sent
+   * to re-authenticate a credential that was never rejected.
+   *
+   * Matched on the queue evidence rather than on the bare `10605`, so an
+   * unrelated 403 that happens to share the code is not swept in. The bodies
+   * are nested JSON, so the tell is the key, not a parse of the envelope.
+   */
+  const queuedUpstream =
+    providerCode === "10605" ||
+    lower.includes("isqueued") ||
+    lower.includes("queuecount") ||
+    lower.includes("queuetype") ||
+    (lower.includes("queue") && lower.includes("modelkey"));
   const authSignal =
     !quotaSignal &&
     !policyRejection &&
     !hostedToolFailure &&
     !modelEntitlementFailure &&
+    !queuedUpstream &&
     (providerCode === "authentication_failed" ||
       folded.includes("invalid api key") ||
       folded.includes("incorrect api key") ||
@@ -805,6 +836,7 @@ export function classifyAccountError(
     statusCode === 503 ||
     statusCode === 529 ||
     providerCode === "model_capacity" ||
+    queuedUpstream ||
     lower.includes("model overloaded") ||
     lower.includes("capacity exceeded") ||
     lower.includes("temporarily unavailable");
@@ -1454,4 +1486,38 @@ export async function listAccountHealthEvents(
   } catch {
     return [];
   }
+}
+
+/** Every stored row across accounts and pools — the size the purge offers to delete. */
+export async function countAllHealthEvents(db: CartethyiaDatabase): Promise<number> {
+  try {
+    const rows = await db.select({ total: count() }).from(healthEvents);
+    return rows[0]?.total ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Deletes stored health & error rows.
+ *
+ * Unlike the read above, a failed delete surfaces: an operator who purged
+ * believes the trail is gone, so "it failed" must not read as "it succeeded
+ * with zero rows". Callers own the flush-buffer barrier (`drain`) so a queued
+ * write cannot land after these rows are gone.
+ */
+export async function deleteAccountHealthEvents(
+  db: CartethyiaDatabase,
+  accountId: string,
+): Promise<number> {
+  const rows = await db
+    .delete(healthEvents)
+    .where(and(eq(healthEvents.entityKind, "account"), eq(healthEvents.accountId, accountId)))
+    .returning({ id: healthEvents.id });
+  return rows.length;
+}
+
+export async function deleteAllHealthEvents(db: CartethyiaDatabase): Promise<number> {
+  const rows = await db.delete(healthEvents).returning({ id: healthEvents.id });
+  return rows.length;
 }

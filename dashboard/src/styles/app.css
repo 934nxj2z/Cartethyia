@@ -610,6 +610,28 @@ main.route-enter .state-viewport-compact {
   color: var(--text-primary);
 }
 
+/* The donate control is the only one that carries a label, so it cannot be the
+ * fixed square the icon buttons use: that size lays a label and an icon out on
+ * two rows. Sized by its content instead, on one row. */
+.topbar-donate-button {
+  height: 38px;
+  padding: 0 14px;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--inner-border);
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+.topbar-donate-button:hover {
+  background: var(--active-pill);
+  color: var(--text-primary);
+}
+
 .topbar-icon-button:active {
   transform: scale(0.92);
 }

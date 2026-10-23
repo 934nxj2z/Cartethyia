@@ -632,12 +632,19 @@ export function buildWorkBuddyUserAgent(
   cliVersion = getWorkBuddyCliVersion(),
 ): string {
   // 1:1 with codebuddy2api. The CLI profile is `CLI/<v> CodeBuddy/<v>` and the
-  // WorkBuddy profile is `WorkBuddy/<wb> WorkBuddy AI/<wb> CLI/<cli>`, which
+  // WorkBuddy profile is `WorkBuddy/<wb> workbuddy-ai/<wb> CLI/<cli>`, which
   // sends NO SDK headers — two separate profiles, not one string with a switch.
   // Whether SDK headers ride along is decided by `workbuddyHeaders`, not here, so
   // this builder only decides the UA text.
+  //
+  // The second token is the wire spelling `workbuddy-ai`, NOT the display
+  // brand `WorkBuddy AI`. This is what an official client actually sends; the
+  // product is branded with a space in the UI and in docs, and copying that
+  // branding into the header produced a UA no real client emits — which the
+  // intl gateway answers with 403 `11140`, the same refusal it gives a
+  // wrong-brand header. Product name ≠ wire token.
   if (identity === "CLI") return `CLI/${cliVersion} CodeBuddy/${cliVersion}`;
-  return `WorkBuddy/${clientVersion} WorkBuddy AI/${clientVersion} CLI/${cliVersion}`;
+  return `WorkBuddy/${clientVersion} workbuddy-ai/${clientVersion} CLI/${cliVersion}`;
 }
 
 export const _resetWorkBuddyCnClientVersionCache = accessor("workbuddyCnClient").reset;
